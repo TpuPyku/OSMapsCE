@@ -1410,7 +1410,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int)
     }
 
     LogInit();
-    Log("OsmMapsCE start, dir %S", g_dir);
+    Log("OSMapsCE start, dir %S", g_dir);
     if (!ConfigLoad())
         Log("config: not found, using defaults");
     ConfigSave();

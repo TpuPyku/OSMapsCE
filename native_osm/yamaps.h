@@ -1,4 +1,4 @@
-// OsmMapsCE - OpenStreetMap viewer with traffic overlays (Yandex, 2GIS)
+// OSMapsCE - OpenStreetMap viewer with traffic overlays (Yandex, 2GIS)
 // for Windows CE 6.0 (Lada Vesta MMC). Also builds as a desktop Win32 app for testing on a PC.
 #pragma once
 
@@ -10,10 +10,10 @@
 #include <stdarg.h>
 #include <math.h>
 
-#define APP_NAME   L"OsmMapsCE"
-#define APP_CLASS  L"OsmMapsCE_Wnd"
+#define APP_NAME   L"OSMapsCE"
+#define APP_CLASS  L"OSMapsCE_Wnd"
 // OSM tile policy: a clear, unique User-Agent with a contact URL
-#define HTTP_USER_AGENT "OsmMapsCE/1.0 (+https://github.com/TpuPyku/YaMaps)"
+#define HTTP_USER_AGENT "OSMapsCE/1.0 (+https://github.com/TpuPyku/OSMapsCE)"
 
 #define WM_APP_MAP (WM_APP + 1)   // lParam = MapResult*, receiver frees it
 #define WM_APP_GPS (WM_APP + 2)   // GPS state changed

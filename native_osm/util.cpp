@@ -4,9 +4,9 @@
 Config  g_cfg;
 wchar_t g_dir[MAX_PATH];
 
-static const wchar_t* kConfigName = L"OsmMapsCE.ini";
-static const wchar_t* kLogName    = L"OsmMapsCE.log";
-static const wchar_t* kLogOldName = L"OsmMapsCE.old.log";
+static const wchar_t* kConfigName = L"OSMapsCE.ini";
+static const wchar_t* kLogName    = L"OSMapsCE.log";
+static const wchar_t* kLogOldName = L"OSMapsCE.old.log";
 static const DWORD    kLogMaxSize = 256 * 1024;   // two files at most: ~512 KB on disk
 
 void PathInDir(wchar_t* out, const wchar_t* name)
@@ -51,7 +51,7 @@ void LogInit()
         SetFilePointer(s_log, 0, NULL, FILE_END);
 }
 
-// Full log becomes OsmMapsCE.old.log (replacing the previous one), a new log starts.
+// Full log becomes OSMapsCE.old.log (replacing the previous one), a new log starts.
 static void RotateLog()
 {
     wchar_t path[MAX_PATH], old[MAX_PATH];
@@ -214,7 +214,7 @@ void ConfigSave()
     WideCharToMultiByte(CP_ACP, 0, g_cfg.killProcess, -1, kill, sizeof(kill), NULL, NULL);
     char buf[2048];
     int n = _snprintf(buf, sizeof(buf),
-        "; OsmMapsCE settings. The file is rewritten by the program.\r\n"
+        "; OSMapsCE settings. The file is rewritten by the program.\r\n"
         "lon=%.6f\r\n"
         "lat=%.6f\r\n"
         "zoom=%d\r\n"
