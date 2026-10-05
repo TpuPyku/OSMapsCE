@@ -1,0 +1,6 @@
+native_osm/obj/
+OsmMapsCE/Cache/
+OsmMapsCE/*.log
+OsmMapsCE/OsmMapsCE.ini
+OsmMapsCE/OsmMapsPC.exe
+OsmMapsCE/*.nmea
