@@ -37,8 +37,32 @@ void CachePath(wchar_t* out, const MapRequest& r)
     PathInDir(out, name);
 }
 
+// The server's ETag is kept at the end of the cache file: <etag><length byte>"ETAG".
+// Image decoders stop at the end of the image and ignore it.
+static const int kEtagCap = 100;
+
+static void ReadEtag(const wchar_t* path, char* etag)
+{
+    etag[0] = 0;
+    HANDLE h = CreateFile(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    if (h == INVALID_HANDLE_VALUE)
+        return;
+    unsigned char tail[kEtagCap + 5];
+    DWORD size = GetFileSize(h, NULL), got = 0;
+    DWORD want = size < sizeof(tail) ? size : sizeof(tail);
+    if (want >= 5 && SetFilePointer(h, -(LONG)want, NULL, FILE_END) != 0xFFFFFFFF &&
+        ReadFile(h, tail, want, &got, NULL) && got == want && !memcmp(tail + got - 4, "ETAG", 4)) {
+        int n = tail[got - 5];
+        if (n < kEtagCap && n <= (int)got - 5) {
+            memcpy(etag, tail + got - 5 - n, n);
+            etag[n] = 0;
+        }
+    }
+    CloseHandle(h);
+}
+
 // Raw response goes to the cache via a temp file, so a half-written file is never read.
-static void SaveToCache(const MapRequest& r, const unsigned char* data, int len)
+static void SaveToCache(const MapRequest& r, const unsigned char* data, int len, const char* etag)
 {
     wchar_t name[64], dir[MAX_PATH], path[MAX_PATH], tmp[MAX_PATH];
     _snwprintf(name, 64, L"Cache\\%d", r.z);
@@ -55,6 +79,15 @@ static void SaveToCache(const MapRequest& r, const unsigned char* data, int len)
         return;
     DWORD w = 0;
     BOOL ok = WriteFile(h, data, len, &w, NULL) && (int)w == len;
+    int n = (int)strlen(etag);
+    if (ok && n) {
+        unsigned char trailer[kEtagCap + 5];
+        memcpy(trailer, etag, n);
+        trailer[n] = (unsigned char)n;
+        memcpy(trailer + n + 1, "ETAG", 4);
+        ok = WriteFile(h, trailer, n + 5, &w, NULL) && (int)w == n + 5;
+        len += n + 5;
+    }
     StampFile(h, g_today);   // the age check (cache_days) counts from this date
     CloseHandle(h);
 
@@ -170,10 +203,30 @@ static void Fetch(const MapRequest& r, MapResult* res)
     }
     path[sizeof(path) - 1] = 0;
 
+    // A cached OSM tile (expired, or a tap on the map) is only checked: 304 = not changed.
+    wchar_t file[MAX_PATH];
+    char cachedTag[kEtagCap] = "", etag[kEtagCap] = "";
+    if (r.src == SRC_OSM) {
+        CachePath(file, r);
+        ReadEtag(file, cachedTag);
+    }
+
     DWORD t0 = GetTickCount();
     unsigned char* body = NULL;
     int bodyLen = 0;
-    res->err = HttpGet(host, https, path, &body, &bodyLen, &res->httpStatus);
+    res->err = HttpGet(host, https, path, &body, &bodyLen, &res->httpStatus, cachedTag, etag, kEtagCap);
+    if (res->err == NET_OK && res->httpStatus == 304 && cachedTag[0]) {
+        HANDLE h = CreateFile(file, GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
+        if (h != INVALID_HANDLE_VALUE) {
+            StampFile(h, g_today);   // fresh for another cache_days
+            CloseHandle(h);
+        }
+        if (!ImageFromFile(file, &res->img))
+            res->err = NET_DECODE;
+        free(body);
+        Log("net: %s%s -> %d (HTTP 304, %lu ms)", host, path, res->err, GetTickCount() - t0);
+        return;
+    }
     if (res->err == NET_OK && res->httpStatus == 204 && r.src != SRC_OSM) {
         // 2GIS: "no traffic on this tile", an empty overlay
     } else if (res->err == NET_OK && res->httpStatus != 200) {
@@ -184,7 +237,7 @@ static void Fetch(const MapRequest& r, MapResult* res)
         res->bytes = bodyLen;
         if (r.src == SRC_OSM) {
             if (ImageFromMemory(body, bodyLen, &res->img))
-                SaveToCache(r, body, bodyLen);
+                SaveToCache(r, body, bodyLen, etag);
             else
                 res->err = NET_DECODE;
         } else if (res->httpStatus != 204) {

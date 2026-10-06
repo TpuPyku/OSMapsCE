@@ -335,13 +335,17 @@ static bool Grow(char** body, int* cap, int need)
 
 // One request on an open connection. *answered tells whether the server answered anything:
 // a dead keep-alive connection fails before that and the request is retried.
-static int Exchange(Conn* c, const char* path, unsigned char** bodyOut, int* bodyLen, int* status, bool* answered)
+static int Exchange(Conn* c, const char* path, const char* ifNoneMatch, unsigned char** bodyOut, int* bodyLen,
+                    int* status, char* etag, int etagCap, bool* answered)
 {
     *answered = false;
+    char cond[160] = "";
+    if (ifNoneMatch && ifNoneMatch[0])
+        _snprintf(cond, sizeof(cond), "If-None-Match: %s\r\n", ifNoneMatch);
     char req[1024];
     int n = _snprintf(req, sizeof(req),
         "GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: " HTTP_USER_AGENT "\r\n"
-        "Accept: image/png,image/*\r\nConnection: keep-alive\r\n\r\n", path, c->host);
+        "Accept: image/png,image/*\r\n%sConnection: keep-alive\r\n\r\n", path, c->host, cond);
     if (n < 0 || ConnWrite(c, req, n) < 0)
         return NET_CONNECT;
 
@@ -382,9 +386,18 @@ static int Exchange(Conn* c, const char* path, unsigned char** bodyOut, int* bod
             chunked = true;
         else if (!_strnicmp(line, "Connection:", 11) && strstr(line + 11, "close"))
             closeAfter = true;
+        else if (etag && !_strnicmp(line, "ETag:", 5)) {
+            const char* v = line + 5;
+            while (*v == ' ')
+                v++;
+            strncpy(etag, v, etagCap - 1);
+            etag[etagCap - 1] = 0;
+        }
     }
 
-    if (chunked) {
+    if (*status == 304) {
+        // not modified: never has a body, even without Content-Length
+    } else if (chunked) {
         for (;;) {
             if (!ReadLine(r, line, sizeof(line))) {
                 result = NET_TIMEOUT;
@@ -453,9 +466,12 @@ done:
     return NET_OK;
 }
 
-int HttpGet(const char* host, bool https, const char* path, unsigned char** body, int* bodyLen, int* status)
+int HttpGet(const char* host, bool https, const char* path, unsigned char** body, int* bodyLen, int* status,
+            const char* ifNoneMatch, char* etag, int etagCap)
 {
     *status = 0;
+    if (etag)
+        etag[0] = 0;
     Conn* c = GetConn(host, https);
     if (!c)
         return NET_MEMORY;
@@ -467,7 +483,7 @@ int HttpGet(const char* host, bool https, const char* path, unsigned char** body
                 return err;
         }
         bool answered;
-        int err = Exchange(c, path, body, bodyLen, status, &answered);
+        int err = Exchange(c, path, ifNoneMatch, body, bodyLen, status, etag, etagCap, &answered);
         c->lastUse = GetTickCount();
         if (err == NET_OK)
             return NET_OK;

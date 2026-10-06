@@ -102,7 +102,9 @@ Overlay* OverlayFromMemory(const unsigned char* data, int len);   // free() it
 #define CACHE_BLOCK 64      // tiles per cache subfolder side: FAT is slow on big folders
 
 // http.cpp
-int  HttpGet(const char* host, bool https, const char* path, unsigned char** body, int* bodyLen, int* status);
+// With ifNoneMatch the server may answer 304 (no body); the ETag of the answer goes to etag.
+int  HttpGet(const char* host, bool https, const char* path, unsigned char** body, int* bodyLen, int* status,
+             const char* ifNoneMatch = NULL, char* etag = NULL, int etagCap = 0);
 void HttpSetGpsDate(int yyyymmdd);
 void HttpCloseAll();
 

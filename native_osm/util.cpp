@@ -110,7 +110,7 @@ void ConfigDefaults()
     g_cfg.autoReserve = 100;
     g_cfg.cacheMb = 500;
     g_cfg.cacheKb = -1;
-    g_cfg.cacheDays = 30;
+    g_cfg.cacheDays = 7;
     g_cfg.gpsEnabled = 1;
     wcscpy(g_cfg.gpsPort, L"COM6:");       // GPS receiver of Lada Vesta MMC
     g_cfg.gpsBaud = 115200;
@@ -236,7 +236,7 @@ void ConfigSave()
         "cache_mb=%d\r\n"
         "; Cache folder size now, KB (-1 = recount)\r\n"
         "cache_kb=%ld\r\n"
-        "; map tiles older than this are downloaded again, days (0 = never)\r\n"
+        "; map tiles older than this are checked with the server again, days (0 = never)\r\n"
         "cache_days=%d\r\n"
         "; request counters (date from GPS)\r\n"
         "req_day=%d\r\n"

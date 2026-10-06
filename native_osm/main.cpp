@@ -263,7 +263,7 @@ static int Limit(int src)
 enum { REQ_AUTO, REQ_USER, REQ_FORCE };
 
 // A map tile from the disk is refreshed once it is cache_days old (OSM policy: keep at least
-// 7 days). Files saved while the date was unknown carry the unit's wrong clock (before
+// 7 days). net.cpp asks with If-None-Match, so an unchanged tile is not downloaded. Files saved while the date was unknown carry the unit's wrong clock (before
 // 2024): refreshed too, and get a real date then. Without today's date nothing expires.
 static bool IsExpired(const CacheEntry* e)
 {
