@@ -4,3 +4,4 @@ OSMapsCE/*.log
 OSMapsCE/OSMapsCE.ini
 OSMapsCE/OSMapsPC.exe
 OSMapsCE/*.nmea
+native_osm/.env
