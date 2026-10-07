@@ -1449,5 +1449,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int)
         TranslateMessage(&msg);
         DispatchMessage(&msg);
     }
+    // End the process for real even if a worker didn't stop in time (NetStop gives a stuck socket
+    // only 1 s): the GPS port is released only when the process is gone. Config and log are already
+    // written (OnDestroy, unbuffered WriteFile).
+    TerminateProcess(GetCurrentProcess(), 0);
     return 0;
 }

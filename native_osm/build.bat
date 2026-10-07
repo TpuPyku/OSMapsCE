@@ -19,13 +19,17 @@ if not exist obj\arm mkdir obj\arm
 if not exist obj\pc  mkdir obj\pc
 if not exist "%OUT%" mkdir "%OUT%"
 
+echo === icon (app.rc, same .res for both builds)
+rc /fo obj\app.res app.rc
+if errorlevel 1 goto fail
+
 echo === ARM (Windows CE)
 "%VC%\ce\bin\x86_arm\cl.exe" /nologo /O2 /W3 /GS- /TP /c %SRC% /Foobj\arm\ ^
   /DUNICODE /D_UNICODE /DUNDER_CE=0x420 /D_WIN32_WCE=0x420 /DWINCE /DARM /D_ARM_ /DARMV4 /DNDEBUG ^
   /I"%BR%\inc" /I"%COMPAT%" /I"%SDK%\Include" /I"%VC%\ce\include"
 if errorlevel 1 goto fail
 "%VC%\ce\bin\x86_arm\link.exe" /nologo /SUBSYSTEM:WINDOWSCE,4.20 /MACHINE:ARM /OUT:"%OUT%\OSMapsCE.exe" ^
-  obj\arm\*.obj obj\bearssl_arm.lib /LIBPATH:"%SDK%\Lib\armv4" /LIBPATH:"%VC%\ce\lib\armv4" ^
+  obj\arm\*.obj obj\app.res obj\bearssl_arm.lib /LIBPATH:"%SDK%\Lib\armv4" /LIBPATH:"%VC%\ce\lib\armv4" ^
   coredll.lib corelibc.lib ws2.lib /NODEFAULTLIB:oldnames.lib /NODEFAULTLIB:advapi32.lib
 if errorlevel 1 goto fail
 
@@ -34,7 +38,7 @@ echo === x86 (desktop test build)
   /DUNICODE /D_UNICODE /DWIN32 /DNDEBUG /D_CRT_SECURE_NO_WARNINGS ^
   /I"%BR%\inc" /I"%COMPAT%" /I"%VC%\include" /I"%VC%\PlatformSDK\Include"
 if errorlevel 1 goto fail
-"%VC%\bin\link.exe" /nologo /SUBSYSTEM:WINDOWS /OUT:"%OUT%\OSMapsPC.exe" obj\pc\*.obj obj\bearssl_pc.lib ^
+"%VC%\bin\link.exe" /nologo /SUBSYSTEM:WINDOWS /OUT:"%OUT%\OSMapsPC.exe" obj\pc\*.obj obj\app.res obj\bearssl_pc.lib ^
   /LIBPATH:"%VC%\lib" /LIBPATH:"%VC%\PlatformSDK\Lib" user32.lib gdi32.lib kernel32.lib ws2_32.lib advapi32.lib
 if errorlevel 1 goto fail
 
