@@ -1,50 +1,67 @@
 ﻿#include "yamaps.h"
 
 // ---------------------------------------------------------------- UI layout
-// Button positions match the old SystemInformation layout (Main.ini), 800x480 screen.
+// 800x480 in the VestaHome style (mockup VestaHome/skin/maps-skin-v2.pdf): the map over the whole screen, a
+// see-through status bar on top. Always over the map: "+" / "-" on the right and the GPS mode on the left,
+// 72 px see-through tiles. A tap on the map raises the bottom bar - as VestaHome's: home on the left, settings
+// on the right, between them traffic, its provider and night, signs without captions - which goes down after
+// kDockMs without a touch or on the next tap. Exit is on the settings screen. No pan arrows: the map is
+// dragged (the PC keys still move it). The bars and tiles darken the map under them (Darken), their signs are
+// pictures with alpha blended by hand (CE GDI has no usable alpha on a 16-bit screen). Pictures: make_images.py.
 
-enum { B_SETTINGS, B_NIGHT, B_EXIT, B_TRF, B_TSRC, B_GPS, B_LEFT, B_RIGHT, B_UP, B_DOWN, B_MINUS, B_PLUS, B_COUNT };
+enum { B_SETTINGS, B_NIGHT, B_EXIT, B_TRF, B_TSRC, B_GPS, B_LEFT, B_RIGHT, B_UP, B_DOWN, B_MINUS, B_PLUS,
+       B_HOME, B_COUNT };
 
-static const int kBtnSize = 50;
+enum { kTile = 72, kSign = 48, kStatusH = 44, kDockY = 404, kDockMs = 6000 };
 
 struct Button {
-    int            x, y;
-    const wchar_t* name[3];   // image base names per state (toggle buttons have 2-3)
-    Image          img[3][2]; // [state][pressed]
+    int            x, y;      // tiles over the map; the bottom bar's slots are laid out in ButtonRect
+    const wchar_t* name[3];   // sign picture base names per state (toggle buttons have 2-3)
+    Overlay*       ov[3][2];  // [state][pressed]: the sign with its alpha
 };
 
 static Button s_btn[B_COUNT] = {
-    { 610,  28, { L"Bset" } },
-    { 675,  28, { L"Bnight_on", L"Bnight_off" } },
-    { 740,  28, { L"Bexit" } },
-    { 610,  93, { L"Btrf_on", L"Btrf_off" } },
-    { 675,  93, { L"Btsrc_ya", L"Btsrc_2g" } },   // traffic provider, only while traffic is on
-    { 740,  93, { L"Bgps_on", L"Bgps_off", L"Bgps_none" } },
-    { 615, 290, { L"Bleft" } },
-    { 735, 290, { L"Bright" } },
-    { 675, 230, { L"Bup" } },
-    { 675, 350, { L"Bdown" } },
-    { 640, 420, { L"Bminus" } },
-    { 710, 420, { L"Bplus" } },
+    { 0, 0, { L"Bset" } },
+    { 0, 0, { L"Bnight_on", L"Bnight_off" } },
+    { 0, 0, { NULL } },   // exit: a button of the settings screen (Esc on the PC)
+    { 0, 0, { L"Btrf_on", L"Btrf_off" } },
+    { 0, 0, { L"Btsrc_ya", L"Btsrc_2g" } },   // traffic provider, only while traffic is on
+    { 16, 312, { L"Bgps_on", L"Bgps_off", L"Bgps_none" } },
+    { 0, 0, { NULL } },   // pan: keys only
+    { 0, 0, { NULL } },
+    { 0, 0, { NULL } },
+    { 0, 0, { NULL } },
+    { 712, 312, { L"Bminus" } },
+    { 712, 232, { L"Bplus" } },
+    { 0, 0, { L"Bhome" } },
 };
+static const int kDockOrder[] = { B_HOME, B_TRF, B_TSRC, B_NIGHT, B_SETTINGS };
+static const int kDockCount = sizeof(kDockOrder) / sizeof(kDockOrder[0]);
+static Overlay*  s_arrow[2][2];   // settings: back / stepper arrows ([left, right][pressed])
 
 static const wchar_t* kWeekDays[7] = { L"Вс", L"Пн", L"Вт", L"Ср", L"Чт", L"Пт", L"Сб" };
 static const wchar_t* kTrafficTitle[TRF_COUNT] = { L"Яндекс", L"2ГИС" };
 static const int      kTrafficSrc[TRF_COUNT] = { SRC_YANDEX, SRC_2GIS };
 
-static const COLORREF kText    = RGB(255, 255, 255);
-static const COLORREF kTextDim = RGB(170, 170, 170);
+static const COLORREF kText    = RGB(0xf3, 0xf1, 0xec);   // VestaHome palette
+static const COLORREF kTextDim = RGB(0xa3, 0xa8, 0xb0);
 static const COLORREF kTextErr = RGB(255, 120, 120);
 static const COLORREF kMapBg   = RGB(228, 226, 222);
+static const COLORREF kInk     = RGB(0x0b, 0x0c, 0x0e);   // bars
+static const COLORREF kPanel   = RGB(0x17, 0x19, 0x1c);   // tiles, settings
+static const COLORREF kPanel2  = RGB(0x22, 0x25, 0x2a);   // settings controls
+static const COLORREF kLine    = RGB(0x34, 0x38, 0x3f);   // 2 px borders
+static const COLORREF kOrange  = RGB(0xff, 0x6b, 0x1a);   // the one accent: pressed / on
 
 enum { TIMER_TICK = 1, TIMER_USER = 2 };
 static const UINT kUserDelayMs = 900;    // wait for the user to stop pressing buttons
 
 // GPS button modes (g_cfg.follow)
 enum { FOLLOW_OFF, FOLLOW_NORTH, FOLLOW_HEADING };
-static const double kCarAhead        = 0.3;  // heading-up: view center this part of map height ahead of the car
+static const double kCarAhead        = 0.25; // heading-up: view center this part of map height ahead of the car
+                                             // (0.25 of 480: the car stays above the bottom bar)
 static const double kHeadingMinSpeed = 5;    // km/h: below it the course is noise, keep the last heading
-static const int    kCanvas          = 768;  // unrotated canvas >= map diagonal (750)
+static const int    kCanvas          = 960;  // unrotated canvas >= map diagonal (800x480: 933)
 static const int    kMaxKeys         = 32;   // tiles one view can need from one source
 static const int    kMaxParentLevels = 6;    // missing tile: show a coarser cached one, up to 6 levels up
 
@@ -81,7 +98,9 @@ static unsigned short* s_backBits;
 static unsigned short* s_nightLut;      // RGB565 -> night color, only while night is on
 static int        s_cw, s_ch;
 static Image      s_bg;
-static HFONT      s_fontBig, s_fontSmall, s_fontTiny;
+static HFONT      s_fontBig, s_fontSmall, s_fontTiny, s_fontStatus, s_fontClock, s_fontLabel;
+static bool       s_dockShown;          // the bottom bar is up
+static DWORD      s_dockTick;           // last touch of it: it goes down kDockMs later
 
 static bool       s_inflight;
 static DWORD      s_inflightSeq, s_inflightTick;
@@ -122,16 +141,20 @@ static const int   kSetBaudCount = sizeof(kSetBauds) / sizeof(kSetBauds[0]);
 static const int   kSetCacheMb[] = { 250, 500, 1000, 2000 };
 static const int   kSetCacheCount = sizeof(kSetCacheMb) / sizeof(kSetCacheMb[0]);
 
+// The settings screen as VestaHome's: a top bar with "back", one panel of rows; a row's stepper (port, speed,
+// cache) applies at once - no "Apply" / "Close". Rows at kSetRow0 + i * kSetRowH.
 enum { S_PORT_PREV, S_PORT_NEXT, S_BAUD_PREV, S_BAUD_NEXT, S_CACHE_PREV, S_CACHE_NEXT,
-       S_APPLY, S_SCAN, S_CLOSE, S_COUNT };
+       S_SCAN, S_EXIT, S_BACK, S_COUNT };
+enum { kSetRow0 = 76, kSetRowH = 64 };
 static const RECT kSetCtl[S_COUNT] = {
-    { 180,  75, 230, 125 }, { 410,  75, 460, 125 },
-    { 180, 133, 230, 183 }, { 410, 133, 460, 183 },
-    { 180, 191, 230, 241 }, { 410, 191, 460, 241 },
-    {  22, 251, 192, 296 }, { 212, 251, 382, 296 }, { 402, 251, 572, 296 },
+    { 512, 84, 560, 128 }, { 712, 84, 760, 128 },     // the steppers' arrows: rows 0..2
+    { 512, 148, 560, 192 }, { 712, 148, 760, 192 },
+    { 512, 212, 560, 256 }, { 712, 212, 760, 256 },
+    { 616, 280, 760, 324 },                            // find GPS
+    { 600, 408, 768, 452 },                            // exit the program
+    { 8, 4, 64, 52 },                                  // back (top bar)
 };
-static const wchar_t* kSetCaption[S_COUNT] = { L"<", L">", L"<", L">", L"<", L">",
-                                               L"Применить", L"Поиск GPS", L"Закрыть" };
+static const wchar_t* kSetCaption[S_COUNT] = { NULL, NULL, NULL, NULL, NULL, NULL, L"ПОИСК", L"ЗАВЕРШИТЬ", NULL };
 
 // ---------------------------------------------------------------- view & tiles
 
@@ -439,36 +462,41 @@ static void EnsureGpsRunning()
     s_gpsRunning = true;
 }
 
+// Every step applies at once, as on VestaHome's settings.
+static void ApplySettings()
+{
+    wchar_t port[16];
+    _snwprintf(port, 16, L"COM%d:", s_setPort);
+    if (wcscmp(port, g_cfg.gpsPort) != 0 || (DWORD)g_cfg.gpsBaud != kSetBauds[s_setBaud] || !s_gpsRunning) {
+        wcscpy(g_cfg.gpsPort, port);
+        g_cfg.gpsBaud = kSetBauds[s_setBaud];
+        Log("gps: settings %S %d", g_cfg.gpsPort, g_cfg.gpsBaud);
+        EnsureGpsRunning();
+        GpsConfigure(g_cfg.gpsPort, g_cfg.gpsBaud);
+    }
+    g_cfg.cacheMb = kSetCacheMb[s_setCache];
+    if (g_cfg.cacheKb < 0 || g_cfg.cacheKb > (LONG)g_cfg.cacheMb * 1024)
+        CachePrune();
+    ConfigSave();
+}
+
 static void OnSettingsCtl(int id)
 {
     switch (id) {
-    case S_PORT_PREV: s_setPort = s_setPort > 1 ? s_setPort - 1 : 9; break;
-    case S_PORT_NEXT: s_setPort = s_setPort < 9 ? s_setPort + 1 : 1; break;
-    case S_BAUD_PREV: s_setBaud = (s_setBaud + kSetBaudCount - 1) % kSetBaudCount; break;
-    case S_BAUD_NEXT: s_setBaud = (s_setBaud + 1) % kSetBaudCount; break;
-    case S_CACHE_PREV: if (s_setCache > 0) s_setCache--; break;
-    case S_CACHE_NEXT: if (s_setCache < kSetCacheCount - 1) s_setCache++; break;
-    case S_APPLY: {
-        wchar_t port[16];
-        _snwprintf(port, 16, L"COM%d:", s_setPort);
-        if (wcscmp(port, g_cfg.gpsPort) != 0 || (DWORD)g_cfg.gpsBaud != kSetBauds[s_setBaud] || !s_gpsRunning) {
-            wcscpy(g_cfg.gpsPort, port);
-            g_cfg.gpsBaud = kSetBauds[s_setBaud];
-            Log("gps: settings %S %d", g_cfg.gpsPort, g_cfg.gpsBaud);
-            EnsureGpsRunning();
-            GpsConfigure(g_cfg.gpsPort, g_cfg.gpsBaud);
-        }
-        g_cfg.cacheMb = kSetCacheMb[s_setCache];
-        if (g_cfg.cacheKb < 0 || g_cfg.cacheKb > (LONG)g_cfg.cacheMb * 1024)
-            CachePrune();
-        ConfigSave();
-        break;
-    }
+    case S_PORT_PREV:  s_setPort = s_setPort > 1 ? s_setPort - 1 : 9; ApplySettings(); break;
+    case S_PORT_NEXT:  s_setPort = s_setPort < 9 ? s_setPort + 1 : 1; ApplySettings(); break;
+    case S_BAUD_PREV:  s_setBaud = (s_setBaud + kSetBaudCount - 1) % kSetBaudCount; ApplySettings(); break;
+    case S_BAUD_NEXT:  s_setBaud = (s_setBaud + 1) % kSetBaudCount; ApplySettings(); break;
+    case S_CACHE_PREV: if (s_setCache > 0) s_setCache--; ApplySettings(); break;
+    case S_CACHE_NEXT: if (s_setCache < kSetCacheCount - 1) s_setCache++; ApplySettings(); break;
     case S_SCAN:
         EnsureGpsRunning();
         GpsScan();
         break;
-    case S_CLOSE:
+    case S_EXIT:
+        DestroyWindow(s_wnd);
+        return;
+    case S_BACK:
         s_settings = false;
         break;
     }
@@ -524,11 +552,46 @@ static void NextFollowMode()
     FollowGps();
 }
 
+// "Home": back to the launcher, the map stays open behind it. VestaHome (the home shell, kept on screen under
+// the programs it starts) is brought to the front; VestaLaunch (hidden while its program runs) is asked to show
+// itself (WM_VESTA_SHOW, as its second start does). Both bring the map back by raising its window: it stays
+// visible, so "already running" finds it. Without either the map goes to the bottom and the shell shows.
+#define VESTAHOME_CLASS L"VestaHome_Wnd"
+#define VESTALAUNCH_CLASS L"VestaLaunch_Wnd"
+#define WM_VESTA_SHOW (WM_APP + 3)
+
+static void GoHome()
+{
+    s_dockShown = false;
+    HWND home = FindWindow(VESTAHOME_CLASS, NULL), launch = FindWindow(VESTALAUNCH_CLASS, NULL);
+    if (home && IsWindowVisible(home)) {
+#ifdef UNDER_CE
+        SetWindowPos(home, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+#endif
+        SetForegroundWindow(home);
+        Log("ui: home -> VestaHome");
+    } else if (launch) {
+        PostMessage(launch, WM_VESTA_SHOW, 0, 0);
+        Log("ui: home -> VestaLaunch");
+    } else {
+        Log("ui: home -> no launcher, map to the bottom");
+    }
+    // the launcher made the map topmost when it raised it: step down to the bottom (this also drops topmost),
+    // or the map keeps covering the launcher; the launcher raises it again from "already running"
+    SetWindowPos(s_wnd, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+}
+
 static void OnButton(int b)
 {
+    s_dockTick = GetTickCount();   // a touch of the bottom bar keeps it up
     switch (b) {
+    case B_HOME:
+        GoHome();
+        InvalidateRect(s_wnd, NULL, FALSE);
+        return;
     case B_SETTINGS:
         s_settings = !s_settings;
+        s_dockShown = false;
         if (s_settings)
             SettingsLoad();
         InvalidateRect(s_wnd, NULL, FALSE);
@@ -565,19 +628,46 @@ static int ButtonState(int b)
     return 0;
 }
 
-// The traffic provider button is shown only while traffic is on.
-static bool ButtonVisible(int b)
+// Where a button is now; false when it isn't on the screen (the settings screen hides them all, the bottom
+// bar's ones are there only while it is up, the traffic provider only while traffic is on).
+static bool ButtonRect(int b, RECT* r)
 {
-    return b != B_TSRC || g_cfg.traffic;
+    if (s_settings)
+        return false;
+    if (b == B_GPS || b == B_MINUS || b == B_PLUS) {
+        SetRect(r, s_btn[b].x, s_btn[b].y, s_btn[b].x + kTile, s_btn[b].y + kTile);
+        return true;
+    }
+    if (!s_dockShown)
+        return false;
+    int n = 0, slot = -1;
+    for (int i = 0; i < kDockCount; i++) {
+        if (kDockOrder[i] == B_TSRC && !g_cfg.traffic)
+            continue;
+        if (kDockOrder[i] == b)
+            slot = n;
+        n++;
+    }
+    if (slot < 0)
+        return false;
+    int w = (s_cw - 16) / n;
+    SetRect(r, 8 + slot * w, kDockY + 4, 8 + (slot + 1) * w, s_ch - 4);
+    return true;
 }
 
 static int HitButton(int x, int y)
 {
+    RECT r;
     for (int i = 0; i < B_COUNT; i++)
-        if (ButtonVisible(i) &&
-            x >= s_btn[i].x && x < s_btn[i].x + kBtnSize && y >= s_btn[i].y && y < s_btn[i].y + kBtnSize)
+        if (ButtonRect(i, &r) && x >= r.left && x < r.right && y >= r.top && y < r.bottom)
             return i;
     return -1;
+}
+
+static void DockShow(bool show)
+{
+    s_dockShown = show;
+    s_dockTick = GetTickCount();
 }
 
 static bool InMap(int x, int y)
@@ -587,6 +677,25 @@ static bool InMap(int x, int y)
 
 // ---------------------------------------------------------------- drawing
 
+// A sign picture (PNG with alpha) as an overlay: blended over the frame by BlendSign.
+static Overlay* LoadSign(const wchar_t* name, int pressed)
+{
+    wchar_t file[64], path[MAX_PATH];
+    _snwprintf(file, 64, L"Images\\%s_%c.png", name, pressed ? L'P' : L'N');
+    file[63] = 0;
+    PathInDir(path, file);
+    unsigned char* data;
+    int len;
+    Overlay* ov = NULL;
+    if (ReadWholeFile(path, &data, &len)) {
+        ov = OverlayFromMemory(data, len);
+        free(data);
+    }
+    if (!ov)
+        Log("ui: no image %S", path);
+    return ov;
+}
+
 static void LoadImages()
 {
     wchar_t path[MAX_PATH];
@@ -594,20 +703,14 @@ static void LoadImages()
     if (!ImageFromFile(path, &s_bg))
         Log("ui: no background %S", path);
 
-    for (int i = 0; i < B_COUNT; i++) {
-        for (int state = 0; state < 3; state++) {
-            const wchar_t* name = s_btn[i].name[state];
-            if (!name)
-                continue;
-            for (int p = 0; p < 2; p++) {
-                wchar_t file[64];
-                _snwprintf(file, 64, L"Images\\%s_%c.png", name, p ? L'P' : L'N');
-                file[63] = 0;
-                PathInDir(path, file);
-                if (!ImageFromFile(path, &s_btn[i].img[state][p]))
-                    Log("ui: no image %S", path);
-            }
-        }
+    for (int i = 0; i < B_COUNT; i++)
+        for (int state = 0; state < 3; state++)
+            if (s_btn[i].name[state])
+                for (int p = 0; p < 2; p++)
+                    s_btn[i].ov[state][p] = LoadSign(s_btn[i].name[state], p);
+    for (int p = 0; p < 2; p++) {
+        s_arrow[0][p] = LoadSign(L"Sleft", p);
+        s_arrow[1][p] = LoadSign(L"Sright", p);
     }
 }
 
@@ -628,6 +731,90 @@ static void Text(HDC dc, HFONT font, COLORREF color, int l, int t, int r, int b,
     DrawText(dc, s, -1, &rc, align | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
 }
 
+// ---- see-through bars and tiles, drawn straight into the frame's pixels (s_backBits)
+
+static int BackStride()
+{
+    return ((s_cw * 2 + 3) & ~3) / 2;
+}
+
+// The map under r at a quarter of its brightness (two shifts and a mask per RGB565 pixel), rounded corners
+// of the given radius. Without the frame's pixels (no DIB): filled with the bar colour instead.
+static void Darken(HDC dc, const RECT& r, int radius)
+{
+    if (!s_backBits) {
+        HBRUSH b = CreateSolidBrush(kInk);
+        FillRect(dc, &r, b);
+        DeleteObject(b);
+        return;
+    }
+#ifndef UNDER_CE
+    GdiFlush();   // desktop GDI may batch drawing into the DIB
+#endif
+    int stride = BackStride();
+    for (int y = r.top < 0 ? 0 : r.top; y < r.bottom && y < s_ch; y++) {
+        int inset = 0, dy = y < r.top + radius ? r.top + radius - y : y >= r.bottom - radius ? y - (r.bottom - radius - 1) : 0;
+        if (dy > 0) {
+            double d = dy - 0.5;
+            inset = (int)(radius - sqrt(radius * radius - d * d) + 0.5);
+        }
+        unsigned short* p = s_backBits + (s_ch - 1 - y) * stride;
+        int x1 = r.right - inset > s_cw ? s_cw : r.right - inset;
+        for (int x = r.left + inset < 0 ? 0 : r.left + inset; x < x1; x++)
+            p[x] = (unsigned short)((p[x] >> 2) & 0x39E7);
+    }
+}
+
+// A sign picture blended into the frame at (x, y) by its alpha.
+static void BlendSign(HDC dc, const Overlay* ov, int x, int y)
+{
+    if (!ov || !s_backBits)
+        return;
+#ifndef UNDER_CE
+    GdiFlush();
+#endif
+    int stride = BackStride();
+    for (int oy = 0; oy < ov->h; oy++) {
+        int sy = y + oy;
+        if (sy < 0 || sy >= s_ch)
+            continue;
+        const unsigned char* p = (const unsigned char*)ov + ov->rowOfs[oy];
+        int runs = *(const unsigned short*)p;
+        p += 4;
+        unsigned short* drow = s_backBits + (s_ch - 1 - sy) * stride;
+        int sx = x;
+        for (int r = 0; r < runs; r++) {
+            const unsigned short* rh = (const unsigned short*)p;
+            sx += rh[0];
+            int count = rh[1];
+            const unsigned char* s = p + 4;
+            p += 4 + count * 4;
+            for (int i = 0; i < count; i++, sx++, s += 4) {
+                if (sx < 0 || sx >= s_cw)
+                    continue;
+                int a = s[3];
+                unsigned short d = drow[sx];
+                int dr = (d >> 8) & 0xF8, dg = (d >> 3) & 0xFC, db = (d << 3) & 0xF8;
+                dr += (s[0] - dr) * a / 255;
+                dg += (s[1] - dg) * a / 255;
+                db += (s[2] - db) * a / 255;
+                drow[sx] = RGB565(dr, dg, db);
+            }
+        }
+    }
+}
+
+// The 2 px border of a tile, inside nothing (Darken made it see-through).
+static void Outline(HDC dc, const RECT& r, COLORREF c, int radius)
+{
+    HPEN pen = CreatePen(PS_SOLID, 2, c);
+    HGDIOBJ op = SelectObject(dc, pen), ob = SelectObject(dc, GetStockObject(NULL_BRUSH));
+    RoundRect(dc, r.left + 1, r.top + 1, r.right, r.bottom, radius * 2, radius * 2);
+    SelectObject(dc, ob);
+    SelectObject(dc, op);
+    DeleteObject(pen);
+}
+
 // Car marker. (cx, cy) - screen point of the view center (vx, vy); angle - map rotation.
 static void DrawGpsMarker(HDC dc, double cx, double cy, double vx, double vy, double angle)
 {
@@ -641,7 +828,7 @@ static void DrawGpsMarker(HDC dc, double cx, double cy, double vx, double vy, do
     int py = (int)floor(cy - dx * rs + dy * rc + 0.5);
 
     bool fresh = s_gps.valid && GetTickCount() - s_gps.fixTick < 5000;
-    HBRUSH brush = CreateSolidBrush(fresh ? RGB(0x20, 0x60, 0xE0) : RGB(140, 140, 140));
+    HBRUSH brush = CreateSolidBrush(fresh ? kOrange : RGB(140, 140, 140));   // VestaHome accent
     HPEN pen = CreatePen(PS_SOLID, 2, RGB(255, 255, 255));
     HGDIOBJ ob = SelectObject(dc, brush);
     HGDIOBJ op = SelectObject(dc, pen);
@@ -820,9 +1007,12 @@ static void RotateCanvas(double angle)
     }
 }
 
-// OSM licence: attribution must be visible on the map, not hidden behind controls.
-static void DrawAttribution(HDC dc, const RECT& mr)
+// OSM licence: attribution must be visible on the map, not hidden behind controls (above the bottom bar
+// while it is up).
+static void DrawAttribution(HDC dc, RECT mr)
 {
+    if (s_dockShown)
+        mr.bottom = kDockY;
     const wchar_t* s = !g_cfg.traffic ? L"© OpenStreetMap contributors"
                      : g_cfg.trafficSrc == TRF_2GIS ? L"© OpenStreetMap contributors, пробки © 2ГИС"
                      : L"© OpenStreetMap contributors, пробки © Яндекс";
@@ -888,7 +1078,7 @@ static void DrawMap(HDC dc)
     double cy = g_cfg.mapY + g_cfg.mapH / 2.0;
     double angle = ViewAngle();
 
-    // the rotation buffer (~540 KB) is kept only while heading-up is on
+    // the rotation buffer (768 KB at 800 x 480) is kept only while heading-up is on
     bool rotate = g_cfg.follow == FOLLOW_HEADING;
     if (rotate && !s_rotatedBits) {
         s_rotatedBits = ImageCreate(g_cfg.mapW, g_cfg.mapH, &s_rotated);
@@ -938,57 +1128,133 @@ static void DrawMap(HDC dc)
     DeleteObject(rgn);
 }
 
-// White rounded button like the image buttons.
-static void DrawCtl(HDC dc, const RECT& r, bool pressed, HFONT font, const wchar_t* caption)
+// A rounded tile in the VestaHome style: fill + 2 px border.
+static void Tile(HDC dc, const RECT& r, COLORREF fill, COLORREF border, int radius)
 {
-    HBRUSH brush = CreateSolidBrush(pressed ? RGB(190, 190, 190) : RGB(255, 255, 255));
+    HBRUSH brush = CreateSolidBrush(fill);
+    HPEN pen = CreatePen(PS_SOLID, 2, border);
     HGDIOBJ ob = SelectObject(dc, brush);
-    HGDIOBJ op = SelectObject(dc, GetStockObject(NULL_PEN));
-    RoundRect(dc, r.left, r.top, r.right, r.bottom, 14, 14);
+    HGDIOBJ op = SelectObject(dc, pen);
+    RoundRect(dc, r.left + 1, r.top + 1, r.right - 1, r.bottom - 1, radius, radius);
     SelectObject(dc, op);
     SelectObject(dc, ob);
+    DeleteObject(pen);
     DeleteObject(brush);
-    Text(dc, font, RGB(90, 90, 90), r.left, r.top, r.right, r.bottom, DT_CENTER, caption);
 }
 
+// Settings controls: a dark tile with a border, pressed = orange with a dark caption.
+static void DrawCtl(HDC dc, const RECT& r, bool pressed, HFONT font, const wchar_t* caption)
+{
+    Tile(dc, r, pressed ? kOrange : kPanel2, pressed ? kOrange : kLine, 20);
+    Text(dc, font, pressed ? kInk : kText, r.left, r.top, r.right, r.bottom, DT_CENTER, caption);
+}
+
+// A row of the settings panel: label, a muted line under it, a separator under the row.
+static void SetRow(HDC dc, int y, const wchar_t* label, const wchar_t* sub, bool sep)
+{
+    Text(dc, s_fontLabel, kText, 36, y + 6, 500, y + 32, DT_LEFT, label);
+    Text(dc, s_fontSmall, kTextDim, 36, y + 32, 500, y + 54, DT_LEFT, sub);
+    if (sep) {
+        RECT l = { 24, y + kSetRowH - 2, s_cw - 24, y + kSetRowH };
+        HBRUSH b = CreateSolidBrush(kLine);
+        FillRect(dc, &l, b);
+        DeleteObject(b);
+    }
+}
+
+// A stepper "< value >" as VestaHome's; prev / next are the S_* zones of its arrows.
+static void Stepper(HDC dc, int prev, int next, const wchar_t* value)
+{
+    const RECT& a = kSetCtl[prev];
+    const RECT& b = kSetCtl[next];
+    RECT box = { a.left, a.top, b.right, b.bottom };
+    Tile(dc, box, kInk, kLine, 20);
+    for (int k = 0; k < 2; k++) {
+        const RECT& z = k ? b : a;
+        bool down = s_setPressed == (k ? next : prev);
+        if (down) {
+            RECT in = { z.left + 3, z.top + 3, z.right - 3, z.bottom - 3 };
+            Tile(dc, in, kOrange, kOrange, 16);
+        }
+        const Overlay* ov = s_arrow[k][down ? 1 : 0];
+        if (ov)
+            BlendSign(dc, ov, (z.left + z.right - ov->w) / 2, (z.top + z.bottom - ov->h) / 2);
+    }
+    Text(dc, s_fontBig, kText, a.right, a.top, b.left, a.bottom, DT_CENTER, value);
+}
+
+// Over the whole screen (the map's bars and buttons are off meanwhile), as VestaHome's settings: a top bar
+// with "back", the clock, one panel with the rows; centred on the 800 px screen.
 static void DrawSettings(HDC dc)
 {
-    RECT mr = { g_cfg.mapX, g_cfg.mapY, g_cfg.mapX + g_cfg.mapW, g_cfg.mapY + g_cfg.mapH };
-    HBRUSH bg = CreateSolidBrush(RGB(32, 36, 44));
-    FillRect(dc, &mr, bg);
-    DeleteObject(bg);
+    RECT all = { 0, 0, s_cw, s_ch }, top = { 0, 0, s_cw, 54 }, topLine = { 0, 54, s_cw, 56 };
+    HBRUSH ink = CreateSolidBrush(kInk), line = CreateSolidBrush(kLine);
+    FillRect(dc, &all, ink);
+    FillRect(dc, &top, ink);
+    FillRect(dc, &topLine, line);
+    DeleteObject(ink);
+    DeleteObject(line);
 
     wchar_t s[128];
-    Text(dc, s_fontBig, kText, 22, 34, 580, 70, DT_LEFT, L"Настройки");
-    Text(dc, s_fontSmall, kText, 22, 75, 170, 125, DT_LEFT, L"Порт GPS");
-    _snwprintf(s, 128, L"COM%d:", s_setPort);
-    Text(dc, s_fontBig, kText, 240, 75, 400, 125, DT_CENTER, s);
-    Text(dc, s_fontSmall, kText, 22, 133, 170, 183, DT_LEFT, L"Скорость");
+    const RECT& back = kSetCtl[S_BACK];
+    bool backDown = s_setPressed == S_BACK;
+    if (backDown)
+        Tile(dc, back, kOrange, kOrange, 24);
+    if (s_arrow[0][backDown ? 1 : 0])
+        BlendSign(dc, s_arrow[0][backDown ? 1 : 0], (back.left + back.right - s_arrow[0][0]->w) / 2,
+                  (back.top + back.bottom - s_arrow[0][0]->h) / 2);
+    Text(dc, s_fontBig, kText, 76, 0, 500, 54, DT_LEFT, L"НАСТРОЙКИ КАРТЫ");
+    SYSTEMTIME t;
+    GetLocalTime(&t);
+    _snwprintf(s, 128, L"%02d:%02d", t.wHour, t.wMinute);
+    Text(dc, s_fontClock, kText, s_cw - 160, 0, s_cw - 14, 54, DT_RIGHT, s);
+
+    RECT panel = { 16, 68, s_cw - 16, s_ch - 12 };
+    Tile(dc, panel, kPanel, kLine, 32);
+
+    // the receiver's state, under "GPS port"
+    COLORREF c = kText;
+    if (!s_gpsRunning)
+        wcscpy(s, L"GPS выключен (gps=0)");
+    else if (s_gps.status == GPS_OPEN)
+        _snwprintf(s, 128, L"открыт · %d спутн.%s", s_gps.sats, s_gps.valid ? L" · фикс" : L"");
+    else if (s_gps.status == GPS_BUSY)
+        wcscpy(s, L"занят другой программой");
+    else if (s_gps.status == GPS_SCANNING)
+        _snwprintf(s, 128, L"поиск: %s %lu ...", s_gps.port, s_gps.baud);
+    else
+        wcscpy(s, L"не открывается");
+    s[127] = 0;
+    SetRow(dc, kSetRow0, L"Порт GPS", s, true);
+    _snwprintf(s, 128, L"COM%d", s_setPort);
+    Stepper(dc, S_PORT_PREV, S_PORT_NEXT, s);
+
+    SetRow(dc, kSetRow0 + kSetRowH, L"Скорость порта", L"или как у оболочки", true);
     if (kSetBauds[s_setBaud])
         _snwprintf(s, 128, L"%lu", kSetBauds[s_setBaud]);
     else
         wcscpy(s, L"не менять");
-    Text(dc, s_fontBig, kText, 240, 133, 400, 183, DT_CENTER, s);
-    Text(dc, s_fontSmall, kText, 22, 191, 170, 241, DT_LEFT, L"Кэш карт");
+    Stepper(dc, S_BAUD_PREV, S_BAUD_NEXT, s);
+
+    if (g_cfg.cacheKb >= 0)
+        _snwprintf(s, 128, L"занято %ld МБ", g_cfg.cacheKb / 1024);
+    else
+        wcscpy(s, L"занято ?");
+    SetRow(dc, kSetRow0 + 2 * kSetRowH, L"Кэш карт", s, true);
     int mb = kSetCacheMb[s_setCache];
     if (mb >= 1000)
         _snwprintf(s, 128, L"%d ГБ", mb / 1000);
     else
         _snwprintf(s, 128, L"%d МБ", mb);
-    Text(dc, s_fontBig, kText, 240, 191, 400, 241, DT_CENTER, s);
-    if (g_cfg.cacheKb >= 0)
-        _snwprintf(s, 128, L"занято %ld МБ", g_cfg.cacheKb / 1024);
-    else
-        wcscpy(s, L"занято ?");
-    Text(dc, s_fontSmall, kTextDim, 470, 191, 598, 241, DT_LEFT, s);
+    Stepper(dc, S_CACHE_PREV, S_CACHE_NEXT, s);
 
-    for (int i = 0; i < S_COUNT; i++)
-        DrawCtl(dc, kSetCtl[i], s_setPressed == i, i < S_APPLY ? s_fontBig : s_fontSmall, kSetCaption[i]);
+    SetRow(dc, kSetRow0 + 3 * kSetRowH, L"Найти GPS", L"перебрать COM1…COM9 и скорости", false);
+    DrawCtl(dc, kSetCtl[S_SCAN], s_setPressed == S_SCAN, s_fontLabel, kSetCaption[S_SCAN]);
+    DrawCtl(dc, kSetCtl[S_EXIT], s_setPressed == S_EXIT, s_fontLabel, kSetCaption[S_EXIT]);
 
     // live state of the receiver
-    COLORREF c = kText;
     if (!s_gpsRunning) {
-        wcscpy(s, L"GPS выключен (gps=0), нажмите Применить");
+        wcscpy(s, L"GPS выключен (gps=0): включится любым шагом порта или скорости");
         c = kTextDim;
     } else {
         switch (s_gps.status) {
@@ -999,41 +1265,53 @@ static void DrawSettings(HDC dc)
         }
     }
     s[127] = 0;
-    Text(dc, s_fontSmall, c, 22, 306, 580, 330, DT_LEFT, s);
+    Text(dc, s_fontSmall, c, 36, 332, 580, 350, DT_LEFT, s);
 
     _snwprintf(s, 128, L"NMEA: %d строк, с ошибкой %d", s_gps.lines, s_gps.badLines);
-    Text(dc, s_fontSmall, s_gps.lines ? kText : kTextDim, 22, 330, 580, 354, DT_LEFT, s);
+    Text(dc, s_fontSmall, s_gps.lines ? kText : kTextDim, 36, 350, 580, 368, DT_LEFT, s);
 
     if (s_gps.valid)
         _snwprintf(s, 128, L"Координаты: %.5f, %.5f  (%d спутн.)", s_gps.lat, s_gps.lon, s_gps.sats);
     else
         _snwprintf(s, 128, L"Координат пока нет (%d спутн.)", s_gps.sats);
     s[127] = 0;
-    Text(dc, s_fontSmall, s_gps.valid ? kText : kTextDim, 22, 354, 580, 378, DT_LEFT, s);
+    Text(dc, s_fontSmall, s_gps.valid ? kText : kTextDim, 36, 368, 580, 386, DT_LEFT, s);
 
     MultiByteToWideChar(CP_ACP, 0, s_gps.last, -1, s, 128);
     s[127] = 0;
-    Text(dc, s_fontSmall, kTextDim, 22, 378, 580, 402, DT_LEFT, s[0] ? s : L"-");
+    Text(dc, s_fontSmall, kTextDim, 36, 386, 580, 404, DT_LEFT, s[0] ? s : L"-");
 
     if (s_gps.found == 1) {
         _snwprintf(s, 128, L"Найден GPS: %s %lu, настройки сохранены", s_gps.port, s_gps.baud);
-        Text(dc, s_fontSmall, RGB(120, 220, 120), 22, 404, 580, 428, DT_LEFT, s);
+        Text(dc, s_fontSmall, RGB(120, 220, 120), 36, 404, 580, 422, DT_LEFT, s);
     } else if (s_gps.found == -1) {
-        Text(dc, s_fontSmall, kTextErr, 22, 404, 580, 428, DT_LEFT, L"GPS не найден на COM1..COM9");
+        Text(dc, s_fontSmall, kTextErr, 36, 404, 580, 422, DT_LEFT, L"GPS не найден на COM1..COM9");
     } else {
-        Text(dc, s_fontSmall, kTextDim, 22, 404, 580, 452, DT_LEFT | DT_WORDBREAK,
+        Text(dc, s_fontSmall, kTextDim, 36, 404, 580, 422, DT_LEFT,
              L"Нет строк - не тот порт. Строки с ошибкой - не та скорость.");
     }
+
+    _snwprintf(s, 128, L"Запросов: Яндекс %d/%d, 2ГИС %d/%d, OSM %d",
+               *Counter(SRC_YANDEX), Limit(SRC_YANDEX), *Counter(SRC_2GIS), Limit(SRC_2GIS), g_cfg.osmCount);
+    s[127] = 0;
+    Text(dc, s_fontSmall, kTextDim, 36, 422, 580, 440, DT_LEFT, s);
 }
 
+// The status bar over the map: GPS on the left, the traffic / network state, a big clock on the right
+// (as the top bar of VestaHome).
 static void DrawStatus(HDC dc)
 {
+    RECT bar = { 0, 0, s_cw, kStatusH - 2 }, line = { 0, kStatusH - 2, s_cw, kStatusH };
+    Darken(dc, bar, 0);   // see-through: the map shows dimmed under it
+    HBRUSH l = CreateSolidBrush(kLine);
+    FillRect(dc, &line, l);
+    DeleteObject(l);
+
     wchar_t s[96];
     SYSTEMTIME t;
     GetLocalTime(&t);
-    _snwprintf(s, 96, L"%s %02d.%02d.%04d  %02d:%02d:%02d", kWeekDays[t.wDayOfWeek % 7],
-               t.wDay, t.wMonth, t.wYear, t.wHour, t.wMinute, t.wSecond);
-    Text(dc, s_fontBig, kText, 10, 0, 330, 28, DT_LEFT, s);
+    _snwprintf(s, 96, L"%02d:%02d", t.wHour, t.wMinute);
+    Text(dc, s_fontClock, kText, s_cw - 160, 0, s_cw - 14, kStatusH - 2, DT_RIGHT, s);
 
     COLORREF gc = kText;
     if (!s_gpsRunning) {
@@ -1057,7 +1335,7 @@ static void DrawStatus(HDC dc)
         _snwprintf(s, 96, L"GPS: %d спутн., %d км/ч", s_gps.sats, (int)(s_gps.speedKmh + 0.5));
     }
     s[95] = 0;
-    Text(dc, s_fontSmall, gc, 330, 0, 560, 28, DT_LEFT, s);
+    Text(dc, s_fontStatus, gc, 14, 0, 320, kStatusH - 2, DT_LEFT, s);
 
     // network state, or the age of the traffic nearest to the car
     COLORREF uc = kText;
@@ -1087,40 +1365,60 @@ static void DrawStatus(HDC dc)
         }
     }
     s[95] = 0;
-    Text(dc, s_fontSmall, uc, 560, 0, 795, 28, DT_RIGHT, s);
-
-    // info block in the right panel
-    _snwprintf(s, 96, L"Масштаб: %d", g_cfg.z);
-    Text(dc, s_fontSmall, kText, 612, 155, 795, 175, DT_LEFT, s);
-    if (g_cfg.traffic) {
-        int src = TrafficSource();
-        _snwprintf(s, 96, L"Пробки: %s", kTrafficTitle[g_cfg.trafficSrc]);
-        Text(dc, s_fontSmall, kText, 612, 175, 795, 195, DT_LEFT, s);
-        _snwprintf(s, 96, L"Запросов: %d из %d", *Counter(src), Limit(src));
-        Text(dc, s_fontSmall, *Counter(src) >= Limit(src) - g_cfg.autoReserve ? kTextErr : kTextDim,
-             612, 195, 795, 215, DT_LEFT, s);
-    } else {
-        Text(dc, s_fontSmall, kTextDim, 612, 175, 795, 195, DT_LEFT, L"Пробки выкл.");
-        _snwprintf(s, 96, L"Плиток OSM: %d", g_cfg.osmCount);
-        Text(dc, s_fontSmall, kTextDim, 612, 195, 795, 215, DT_LEFT, s);
+    if (g_cfg.traffic && uc == kText && !s_inflight) {   // which provider, next to the age
+        wchar_t t2[96];
+        _snwprintf(t2, 96, L"%s · %s", kTrafficTitle[g_cfg.trafficSrc], s);
+        t2[95] = 0;
+        wcscpy(s, t2);
     }
+    Text(dc, s_fontStatus, uc == kText ? kTextDim : uc, 330, 0, s_cw - 170, kStatusH - 2, DT_LEFT, s);
+}
+
+// The sign of a button in the middle of r (a missing picture: the button's name as text).
+static void DrawSign(HDC dc, int b, const RECT& r, int pressed)
+{
+    const Overlay* ov = s_btn[b].ov[ButtonState(b)][pressed];
+    if (ov)
+        BlendSign(dc, ov, (r.left + r.right - ov->w) / 2, (r.top + r.bottom - ov->h) / 2);
+    else
+        Text(dc, s_fontSmall, kText, r.left, r.top, r.right, r.bottom, DT_CENTER, s_btn[b].name[0] + 1);
 }
 
 static void DrawButtons(HDC dc)
 {
+    RECT r;
+    if (s_dockShown && !s_settings) {
+        RECT bar = { 0, kDockY, s_cw, s_ch }, line = { 0, kDockY, s_cw, kDockY + 2 };
+        // the orange part of the line shrinks to the moment the bar goes down
+        DWORD el = GetTickCount() - s_dockTick;
+        RECT left = { 0, kDockY, el >= (DWORD)kDockMs ? 0 : (int)(s_cw * (kDockMs - el) / kDockMs), kDockY + 2 };
+        Darken(dc, bar, 0);
+        HBRUSH l = CreateSolidBrush(kLine), o = CreateSolidBrush(kOrange);
+        FillRect(dc, &line, l);
+        FillRect(dc, &left, o);
+        DeleteObject(l);
+        DeleteObject(o);
+    }
     for (int i = 0; i < B_COUNT; i++) {
-        if (!ButtonVisible(i))
+        if (!ButtonRect(i, &r))
             continue;
-        // the settings button stays highlighted while its screen is open
-        int pressed = ((s_pressed == i && s_pressedInside) || (i == B_SETTINGS && s_settings)) ? 1 : 0;
-        const Image* im = &s_btn[i].img[ButtonState(i)][pressed];
-        if (im->bmp) {
-            Blit(dc, im, s_btn[i].x, s_btn[i].y);
-        } else {
-            RECT r = { s_btn[i].x, s_btn[i].y, s_btn[i].x + kBtnSize, s_btn[i].y + kBtnSize };
-            FillRect(dc, &r, (HBRUSH)GetStockObject(pressed ? GRAY_BRUSH : DKGRAY_BRUSH));
-            Text(dc, s_fontSmall, kText, r.left, r.top, r.right, r.bottom, DT_CENTER, s_btn[i].name[0] + 1);
+        int pressed = s_pressed == i && s_pressedInside ? 1 : 0;
+        if (i == B_GPS || i == B_MINUS || i == B_PLUS) {   // a see-through tile over the map
+            if (pressed) {
+                Tile(dc, r, kOrange, kOrange, 24);
+            } else {
+                Darken(dc, r, 12);
+                Outline(dc, r, kLine, 12);
+            }
+            DrawSign(dc, i, r, pressed);
+            continue;
         }
+        // a slot of the bottom bar: only the sign (a mode that is on: the orange one), pressed = orange tile
+        if (pressed) {
+            RECT p = { r.left + 6, r.top + 2, r.right - 6, r.bottom - 2 };
+            Tile(dc, p, kOrange, kOrange, 24);
+        }
+        DrawSign(dc, i, r, pressed);
     }
 }
 
@@ -1139,10 +1437,12 @@ static void Paint(HDC hdc)
         FillRect(dc, &r, (HBRUSH)GetStockObject(BLACK_BRUSH));
     }
     DrawMap(dc);
-    if (s_settings)
+    if (s_settings) {
         DrawSettings(dc);
-    DrawButtons(dc);
-    DrawStatus(dc);
+    } else {
+        DrawStatus(dc);
+        DrawButtons(dc);
+    }
 
     BitBlt(hdc, 0, 0, s_cw, s_ch, dc, 0, 0, SRCCOPY);
     SelectObject(dc, oldFont);
@@ -1203,6 +1503,14 @@ static void OnCreate(HWND hwnd)
     s_fontBig = MakeFont(22, FW_SEMIBOLD);
     s_fontSmall = MakeFont(15, FW_NORMAL);
     s_fontTiny = MakeFont(12, FW_NORMAL);
+    s_fontStatus = MakeFont(17, FW_NORMAL);
+    s_fontClock = MakeFont(30, FW_BOLD);
+    s_fontLabel = MakeFont(19, FW_BOLD);
+    // the map takes the whole screen (map_x/y/w/h of the ini are YaMapsCE's: its pictures are 600 x 450)
+    g_cfg.mapX = 0;
+    g_cfg.mapY = 0;
+    g_cfg.mapW = s_cw;
+    g_cfg.mapH = s_ch;
     LoadImages();
     s_canvasBits = ImageCreate(kCanvas, kCanvas, &s_canvas);
     CacheInit();
@@ -1282,6 +1590,12 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             }
             if (GetTickCount() - s_statTick >= 60000)
                 LogStat();
+            if (s_dockShown) {   // the bar's line shrinks every second; it goes down after kDockMs
+                if (s_pressed < 0 && GetTickCount() - s_dockTick >= (DWORD)kDockMs)
+                    s_dockShown = false;
+                InvalidateRect(hwnd, NULL, FALSE);
+                return 0;
+            }
             // the clock needs a frame a second; GPS updates may have drawn one already
             if (GetTickCount() - s_lastPaintTick < 900)
                 return 0;
@@ -1363,8 +1677,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             s_dragging = false;
             if (s_dragMoved) {
                 UserChanged();
-            } else {
-                Ensure(REQ_FORCE);   // tap on the map = refresh now
+            } else {   // a tap on the map raises (and refreshes the traffic) / lowers the bottom bar
+                DockShow(!s_dockShown);
+                if (s_dockShown)
+                    Ensure(REQ_FORCE);
             }
         }
         InvalidateRect(hwnd, NULL, FALSE);
@@ -1404,7 +1720,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int)
 
     // single instance: bring the running copy to front
     HWND prev = FindWindow(APP_CLASS, NULL);
-    if (prev) {
+    if (prev) {   // it may be behind another window or at the bottom (OSMapsCE's "home"): to the top
+        ShowWindow(prev, SW_SHOW);
+        SetWindowPos(prev, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
         SetForegroundWindow(prev);
         return 0;
     }

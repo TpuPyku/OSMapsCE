@@ -11,6 +11,7 @@ from PIL import Image, ImageDraw
 
 TOP, BOTTOM = (126, 196, 104), (52, 138, 62)   # background gradient: green for OSMapsCE
 SIZES = (16, 32, 48, 64)
+PANEL = (0x17, 0x19, 0x1c)                    # tile colour of VestaHome/VestaLaunch: edges blend into it
 S = 512                                       # drawing canvas, downscaled for every size
 
 
@@ -51,7 +52,11 @@ def entry(img, n):
     for y in range(n - 1, -1, -1):            # bottom-up
         for x in range(n):
             r, g, b, a = px[x, y]
-            xor += bytes((b, g, r, a))
+            if a < 128:                       # cut out by the AND mask: XOR must be 0, or CE (which ignores
+                xor += bytes((0, 0, 0, 0))    # the alpha) XORs the colour into the screen - dirty corners
+            else:                             # no half-transparent edge: blended over the tiles' colour
+                xor += bytes(int(c * a / 255 + p * (255 - a) / 255 + 0.5) for c, p in ((b, PANEL[2]),
+                             (g, PANEL[1]), (r, PANEL[0]))) + bytes((255,))
     stride = ((n + 31) // 32) * 4
     andm = bytearray()
     for y in range(n - 1, -1, -1):

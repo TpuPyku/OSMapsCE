@@ -143,13 +143,63 @@ static int SockWrite(void* ctx, const unsigned char* buf, size_t len)
     return n > 0 ? n : -1;
 }
 
-static int Connect(const char* host, int port, SOCKET* out)
+// Resolved addresses are kept, as in YaMapsCE: the traffic servers close the connection after every picture,
+// so a lookup per request made every hiccup of the unit's DNS (through the phone) an error - "no network
+// (DNS)" again and again, with lookups of 1.5-11 s. A host is resolved once and again after kDnsTtlMs or a
+// failed connect; when the lookup fails, its last address is used.
+static const DWORD kDnsTtlMs = 30 * 60 * 1000;
+struct DnsEntry { char host[64]; unsigned long addr; DWORD tick; bool fresh; };
+static DnsEntry s_dns[8];
+
+static int Resolve(const char* host, unsigned long* addr)
 {
+    DnsEntry* e = NULL;
+    for (int i = 0; i < 8 && !e; i++)
+        if (!strcmp(s_dns[i].host, host))
+            e = &s_dns[i];
+    if (e && e->fresh && GetTickCount() - e->tick < kDnsTtlMs) {
+        *addr = e->addr;
+        return NET_OK;
+    }
     hostent* he = gethostbyname(host);
     if (!he) {
+        if (e) {
+            Log("http: gethostbyname(%s) failed (%d), using the last address", host, WSAGetLastError());
+            *addr = e->addr;
+            return NET_OK;
+        }
         Log("http: gethostbyname(%s) failed (%d)", host, WSAGetLastError());
         return NET_DNS;
     }
+    if (!e) {   // a free slot, or the oldest one
+        e = &s_dns[0];
+        for (int i = 1; i < 8; i++)
+            if (!s_dns[i].host[0] || (e->host[0] && s_dns[i].tick < e->tick))
+                e = &s_dns[i];
+        strncpy(e->host, host, sizeof(e->host) - 1);
+        e->host[sizeof(e->host) - 1] = 0;
+    }
+    memcpy(&e->addr, he->h_addr_list[0], 4);
+    e->tick = GetTickCount();
+    e->fresh = true;
+    *addr = e->addr;
+    return NET_OK;
+}
+
+// The address didn't answer: look the host up again next time (its address is still the fallback).
+static void ResolveAgain(const char* host)
+{
+    for (int i = 0; i < 8; i++)
+        if (!strcmp(s_dns[i].host, host))
+            s_dns[i].fresh = false;
+}
+
+static int Connect(const char* host, int port, SOCKET* out)
+{
+    unsigned long addr;
+    int dns = Resolve(host, &addr);
+    if (dns != NET_OK)
+        return dns;
     SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (s == INVALID_SOCKET)
         return NET_CONNECT;
@@ -157,13 +207,14 @@ static int Connect(const char* host, int port, SOCKET* out)
     memset(&sa, 0, sizeof(sa));
     sa.sin_family = AF_INET;
     sa.sin_port = htons((u_short)port);
-    memcpy(&sa.sin_addr, he->h_addr_list[0], 4);
+    sa.sin_addr.s_addr = addr;
     u_long nb = 1;
     ioctlsocket(s, FIONBIO, &nb);
     if ((connect(s, (sockaddr*)&sa, sizeof(sa)) != 0 && WSAGetLastError() != WSAEWOULDBLOCK) ||
         !WaitSocket(s, true, kConnectTimeoutSec)) {
         Log("http: connect to %s:%d failed (%d)", host, port, WSAGetLastError());
         closesocket(s);
+        ResolveAgain(host);
         return NET_CONNECT;
     }
     nb = 0;
