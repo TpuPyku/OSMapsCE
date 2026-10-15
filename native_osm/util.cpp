@@ -40,11 +40,17 @@ bool ReadWholeFile(const wchar_t* path, unsigned char** data, int* len)
 static HANDLE           s_log = INVALID_HANDLE_VALUE;
 static CRITICAL_SECTION s_logCs;
 
+static wchar_t s_logDir[MAX_PATH];   // VestaCore LogDir: the SD card / USB disk only
+
 void LogInit()
 {
     InitializeCriticalSection(&s_logCs);
+    // on the unit the log goes only to removable media (VestaLogs on the SD card / USB disk), never the built-in
+    // flash; without a card or a disk at start there is no log
+    if (!LogDir(s_logDir, g_dir))
+        return;
     wchar_t path[MAX_PATH];
-    PathInDir(path, kLogName);
+    _snwprintf(path, MAX_PATH, L"%s%s", s_logDir, kLogName);
     // append: after a power loss the previous session is still there to look at
     s_log = CreateFile(path, GENERIC_WRITE, FILE_SHARE_READ, NULL, OPEN_ALWAYS, 0, NULL);
     if (s_log != INVALID_HANDLE_VALUE)
@@ -55,8 +61,8 @@ void LogInit()
 static void RotateLog()
 {
     wchar_t path[MAX_PATH], old[MAX_PATH];
-    PathInDir(path, kLogName);
-    PathInDir(old, kLogOldName);
+    _snwprintf(path, MAX_PATH, L"%s%s", s_logDir, kLogName);
+    _snwprintf(old, MAX_PATH, L"%s%s", s_logDir, kLogOldName);
     CloseHandle(s_log);
     DeleteFile(old);
     MoveFile(path, old);

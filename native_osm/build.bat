@@ -12,11 +12,13 @@ set SRC=main.cpp net.cpp http.cpp cache.cpp image.cpp util.cpp
 set OUT=..\OSMapsCE
 set BR=%~dp0..\third_party\bearssl-0.6
 set COMPAT=%~dp0..\third_party\compat
-rem VestaCore (GPS shared with VestaHome): the submodule core\ of this repo, else the sibling repo
-set CORE=%~dp0..\core
-if not exist "%CORE%\vgps.cpp" set CORE=%~dp0..\..\VestaCore
+rem VestaCore (shared with VestaHome): a working copy of the VestaCore repo next to this repo if there is one
+rem (development: its latest code), otherwise the submodule core\ (a clone from GitHub)
+set CORE=%~dp0..\..\VestaCore
+if not exist "%CORE%\vgps.cpp" set CORE=%~dp0..\core
 if not exist "%CORE%\vgps.cpp" goto nocore
-set SRC=%SRC% "%CORE%\vgps.cpp"
+echo === VestaCore: %CORE%
+set SRC=%SRC% "%CORE%\vgps.cpp" "%CORE%\vlogdir.cpp"
 
 cd /d "%~dp0"
 if not exist obj\bearssl_arm.lib goto nobearssl
