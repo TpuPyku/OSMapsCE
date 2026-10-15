@@ -87,6 +87,10 @@
 ## Сборка из исходников
 Исходники в [native_osm](native_osm) (C++, Win32 API). Нужна Visual Studio 2005 Professional с поддержкой Smart Device и SDK Pocket PC 2003.
 
+GPS — общий модуль [VestaCore](https://github.com/TpuPyku/VestaCore) (`vgps`), подключён подмодулем в папку `core`:
+после клонирования `git submodule update --init`. С ним OSMapsCE и VestaHome на ГУ делят один порт GPS:
+читает порт та программа, что запущена первой, вторая берёт данные у неё через общую память.
+
 Сторонние библиотеки:
 - [BearSSL](https://bearssl.org) 0.6 (MIT) в `third_party/bearssl-0.6` — HTTPS;
 - [stb_image](https://github.com/nothings/stb) (public domain) — PNG/JPEG.

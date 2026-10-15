@@ -148,26 +148,5 @@ int         CacheList(CacheEntry** out, int max);
 int         CacheBytes();                 // decoded images in memory now, for the log
 bool        SameKey(const MapRequest& a, const MapRequest& b);
 
-// gps.cpp
-enum { GPS_NO_PORT = 0, GPS_BUSY, GPS_OPEN, GPS_SCANNING };
-struct GpsState {
-    int    status;          // GPS_*
-    wchar_t port[16];       // port being used / probed
-    DWORD  baud;
-    int    lines, badLines; // NMEA sentences with good / bad checksum since (re)configure
-    char   last[84];        // last good sentence, for the settings screen
-    int    found;           // scan result: 1 found, -1 nothing, 0 no scan
-    int    valid;           // last RMC had status 'A'
-    double lon, lat;
-    double speedKmh, course;
-    int    sats;
-    DWORD  fixTick;         // GetTickCount() of last valid fix
-    DWORD  dataTick;        // GetTickCount() of last NMEA sentence
-    int    date;            // yyyymmdd from RMC, 0 = unknown
-    DWORD  bytes;           // read from the port since start, for the log
-};
-void GpsStart(HWND notify);
-void GpsStop();
-void GpsGet(GpsState* s);
-void GpsConfigure(const wchar_t* port, DWORD baud);   // reopen with new settings
-void GpsScan();                                       // look for NMEA on COM1..COM9
+// GPS: VestaCore (core/vgps.h) - the port shared with VestaHome through shared memory
+#include "vgps.h"

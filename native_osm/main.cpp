@@ -453,12 +453,29 @@ static void SettingsLoad()
             s_setCache = i;
 }
 
+static void GpsLogLine(const char* line)
+{
+    Log("%s", line);
+}
+
+// VestaCore GPS: reads the port, or follows VestaHome when that one reads it already (shared memory).
 static void EnsureGpsRunning()
 {
     if (s_gpsRunning)
         return;
     g_cfg.gpsEnabled = 1;
-    GpsStart(s_wnd);
+    GpsConfig c;
+    memset(&c, 0, sizeof(c));
+    c.notify = s_wnd;
+    c.msg = WM_APP_GPS;
+    c.port = g_cfg.gpsPort;
+    c.baud = (DWORD)g_cfg.gpsBaud;
+    c.app = L"OSMapsCE";
+    c.killExe = g_cfg.killProcess;
+    c.kill = KillProcess;
+    c.log = GpsLogLine;
+    c.exeDir = g_dir;
+    GpsStart(&c);
     s_gpsRunning = true;
 }
 
