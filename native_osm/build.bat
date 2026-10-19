@@ -18,7 +18,7 @@ set CORE=%~dp0..\..\VestaCore
 if not exist "%CORE%\vgps.cpp" set CORE=%~dp0..\core
 if not exist "%CORE%\vgps.cpp" goto nocore
 echo === VestaCore: %CORE%
-set SRC=%SRC% "%CORE%\vgps.cpp" "%CORE%\vlogdir.cpp"
+set SRC=%SRC% "%CORE%\vgps.cpp" "%CORE%\vlogdir.cpp" "%CORE%\vnight.cpp"
 
 cd /d "%~dp0"
 if not exist obj\bearssl_arm.lib goto nobearssl

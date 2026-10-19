@@ -58,8 +58,43 @@ def arrow(d, c, ang, cx=25, cy=25, filled=True):    # navigation arrow pointing 
         line(d, c, q + [q[0]], 2.6)
 
 
+# VestaHome's icons (home.cpp PaintIcon): a 48-unit grid drawn 30 px, stroke 3.5 units; here inside the 44 px
+# dock picture (this canvas: 50 units), centred - the same shapes and sizes as VestaHome's bottom bar
+VH_O, VH_K = 7 * 50.0 / 44, 30.0 / 48 * 50 / 44
+VH_W = 3.5 * VH_K
+
+
+def vh(x, y):
+    return (VH_O + x * VH_K, VH_O + y * VH_K)
+
+
+def vh_arc(cx, cy, rad, a0, a1, n=24):
+    return [vh(cx + rad * math.cos(math.radians(a0 + (a1 - a0) * i / n)),
+               cy + rad * math.sin(math.radians(a0 + (a1 - a0) * i / n))) for i in range(n + 1)]
+
+
 def sign(d, name, c, bg):
-    if name == 'plus':
+    if name == 'vh_home':
+        line(d, c, [vh(6, 23), vh(24, 7), vh(42, 23)], VH_W)
+        line(d, c, [vh(11, 19), vh(11, 41), vh(37, 41), vh(37, 19)], VH_W)
+    elif name == 'vh_set':
+        pts = []
+        for i in range(8):
+            for da, rad in ((-15, 14), (-9, 20), (9, 20), (15, 14)):
+                a = math.radians(i * 45 + da)
+                pts.append(vh(24 + rad * math.cos(a), 24 + rad * math.sin(a)))
+        line(d, c, pts + [pts[0]], VH_W)
+        line(d, c, vh_arc(24, 24, 6, 0, 360), VH_W)
+    elif name == 'vh_sun':
+        line(d, c, vh_arc(24, 24, 8, 0, 360), VH_W)
+        for a, b in (((24, 4), (24, 10)), ((24, 38), (24, 44)), ((4, 24), (10, 24)), ((38, 24), (44, 24)),
+                     ((10, 10), (13.5, 13.5)), ((34.5, 34.5), (38, 38)), ((10, 38), (13.5, 34.5)),
+                     ((34.5, 13.5), (38, 10))):
+            line(d, c, [vh(*a), vh(*b)], VH_W)
+    elif name == 'vh_night':
+        line(d, c, vh_arc(24, 24, 16, 8.6, 261.4), VH_W)
+        line(d, c, vh_arc(32, 16, 13, 53, 217), VH_W)
+    elif name == 'plus':
         bar(d, c, 15, 25, 35, 25)
         bar(d, c, 25, 15, 25, 35)
     elif name == 'minus':
@@ -70,14 +105,16 @@ def sign(d, name, c, bg):
         rot = lambda x, y: (25 + x * math.cos(r) - y * math.sin(r), 25 + x * math.sin(r) + y * math.cos(r))
         line(d, c, [rot(0, 11), rot(0, -10)])
         line(d, c, [rot(-8, -2), rot(0, -10), rot(8, -2)])
-    elif name == 'set':                       # gear: ring with 8 teeth and a hole
-        cx = cy = 25 * K
+    elif name == 'set':                       # gear as VestaHome's IC_GEAR: an outlined cog, 8 teeth, a hole
+        s = 0.62                              # VestaHome's 48-unit icon -> this button
+        pts = []
         for i in range(8):
-            a = math.radians(i * 45)
-            x, y = cx + math.cos(a) * 11.5 * K, cy + math.sin(a) * 11.5 * K
-            d.ellipse([x - 3.4 * K, y - 3.4 * K, x + 3.4 * K, y + 3.4 * K], fill=c)
-        d.ellipse([cx - 11 * K, cy - 11 * K, cx + 11 * K, cy + 11 * K], fill=c)
-        d.ellipse([cx - 4.6 * K, cy - 4.6 * K, cx + 4.6 * K, cy + 4.6 * K], fill=bg)
+            for da, r in ((-15, 14), (-9, 20), (9, 20), (15, 14)):
+                a = math.radians(i * 45 + da)
+                pts.append((25 + r * s * math.cos(a), 25 + r * s * math.sin(a)))
+        line(d, c, pts + [pts[0]], 2.6)
+        r = 6 * s * K
+        d.ellipse([25 * K - r, 25 * K - r, 25 * K + r, 25 * K + r], outline=c, width=int(2.6 * K))
     elif name == 'home':                      # a house, as VestaHome's home
         line(d, c, [(12, 26), (25, 13), (38, 26)])
         line(d, c, [(17, 22), (17, 37), (33, 37), (33, 22)])
@@ -87,10 +124,23 @@ def sign(d, name, c, bg):
     elif name == 'night':                     # crescent
         d.ellipse([13 * K, 13 * K, 37 * K, 37 * K], fill=c)
         d.ellipse([20 * K, 8 * K, 42 * K, 30 * K], fill=bg)
-    elif name == 'trf':                       # traffic light
-        d.rounded_rectangle([17 * K, 10 * K, 33 * K, 40 * K], radius=6 * K, outline=c, width=int(2.8 * K))
-        for y in (17, 25, 33):
-            d.ellipse([22 * K, (y - 3) * K, 28 * K, (y + 3) * K], fill=c)
+    elif name == 'trf':                       # traffic: two cars one behind the other, seen from the front
+        def car(cx, top, s, cover):           # a car's front: windscreen on the body, lights, wheels
+            body = [(cx - 13 * s, top + 8 * s), (cx + 13 * s, top + 8 * s), (cx + 13 * s, top + 17 * s),
+                    (cx - 13 * s, top + 17 * s)]
+            roof = [(cx - 13 * s, top + 8 * s), (cx - 9 * s, top), (cx + 9 * s, top), (cx + 13 * s, top + 8 * s)]
+            if cover:                         # the front car hides the one behind it
+                d.polygon(P(*(roof + body[2:])), fill=bg)
+                d.rectangle([(cx - 15 * s) * K, (top + 17 * s) * K, (cx + 15 * s) * K, (top + 21 * s) * K], fill=bg)
+            line(d, c, roof, 2.6 * s)
+            line(d, c, body + [body[0]], 2.6 * s)
+            for x in (cx - 8 * s, cx + 8 * s):
+                r = 2.1 * s
+                d.ellipse([(x - r) * K, (top + 12.5 * s - r) * K, (x + r) * K, (top + 12.5 * s + r) * K], fill=c)
+            for x in (cx - 10 * s, cx + 10 * s):
+                bar(d, c, x - 1.6 * s, top + 19.5 * s, x + 1.6 * s, top + 19.5 * s, 2.6 * s)
+        car(31, 9, 0.72, False)
+        car(21, 20, 1.0, True)
     elif name == 'layers':                    # two stacked sheets
         for dy, fill in ((6, False), (0, True)):
             q = [(25, 12 + dy), (38, 20 + dy), (25, 28 + dy), (12, 20 + dy)]
@@ -135,16 +185,17 @@ def background():
 # darkens the map under them and draws their borders): the pictures are only the signs, with alpha, blended by
 # hand. _N: the sign in its colour (a mode that is on: orange), _P: dark, for the orange fill of a press.
 SIGNS = [('Bplus', 'plus', False), ('Bminus', 'minus', False), ('Bgps_on', 'gps_on', True),
-         ('Bgps_off', 'gps_off', False), ('Bgps_none', 'gps_none', False),
-         ('Bhome', 'home', False), ('Bset', 'set', False), ('Bnight_on', 'night', True),
-         ('Bnight_off', 'night', False), ('Btrf_on', 'trf', True), ('Btrf_off', 'trf', False),
-         ('Btsrc_ya', 'tsrc_ya', False), ('Btsrc_2g', 'tsrc_2g', False)]
+         ('Bgps_off', 'gps_off', False), ('Bgps_none', 'gps_none', False)]           # the tiles over the map
+DOCK = [('Bhome', 'vh_home', False), ('Bset', 'vh_set', False), ('Bnight_on', 'vh_sun', False),
+        ('Bnight_off', 'vh_night', False), ('Btrf_on', 'trf', True), ('Btrf_off', 'trf', False),
+        ('Btsrc_ya', 'tsrc_ya', False), ('Btsrc_2g', 'tsrc_2g', False)]   # the bottom bar: smaller, a caption under
 SMALL = [('Sleft', 'left', False), ('Sright', 'right', False)]   # settings: back, the steppers' arrows
-SIGN_SIZE, SMALL_SIZE = 48, 32
+SIGN_SIZE, DOCK_SIZE, SMALL_SIZE = 48, 44, 32   # the bar's signs as large as VestaHome's (30 px of 48 units)
 
 
-def sign_image(sg, on, pressed, size):
-    c = INK if pressed else ORANGE if on else MUTED if sg == 'gps_none' else TEXT
+def sign_image(sg, on, pressed, size, dock=False):
+    # the bottom bar's signs in VestaHome's colours: muted, a mode that is on orange
+    c = INK if pressed else ORANGE if on else MUTED if sg == 'gps_none' or dock else TEXT
     im = Image.new('RGBA', (B * K, B * K), (0, 0, 0, 0))
     sign(ImageDraw.Draw(im), sg, c + (255,), (0, 0, 0, 0))   # cut-outs (gear hole, crescent) see-through
     return im.resize((size, size), Image.LANCZOS)
@@ -156,10 +207,10 @@ def main():
     if APP == 'OSMapsCE':
         Image.new('RGB', (800, 480), INK).save(os.path.join(out, 'MapGL.png'))   # covered by the map
         n = 1
-        for group, size in ((SIGNS, SIGN_SIZE), (SMALL, SMALL_SIZE)):
+        for group, size in ((SIGNS, SIGN_SIZE), (DOCK, DOCK_SIZE), (SMALL, SMALL_SIZE)):
             for name, sg, on in group:
                 for pressed in (False, True):
-                    sign_image(sg, on, pressed, size).save(
+                    sign_image(sg, on, pressed, size, group is DOCK).save(
                         os.path.join(out, '%s_%s.png' % (name, 'P' if pressed else 'N')))
                     n += 1
         for old in ('Bexit_N.png', 'Bexit_P.png'):   # exit moved to the settings screen

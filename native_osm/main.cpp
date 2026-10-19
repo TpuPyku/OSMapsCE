@@ -12,7 +12,8 @@
 enum { B_SETTINGS, B_NIGHT, B_EXIT, B_TRF, B_TSRC, B_GPS, B_LEFT, B_RIGHT, B_UP, B_DOWN, B_MINUS, B_PLUS,
        B_HOME, B_COUNT };
 
-enum { kTile = 72, kSign = 48, kStatusH = 44, kDockY = 404, kDockMs = 6000 };
+enum { kTile = 72, kSign = 48, kStatusH = 44, kDockY = 404, kDockMs = 6000, kDockH = 76, kDockStep = 16,
+       kDockAnimMs = 30 };   // the bar slides in / out by kDockStep px every kDockAnimMs
 
 struct Button {
     int            x, y;      // tiles over the map; the bottom bar's slots are laid out in ButtonRect
@@ -53,7 +54,7 @@ static const COLORREF kPanel2  = RGB(0x22, 0x25, 0x2a);   // settings controls
 static const COLORREF kLine    = RGB(0x34, 0x38, 0x3f);   // 2 px borders
 static const COLORREF kOrange  = RGB(0xff, 0x6b, 0x1a);   // the one accent: pressed / on
 
-enum { TIMER_TICK = 1, TIMER_USER = 2 };
+enum { TIMER_TICK = 1, TIMER_USER = 2, TIMER_DOCK = 3 };
 static const UINT kUserDelayMs = 900;    // wait for the user to stop pressing buttons
 
 // GPS button modes (g_cfg.follow)
@@ -61,7 +62,6 @@ enum { FOLLOW_OFF, FOLLOW_NORTH, FOLLOW_HEADING };
 static const double kCarAhead        = 0.25; // heading-up: view center this part of map height ahead of the car
                                              // (0.25 of 480: the car stays above the bottom bar)
 static const double kHeadingMinSpeed = 5;    // km/h: below it the course is noise, keep the last heading
-static const int    kCanvas          = 960;  // unrotated canvas >= map diagonal (800x480: 933)
 static const int    kMaxKeys         = 32;   // tiles one view can need from one source
 static const int    kMaxParentLevels = 6;    // missing tile: show a coarser cached one, up to 6 levels up
 
@@ -98,8 +98,10 @@ static unsigned short* s_backBits;
 static unsigned short* s_nightLut;      // RGB565 -> night color, only while night is on
 static int        s_cw, s_ch;
 static Image      s_bg;
-static HFONT      s_fontBig, s_fontSmall, s_fontTiny, s_fontStatus, s_fontClock, s_fontLabel;
+static HFONT      s_fontBig, s_fontSmall, s_fontTiny, s_fontStatus, s_fontClock, s_fontLabel, s_fontCap;
 static bool       s_dockShown;          // the bottom bar is up
+static int        s_dockOff;            // how far it is pushed down while sliding (0 = all up, kDockH = gone)
+static int        s_dockDir;            // sliding: -1 in, +1 out, 0 still
 static DWORD      s_dockTick;           // last touch of it: it goes down kDockMs later
 
 static bool       s_inflight;
@@ -111,8 +113,7 @@ static KeyRing    s_missKeys;           // keys not found on disk
 static KeyRing    s_noParentKeys;       // keys with no coarser tile on disk either
 static bool       s_userPending;        // user is still pressing buttons (TIMER_USER running)
 static double     s_heading;            // heading-up: map rotation, degrees
-static Image      s_canvas, s_rotated;  // drawing buffers; s_rotated only while heading-up
-static unsigned short* s_canvasBits;
+static Image      s_rotated;            // the turned map frame, only while heading-up (the ring: below)
 static unsigned short* s_rotatedBits;
 static DWORD      s_lastSaveTick;
 static DWORD      s_lastPaintTick;
@@ -598,6 +599,18 @@ static void GoHome()
     SetWindowPos(s_wnd, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 }
 
+// The night mode on / off (the map's filter, the settings); NightShare is the caller's (a tap, not VestaHome's change).
+static void NightSet(bool night)
+{
+    g_cfg.night = night;
+    if (!night) {
+        free(s_nightLut);
+        s_nightLut = NULL;
+    }
+    ConfigSave();
+    InvalidateRect(s_wnd, NULL, FALSE);
+}
+
 static void OnButton(int b)
 {
     s_dockTick = GetTickCount();   // a touch of the bottom bar keeps it up
@@ -614,13 +627,8 @@ static void OnButton(int b)
         InvalidateRect(s_wnd, NULL, FALSE);
         return;
     case B_NIGHT:
-        g_cfg.night = !g_cfg.night;
-        if (!g_cfg.night) {
-            free(s_nightLut);
-            s_nightLut = NULL;
-        }
-        ConfigSave();
-        InvalidateRect(s_wnd, NULL, FALSE);
+        NightSet(!g_cfg.night);
+        NightShare(g_cfg.night != 0);   // VestaHome follows (VestaCore vnight)
         return;
     case B_EXIT:   DestroyWindow(s_wnd); return;
     case B_TRF:    g_cfg.traffic = !g_cfg.traffic; break;
@@ -657,18 +665,14 @@ static bool ButtonRect(int b, RECT* r)
     }
     if (!s_dockShown)
         return false;
-    int n = 0, slot = -1;
-    for (int i = 0; i < kDockCount; i++) {
-        if (kDockOrder[i] == B_TSRC && !g_cfg.traffic)
-            continue;
-        if (kDockOrder[i] == b)
-            slot = n;
-        n++;
-    }
-    if (slot < 0)
+    // VestaHome's bottom bar has 7 places (x 8 + i * 112, 104 wide, 58 high at 8 px under the bar's top): each
+    // button where its counterpart is - home = "Главная", traffic = "Радио", its source = "Медиа",
+    // settings = "Настройки", night = "Ночь" (the user's wish 2026-10-18: the same places, not stretched)
+    int slot = b == B_HOME ? 0 : b == B_TRF ? 1 : b == B_TSRC ? 2 : b == B_SETTINGS ? 5 : b == B_NIGHT ? 6 : -1;
+    if (slot < 0 || (b == B_TSRC && !g_cfg.traffic))
         return false;
-    int w = (s_cw - 16) / n;
-    SetRect(r, 8 + slot * w, kDockY + 4, 8 + (slot + 1) * w, s_ch - 4);
+    int top = kDockY + 12 + s_dockOff;
+    SetRect(r, 8 + slot * 112, top, 8 + slot * 112 + 104, top + 58);
     return true;
 }
 
@@ -681,10 +685,36 @@ static int HitButton(int x, int y)
     return -1;
 }
 
+// The bar slides up from the bottom edge and back down (TIMER_DOCK); it counts as up while it slides in.
+static bool DockUp()
+{
+    return s_dockShown && s_dockDir <= 0;
+}
+
 static void DockShow(bool show)
 {
-    s_dockShown = show;
     s_dockTick = GetTickCount();
+    if (show == DockUp())
+        return;
+    if (show && !s_dockShown) {
+        s_dockOff = kDockH;
+        s_dockShown = true;
+    }
+    s_dockDir = show ? -1 : 1;
+    SetTimer(s_wnd, TIMER_DOCK, kDockAnimMs, NULL);
+}
+
+static void DockStep()
+{
+    s_dockOff += s_dockDir * kDockStep;
+    if (s_dockOff <= 0 || s_dockOff >= kDockH || !s_dockDir) {
+        if (s_dockOff >= kDockH)
+            s_dockShown = false;   // all the way down: gone
+        s_dockOff = 0;
+        s_dockDir = 0;
+        KillTimer(s_wnd, TIMER_DOCK);
+    }
+    InvalidateRect(s_wnd, NULL, FALSE);
 }
 
 static bool InMap(int x, int y)
@@ -876,185 +906,44 @@ static int Round(double v)
     return (int)floor(v + 0.5);
 }
 
-// Base map on the canvas (view center in its middle): OSM tiles in memory, other zoom
-// levels scaled, the farthest levels first so the view's own zoom ends up on top.
-static int DrawBase(HDC dc, double vx, double vy)
+// ---- the map: a ring of tiles. The ring canvas is kRing x kRing tiles of the view's zoom; tile (x, y) always
+// has its own place, (x mod kRing, y mod kRing), so a world pixel (wx, wy) is the canvas pixel
+// (wx mod kRingPx, wy mod kRingPx) and the view moving copies nothing. A slot is drawn only when a tile comes
+// into it or what it shows changes: the exact tile instead of a coarser one, new traffic, night, zoom (the
+// slot's signature). 5 tiles: any rotation of 800 x 480 fits a circle of 933 px, plus the 256 px the view
+// center moves within its tile. Traffic and night are put into the slot once, not on every frame; a frame is
+// then only the rotation (heading-up, and only when the view, the angle or a slot changed) or 1-4 blits.
+static const int kRing = 5, kRingPx = kRing * TILE;   // 1280 x 1280, 3.2 MB
+static Image     s_ring;
+static unsigned short* s_ringBits;
+struct RingSlot { int x, y; DWORD sig; bool used; };
+static RingSlot  s_slot[kRing][kRing];
+static DWORD     s_ringStamp;         // grows when a slot was drawn: the rotated frame is out of date
+static DWORD     s_rotStamp = 0xFFFFFFFF;
+static double    s_rotVx, s_rotVy, s_rotAngle;
+static int       s_statSlots;         // slots drawn since the last stat line
+
+static int Mod(int a, int m)
 {
-    // every tile of the view is here: other levels would be hidden under them, skip them
-    MapRequest keys[kMaxKeys];
-    int nk = NeededKeys(SRC_OSM, keys, kMaxKeys);
-    bool full = true;
-    for (int i = 0; i < nk && full; i++)
-        full = CacheFind(keys[i], false) != NULL;
-    int maxDz = full ? 0 : kMaxParentLevels;
-
-    CacheEntry* list[CACHE_MEM];
-    int n = CacheList(list, CACHE_MEM), m = 0;
-    for (int i = 0; i < n; i++)
-        if (list[i]->req.src == SRC_OSM && abs(list[i]->req.z - g_cfg.z) <= maxDz)
-            list[m++] = list[i];
-    for (int i = 1; i < m; i++)
-        for (int j = i; j > 0 && abs(list[j]->req.z - g_cfg.z) > abs(list[j - 1]->req.z - g_cfg.z); j--) {
-            CacheEntry* t = list[j];
-            list[j] = list[j - 1];
-            list[j - 1] = t;
-        }
-
-    const double C = kCanvas, half = kCanvas / 2.0;
-    HDC src = CreateCompatibleDC(dc);
-    int drawn = 0;
-    for (int i = 0; i < m; i++) {
-        const CacheEntry* e = list[i];
-        double f = pow(2.0, g_cfg.z - e->req.z);
-        double left = half + e->req.x * TILE * f - vx, top = half + e->req.y * TILE * f - vy;
-        double size = TILE * f;
-        if (left >= C || top >= C || left + size <= 0 || top + size <= 0)
-            continue;
-        HGDIOBJ old = SelectObject(src, e->img.bmp);
-        if (f == 1) {
-            BitBlt(dc, Round(left), Round(top), TILE, TILE, src, 0, 0, SRCCOPY);
-        } else {
-            // only the part of the tile that lands on the canvas: a coarse tile scaled
-            // 2^6 times would otherwise be a 16000 px blit
-            int sx0 = (int)floor(((left < 0 ? 0 : left) - left) / f);
-            int sy0 = (int)floor(((top < 0 ? 0 : top) - top) / f);
-            int sx1 = (int)ceil(((left + size > C ? C : left + size) - left) / f);
-            int sy1 = (int)ceil(((top + size > C ? C : top + size) - top) / f);
-            if (sx1 > TILE) sx1 = TILE;
-            if (sy1 > TILE) sy1 = TILE;
-            int dx0 = Round(left + sx0 * f), dy0 = Round(top + sy0 * f);
-            StretchBlt(dc, dx0, dy0, Round(left + sx1 * f) - dx0, Round(top + sy1 * f) - dy0,
-                       src, sx0, sy0, sx1 - sx0, sy1 - sy0, SRCCOPY);
-        }
-        SelectObject(src, old);
-        drawn++;
-    }
-    DeleteDC(src);
-    return drawn;
+    int r = a % m;
+    return r < 0 ? r + m : r;
 }
 
-// Blends a transparent overlay into the canvas (RGB565), 1 canvas px per overlay px
-// horizontally. (left, top) - canvas position of its top-left corner; sy - canvas px per
-// overlay row.
-static void BlendOverlay(const Overlay* ov, double left, double top, double sy)
+static DWORD Mix(DWORD h, DWORD v)
 {
-    const int C = kCanvas;   // 768 * 2 bytes: rows need no padding
-    int ix = (int)ceil(left);
-    int y0 = (int)ceil(top), y1 = (int)floor(top + ov->h * sy);
-    if (y0 < 0) y0 = 0;
-    if (y1 > C) y1 = C;
-    for (int y = y0; y < y1; y++) {
-        int oy = (int)((y - top) / sy);
-        if (oy < 0 || oy >= ov->h)
-            continue;
-        const unsigned char* p = (const unsigned char*)ov + ov->rowOfs[oy];
-        int runs = *(const unsigned short*)p;
-        p += 4;
-        unsigned short* drow = s_canvasBits + (C - 1 - y) * C;
-        int x = ix;
-        for (int r = 0; r < runs; r++) {
-            const unsigned short* rh = (const unsigned short*)p;
-            x += rh[0];
-            int count = rh[1];
-            const unsigned char* s = p + 4;
-            p += 4 + count * 4;
-            for (int i = 0; i < count; i++, x++, s += 4) {
-                if (x < 0 || x >= C)
-                    continue;
-                int a = s[3];
-                unsigned short d = drow[x];
-                int dr = (d >> 8) & 0xF8, dg = (d >> 3) & 0xFC, db = (d << 3) & 0xF8;
-                dr += (s[0] - dr) * a / 255;
-                dg += (s[1] - dg) * a / 255;
-                db += (s[2] - db) * a / 255;
-                drow[x] = RGB565(dr, dg, db);
-            }
-        }
-    }
+    return (h ^ v) * 16777619u;
 }
 
-// Traffic of the current provider at the view's zoom, stale ones too (better than nothing).
-// 2GIS tiles share the OSM grid. Yandex images are in elliptical Mercator: their
-// position comes from geographic coordinates, the vertical scale differs slightly.
-static void DrawOverlays(double vx, double vy)
-{
-    int src = TrafficSource();
-    const double half = kCanvas / 2.0;
-    CacheEntry* list[CACHE_MEM];
-    int n = CacheList(list, CACHE_MEM);
-    for (int i = 0; i < n; i++) {
-        const CacheEntry* e = list[i];
-        if (e->req.src != src || e->req.z != g_cfg.z || !e->ov)
-            continue;
-        if (src == SRC_2GIS) {   // 256 px tiles on the OSM grid
-            BlendOverlay(e->ov, half + e->req.x * TILE - vx, half + e->req.y * TILE - vy, 1);
-        } else {
-            double lon, lat, cx, cy, top, bottom, unused;
-            double yx = (double)e->req.x * YA_W, yy = (double)e->req.y * YA_H;
-            WorldToGeoYa(yx, yy, g_cfg.z, &lon, &lat);
-            GeoToWorld(lon, lat, g_cfg.z, &cx, &cy);
-            WorldToGeoYa(yx, yy - YA_H / 2.0, g_cfg.z, &lon, &lat);
-            GeoToWorld(lon, lat, g_cfg.z, &unused, &top);
-            WorldToGeoYa(yx, yy + YA_H / 2.0, g_cfg.z, &lon, &lat);
-            GeoToWorld(lon, lat, g_cfg.z, &unused, &bottom);
-            BlendOverlay(e->ov, half + cx - YA_W / 2.0 - vx, half + top - vy, (bottom - top) / e->ov->h);
-        }
-    }
-}
-
-// Turns the north-up canvas (view center in its middle) by -angle into the map-sized
-// buffer. GDI on CE can't rotate, so it is done per pixel in 16.16 fixed point.
-static void RotateCanvas(double angle)
-{
-    const int C = kCanvas, W = s_rotated.w, H = s_rotated.h;
-    const int cstride = ((C * 2 + 3) & ~3) / 2, ostride = ((W * 2 + 3) & ~3) / 2;
-    const unsigned short bg = RGB565(GetRValue(kMapBg), GetGValue(kMapBg), GetBValue(kMapBg));
-    double a = angle * M_PI / 180.0, ca = cos(a), sa = sin(a);
-    long dx = (long)(ca * 65536), dy = (long)(sa * 65536);
-    for (int y = 0; y < H; y++) {
-        // screen offset s -> canvas offset w = Rot(angle) s
-        double sx = -W / 2.0, sy = y - H / 2.0;
-        long wx = (long)((sx * ca - sy * sa + C / 2.0) * 65536);
-        long wy = (long)((sx * sa + sy * ca + C / 2.0) * 65536);
-        unsigned short* d = s_rotatedBits + (H - 1 - y) * ostride;
-        for (int x = 0; x < W; x++, wx += dx, wy += dy) {
-            int px = (int)(wx >> 16), py = (int)(wy >> 16);
-            d[x] = (px < 0 || py < 0 || px >= C || py >= C) ? bg : s_canvasBits[(C - 1 - py) * cstride + px];
-        }
-    }
-}
-
-// OSM licence: attribution must be visible on the map, not hidden behind controls (above the bottom bar
-// while it is up).
-static void DrawAttribution(HDC dc, RECT mr)
-{
-    if (s_dockShown)
-        mr.bottom = kDockY;
-    const wchar_t* s = !g_cfg.traffic ? L"© OpenStreetMap contributors"
-                     : g_cfg.trafficSrc == TRF_2GIS ? L"© OpenStreetMap contributors, пробки © 2ГИС"
-                     : L"© OpenStreetMap contributors, пробки © Яндекс";
-    SelectObject(dc, s_fontTiny);
-    RECT rc = { 0, 0, 0, 0 };
-    DrawText(dc, s, -1, &rc, DT_SINGLELINE | DT_NOPREFIX | DT_CALCRECT);
-    RECT box = { mr.right - rc.right - 8, mr.bottom - rc.bottom - 4, mr.right, mr.bottom };
-    HBRUSH b = CreateSolidBrush(RGB(255, 255, 255));
-    FillRect(dc, &box, b);
-    DeleteObject(b);
-    Text(dc, s_fontTiny, RGB(60, 60, 60), box.left + 4, box.top, box.right - 4, box.bottom, DT_RIGHT, s);
-}
-
-// Night map: lightness inverted with hue and saturation kept (light background turns dark,
-// traffic stays green/yellow/red), then dimmed. One table lookup per pixel of the frame.
+// RGB565 -> night color: lightness inverted with hue and saturation kept (light background turns dark,
+// traffic stays green/yellow/red), then dimmed. Built once, the slots use it when drawn at night.
 static const int kNightDimPct = 80;
 
-static void NightMap(const RECT& r)
+static const unsigned short* NightLut()
 {
-    if (!s_backBits)
-        return;
     if (!s_nightLut) {
         s_nightLut = (unsigned short*)malloc(65536 * sizeof(unsigned short));
         if (!s_nightLut)
-            return;
+            return NULL;
         for (int v = 0; v < 65536; v++) {
             int c[3] = { ((v >> 8) & 0xF8) | (v >> 13), ((v >> 3) & 0xFC) | ((v >> 9) & 3),
                          ((v << 3) & 0xF8) | ((v >> 2) & 7) };
@@ -1072,15 +961,297 @@ static void NightMap(const RECT& r)
             s_nightLut[v] = RGB565(c[0], c[1], c[2]);
         }
     }
+    return s_nightLut;
+}
+
+// A traffic image of the view's zoom with its place in OSM world pixels. 2GIS tiles share the OSM grid;
+// Yandex images are in elliptical Mercator: their place comes from geographic coordinates, the vertical scale
+// differs slightly (sy = world px per image row).
+struct OvPlace { const CacheEntry* e; double left, top, right, bottom, sy; };
+
+static int OverlayPlaces(CacheEntry** list, int n, OvPlace* out)
+{
+    int src = TrafficSource(), m = 0;
+    for (int i = 0; i < n; i++) {
+        const CacheEntry* e = list[i];
+        if (e->req.src != src || e->req.z != g_cfg.z || !e->ov)
+            continue;
+        OvPlace& o = out[m++];
+        o.e = e;
+        if (src == SRC_2GIS) {
+            o.left = (double)e->req.x * TILE;
+            o.top = (double)e->req.y * TILE;
+            o.sy = 1;
+        } else {
+            double lon, lat, cx, cy, bottom, unused;
+            double yx = (double)e->req.x * YA_W, yy = (double)e->req.y * YA_H;
+            WorldToGeoYa(yx, yy, g_cfg.z, &lon, &lat);
+            GeoToWorld(lon, lat, g_cfg.z, &cx, &cy);
+            WorldToGeoYa(yx, yy - YA_H / 2.0, g_cfg.z, &lon, &lat);
+            GeoToWorld(lon, lat, g_cfg.z, &unused, &o.top);
+            WorldToGeoYa(yx, yy + YA_H / 2.0, g_cfg.z, &lon, &lat);
+            GeoToWorld(lon, lat, g_cfg.z, &unused, &bottom);
+            o.left = cx - YA_W / 2.0;
+            o.sy = (bottom - o.top) / e->ov->h;
+        }
+        o.right = o.left + e->ov->w;
+        o.bottom = o.top + e->ov->h * o.sy;
+    }
+    return m;
+}
+
+// OSM tiles in memory that cover tile (tx, ty) of the view's zoom: the exact one alone when it is here, otherwise
+// the other levels (coarser scaled up, finer scaled down), the farthest levels first so the nearest end on top.
+static int BaseCandidates(CacheEntry** list, int n, int tx, int ty, const CacheEntry** out)
+{
+    MapRequest k = { SRC_OSM, g_cfg.z, tx, ty };
+    CacheEntry* exact = CacheFind(k, false);
+    if (exact) {
+        out[0] = exact;
+        return 1;
+    }
+    int m = 0;
+    for (int i = 0; i < n && m < CACHE_MEM; i++) {
+        const CacheEntry* e = list[i];
+        int dz = g_cfg.z - e->req.z;
+        if (e->req.src != SRC_OSM || abs(dz) > kMaxParentLevels)
+            continue;
+        double f = pow(2.0, dz), l = e->req.x * TILE * f, t = e->req.y * TILE * f, sz = TILE * f;
+        if (l >= (tx + 1) * TILE || t >= (ty + 1) * TILE || l + sz <= tx * TILE || t + sz <= ty * TILE)
+            continue;
+        out[m++] = e;
+    }
+    for (int i = 1; i < m; i++)
+        for (int j = i; j > 0 && abs(out[j]->req.z - g_cfg.z) > abs(out[j - 1]->req.z - g_cfg.z); j--) {
+            const CacheEntry* t = out[j];
+            out[j] = out[j - 1];
+            out[j - 1] = t;
+        }
+    return m;
+}
+
+// What slot (tx, ty) would show now: when it differs from the slot's, the slot is drawn again.
+static DWORD SlotSig(int tx, int ty, bool inWorld, const CacheEntry** base, int nb, const OvPlace* ov, int no)
+{
+    DWORD h = Mix(Mix(Mix(2166136261u, g_cfg.z), tx), ty);
+    h = Mix(Mix(h, inWorld), g_cfg.night);
+    for (int i = 0; i < nb; i++)
+        h = Mix(Mix(Mix(Mix(Mix(h, base[i]->req.z), base[i]->req.x), base[i]->req.y), base[i]->fetchTick),
+                (DWORD)(size_t)base[i]->img.bmp);
+    if (g_cfg.traffic) {
+        h = Mix(h, 0x7AFF + TrafficSource());
+        for (int i = 0; i < no; i++)
+            if (ov[i].left < (tx + 1) * TILE && ov[i].right > tx * TILE && ov[i].top < (ty + 1) * TILE &&
+                ov[i].bottom > ty * TILE)
+                h = Mix(Mix(Mix(Mix(h, ov[i].e->req.x), ov[i].e->req.y), ov[i].e->fetchTick), (DWORD)(size_t)ov[i].e->ov);
+    }
+    return h;
+}
+
+// A traffic image blended into the ring, clipped to `clip` (ring pixels); (left, top) its ring position, sy ring
+// px per image row, 1 px per image px horizontally.
+static void BlendRing(const Overlay* ov, double left, double top, double sy, const RECT& clip)
+{
+    int ix = (int)ceil(left);
+    int y0 = (int)ceil(top), y1 = (int)floor(top + ov->h * sy);
+    if (y0 < clip.top) y0 = clip.top;
+    if (y1 > clip.bottom) y1 = clip.bottom;
+    for (int y = y0; y < y1; y++) {
+        int oy = (int)((y - top) / sy);
+        if (oy < 0 || oy >= ov->h)
+            continue;
+        const unsigned char* p = (const unsigned char*)ov + ov->rowOfs[oy];
+        int runs = *(const unsigned short*)p;
+        p += 4;
+        unsigned short* drow = s_ringBits + (kRingPx - 1 - y) * kRingPx;
+        int x = ix;
+        for (int r = 0; r < runs; r++) {
+            const unsigned short* rh = (const unsigned short*)p;
+            x += rh[0];
+            int count = rh[1];
+            const unsigned char* s = p + 4;
+            p += 4 + count * 4;
+            for (int i = 0; i < count; i++, x++, s += 4) {
+                if (x < clip.left || x >= clip.right)
+                    continue;
+                int a = s[3];
+                unsigned short d = drow[x];
+                int dr = (d >> 8) & 0xF8, dg = (d >> 3) & 0xFC, db = (d << 3) & 0xF8;
+                dr += (s[0] - dr) * a / 255;
+                dg += (s[1] - dg) * a / 255;
+                db += (s[2] - db) * a / 255;
+                drow[x] = RGB565(dr, dg, db);
+            }
+        }
+    }
+}
+
+// Draws slot (tx, ty): the background, the base map, the traffic, night.
+static void DrawSlot(HDC rdc, HDC src, int tx, int ty, bool inWorld, const CacheEntry** base, int nb,
+                     const OvPlace* ov, int no)
+{
+    int ox = Mod(tx, kRing) * TILE, oy = Mod(ty, kRing) * TILE;
+    RECT rc = { ox, oy, ox + TILE, oy + TILE };
+    HBRUSH bg = CreateSolidBrush(kMapBg);
+    FillRect(rdc, &rc, bg);
+    DeleteObject(bg);
+    if (inWorld && nb) {
+        HRGN rgn = CreateRectRgn(rc.left, rc.top, rc.right, rc.bottom);
+        SelectClipRgn(rdc, rgn);
+        for (int i = 0; i < nb; i++) {
+            const CacheEntry* e = base[i];
+            double f = pow(2.0, g_cfg.z - e->req.z);
+            double left = ox + e->req.x * TILE * f - tx * TILE, top = oy + e->req.y * TILE * f - ty * TILE;
+            double size = TILE * f;
+            HGDIOBJ old = SelectObject(src, e->img.bmp);
+            if (f == 1) {
+                BitBlt(rdc, Round(left), Round(top), TILE, TILE, src, 0, 0, SRCCOPY);
+            } else {   // only the part over the slot: a coarse tile scaled 2^6 times would be a 16000 px blit
+                int sx0 = (int)floor(((left < rc.left ? rc.left : left) - left) / f);
+                int sy0 = (int)floor(((top < rc.top ? rc.top : top) - top) / f);
+                int sx1 = (int)ceil(((left + size > rc.right ? rc.right : left + size) - left) / f);
+                int sy1 = (int)ceil(((top + size > rc.bottom ? rc.bottom : top + size) - top) / f);
+                if (sx1 > TILE) sx1 = TILE;
+                if (sy1 > TILE) sy1 = TILE;
+                int dx0 = Round(left + sx0 * f), dy0 = Round(top + sy0 * f);
+                StretchBlt(rdc, dx0, dy0, Round(left + sx1 * f) - dx0, Round(top + sy1 * f) - dy0,
+                           src, sx0, sy0, sx1 - sx0, sy1 - sy0, SRCCOPY);
+            }
+            SelectObject(src, old);
+        }
+        SelectClipRgn(rdc, NULL);
+        DeleteObject(rgn);
+    }
 #ifndef UNDER_CE
     GdiFlush();   // desktop GDI may batch drawing into the DIB
 #endif
-    int stride = ((s_cw * 2 + 3) & ~3) / 2;
-    for (int y = r.top; y < r.bottom; y++) {
-        unsigned short* p = s_backBits + (s_ch - 1 - y) * stride;
-        for (int x = r.left; x < r.right; x++)
-            p[x] = s_nightLut[p[x]];
+    if (inWorld && g_cfg.traffic)
+        for (int i = 0; i < no; i++)
+            if (ov[i].left < (tx + 1) * TILE && ov[i].right > tx * TILE && ov[i].top < (ty + 1) * TILE &&
+                ov[i].bottom > ty * TILE)
+                BlendRing(ov[i].e->ov, ox + ov[i].left - tx * TILE, oy + ov[i].top - ty * TILE, ov[i].sy, rc);
+    const unsigned short* lut = g_cfg.night ? NightLut() : NULL;
+    if (lut)
+        for (int y = rc.top; y < rc.bottom; y++) {
+            unsigned short* p = s_ringBits + (kRingPx - 1 - y) * kRingPx + rc.left;
+            for (int x = 0; x < TILE; x++)
+                p[x] = lut[p[x]];
+        }
+    s_statSlots++;
+}
+
+// The slots under the (rotated) window, brought up to date. Returns how many of them show some map.
+static int RingUpdate(HDC dc, double vx, double vy, double angle)
+{
+    double a = angle * M_PI / 180.0, c = cos(a), s = sin(a);
+    double hw = g_cfg.mapW / 2.0, hh = g_cfg.mapH / 2.0;
+    double ex = hw * fabs(c) + hh * fabs(s), ey = hw * fabs(s) + hh * fabs(c);   // the window's bounding box
+    int i0 = (int)floor((vx - ex) / TILE), i1 = (int)floor((vx + ex) / TILE);
+    int j0 = (int)floor((vy - ey) / TILE), j1 = (int)floor((vy + ey) / TILE);
+    if (i1 - i0 >= kRing) i1 = i0 + kRing - 1;   // can't be with 800 x 480; never two tiles in one slot
+    if (j1 - j0 >= kRing) j1 = j0 + kRing - 1;
+    int tiles = 1 << g_cfg.z;
+    CacheEntry* list[CACHE_MEM];
+    int n = CacheList(list, CACHE_MEM);
+    OvPlace ov[CACHE_MEM];
+    int no = g_cfg.traffic ? OverlayPlaces(list, n, ov) : 0;
+    HDC rdc = NULL, src = NULL;
+    HGDIOBJ old = NULL;
+    int shown = 0;
+    for (int ty = j0; ty <= j1; ty++)
+        for (int tx = i0; tx <= i1; tx++) {
+            bool inWorld = tx >= 0 && ty >= 0 && tx < tiles && ty < tiles;
+            const CacheEntry* base[CACHE_MEM];
+            int nb = inWorld ? BaseCandidates(list, n, tx, ty, base) : 0;
+            if (nb)
+                shown++;
+            DWORD sig = SlotSig(tx, ty, inWorld, base, nb, ov, no);
+            RingSlot& sl = s_slot[Mod(ty, kRing)][Mod(tx, kRing)];
+            if (sl.used && sl.x == tx && sl.y == ty && sl.sig == sig)
+                continue;   // the same as it is
+            if (!rdc) {
+                rdc = CreateCompatibleDC(dc);
+                src = CreateCompatibleDC(dc);
+                old = SelectObject(rdc, s_ring.bmp);
+            }
+            DrawSlot(rdc, src, tx, ty, inWorld, base, nb, ov, no);
+            sl.x = tx;
+            sl.y = ty;
+            sl.sig = sig;
+            sl.used = true;
+            s_ringStamp++;
+        }
+    if (rdc) {
+        SelectObject(rdc, old);
+        DeleteDC(rdc);
+        DeleteDC(src);
     }
+    return shown;
+}
+
+// Heading-up: the window turned by -angle out of the ring (16.16 fixed point, the ring wraps), into s_rotated.
+static void RotateRing(double vx, double vy, double angle)
+{
+    const int W = s_rotated.w, H = s_rotated.h, R = kRingPx;
+    const int ostride = ((W * 2 + 3) & ~3) / 2;
+    double a = angle * M_PI / 180.0, ca = cos(a), sa = sin(a);
+    double cx = fmod(vx, (double)R), cy = fmod(vy, (double)R);   // the view center in the ring
+    if (cx < 0) cx += R;
+    if (cy < 0) cy += R;
+    long dx = (long)(ca * 65536), dy = (long)(sa * 65536);
+    for (int y = 0; y < H; y++) {
+        // screen offset s -> world offset w = Rot(angle) s, then the ring's pixel
+        double sx = -W / 2.0, sy = y - H / 2.0;
+        long wx = (long)((sx * ca - sy * sa + cx) * 65536);
+        long wy = (long)((sx * sa + sy * ca + cy) * 65536);
+        unsigned short* d = s_rotatedBits + (H - 1 - y) * ostride;
+        for (int x = 0; x < W; x++, wx += dx, wy += dy) {
+            int px = (int)(wx >> 16), py = (int)(wy >> 16);
+            if (px < 0) px += R; else if (px >= R) px -= R;
+            if (py < 0) py += R; else if (py >= R) py -= R;
+            d[x] = s_ringBits[(R - 1 - py) * R + px];
+        }
+    }
+}
+
+// North-up: the window straight out of the ring, in 1-4 pieces where it wraps.
+static void RingBlit(HDC dc, const RECT& mr, double vx, double vy)
+{
+    int W = mr.right - mr.left, H = mr.bottom - mr.top;
+    int wl = (int)floor(vx - W / 2.0 + 0.5), wt = (int)floor(vy - H / 2.0 + 0.5);
+    HDC src = CreateCompatibleDC(dc);
+    HGDIOBJ old = SelectObject(src, s_ring.bmp);
+    for (int y = 0; y < H;) {
+        int ry = Mod(wt + y, kRingPx), h = kRingPx - ry < H - y ? kRingPx - ry : H - y;
+        for (int x = 0; x < W;) {
+            int rx = Mod(wl + x, kRingPx), w = kRingPx - rx < W - x ? kRingPx - rx : W - x;
+            BitBlt(dc, mr.left + x, mr.top + y, w, h, src, rx, ry, SRCCOPY);
+            x += w;
+        }
+        y += h;
+    }
+    SelectObject(src, old);
+    DeleteDC(src);
+}
+
+// OSM licence: attribution must be visible on the map, not hidden behind controls (above the bottom bar
+// while it is up). At night in the night map's colours.
+static void DrawAttribution(HDC dc, RECT mr)
+{
+    if (s_dockShown)
+        mr.bottom = kDockY + s_dockOff;
+    const wchar_t* s = !g_cfg.traffic ? L"© OpenStreetMap contributors"
+                     : g_cfg.trafficSrc == TRF_2GIS ? L"© OpenStreetMap contributors, пробки © 2ГИС"
+                     : L"© OpenStreetMap contributors, пробки © Яндекс";
+    SelectObject(dc, s_fontTiny);
+    RECT rc = { 0, 0, 0, 0 };
+    DrawText(dc, s, -1, &rc, DT_SINGLELINE | DT_NOPREFIX | DT_CALCRECT);
+    RECT box = { mr.right - rc.right - 8, mr.bottom - rc.bottom - 4, mr.right, mr.bottom };
+    HBRUSH b = CreateSolidBrush(g_cfg.night ? RGB(20, 20, 20) : RGB(255, 255, 255));
+    FillRect(dc, &box, b);
+    DeleteObject(b);
+    Text(dc, s_fontTiny, g_cfg.night ? RGB(160, 160, 160) : RGB(60, 60, 60), box.left + 4, box.top, box.right - 4,
+         box.bottom, DT_RIGHT, s);
 }
 
 static void DrawMap(HDC dc)
@@ -1095,50 +1266,37 @@ static void DrawMap(HDC dc)
     double cy = g_cfg.mapY + g_cfg.mapH / 2.0;
     double angle = ViewAngle();
 
-    // the rotation buffer (768 KB at 800 x 480) is kept only while heading-up is on
+    // the rotated frame (768 KB at 800 x 480) is kept only while heading-up is on
     bool rotate = g_cfg.follow == FOLLOW_HEADING;
     if (rotate && !s_rotatedBits) {
         s_rotatedBits = ImageCreate(g_cfg.mapW, g_cfg.mapH, &s_rotated);
+        s_rotStamp = 0xFFFFFFFF;
     } else if (!rotate && s_rotatedBits) {
         ImageFree(&s_rotated);
         s_rotatedBits = NULL;
     }
 
     int drawn = 0;
-    if (s_canvasBits && (!rotate || s_rotatedBits)) {
-        HDC cdc = CreateCompatibleDC(dc);
-        HGDIOBJ old = SelectObject(cdc, s_canvas.bmp);
-        RECT all = { 0, 0, kCanvas, kCanvas };
-        HBRUSH bg = CreateSolidBrush(kMapBg);
-        FillRect(cdc, &all, bg);
-        DeleteObject(bg);
-        drawn = DrawBase(cdc, vx, vy);
-        SelectObject(cdc, old);
-        DeleteDC(cdc);
-#ifndef UNDER_CE
-        GdiFlush();   // desktop GDI may batch drawing into the DIB
-#endif
-        if (g_cfg.traffic)
-            DrawOverlays(vx, vy);
-        if (rotate) {
-            RotateCanvas(angle);
+    if (s_ringBits && (!rotate || s_rotatedBits)) {
+        drawn = RingUpdate(dc, vx, vy, angle);
+        if (rotate) {   // turned again only when something moved
+            if (s_rotStamp != s_ringStamp || s_rotVx != vx || s_rotVy != vy || s_rotAngle != angle) {
+                RotateRing(vx, vy, angle);
+                s_rotStamp = s_ringStamp;
+                s_rotVx = vx;
+                s_rotVy = vy;
+                s_rotAngle = angle;
+            }
             Blit(dc, &s_rotated, mr.left, mr.top);
-        } else {   // north-up: the middle of the canvas as it is
-            HDC src = CreateCompatibleDC(dc);
-            HGDIOBJ old = SelectObject(src, s_canvas.bmp);
-            BitBlt(dc, mr.left, mr.top, g_cfg.mapW, g_cfg.mapH, src,
-                   (kCanvas - g_cfg.mapW) / 2, (kCanvas - g_cfg.mapH) / 2, SRCCOPY);
-            SelectObject(src, old);
-            DeleteDC(src);
+        } else {
+            RingBlit(dc, mr, vx, vy);
         }
     }
     if (!drawn)
-        Text(dc, s_fontSmall, RGB(90, 90, 90), mr.left, mr.top, mr.right, mr.bottom, DT_CENTER,
-             s_lastErr ? NetErrorText(s_lastErr) : L"Загрузка карты...");
+        Text(dc, s_fontSmall, g_cfg.night ? RGB(160, 160, 160) : RGB(90, 90, 90), mr.left, mr.top, mr.right,
+             mr.bottom, DT_CENTER, s_lastErr ? NetErrorText(s_lastErr) : L"Загрузка карты...");
 
     DrawAttribution(dc, mr);
-    if (g_cfg.night)
-        NightMap(mr);
     DrawGpsMarker(dc, cx, cy, vx, vy, angle);
 
     SelectClipRgn(dc, NULL);
@@ -1401,14 +1559,28 @@ static void DrawSign(HDC dc, int b, const RECT& r, int pressed)
         Text(dc, s_fontSmall, kText, r.left, r.top, r.right, r.bottom, DT_CENTER, s_btn[b].name[0] + 1);
 }
 
+// The caption under a sign of the bottom bar.
+static const wchar_t* DockCaption(int b)
+{
+    switch (b) {
+    case B_HOME:     return L"ДОМОЙ";
+    case B_TRF:      return L"ПРОБКИ";
+    case B_TSRC:     return g_cfg.trafficSrc == TRF_2GIS ? L"2ГИС" : L"ЯНДЕКС";
+    case B_NIGHT:    return g_cfg.night ? L"ДЕНЬ" : L"НОЧЬ";   // as VestaHome: what a tap turns on
+    case B_SETTINGS: return L"НАСТРОЙКИ";
+    }
+    return L"";
+}
+
 static void DrawButtons(HDC dc)
 {
     RECT r;
     if (s_dockShown && !s_settings) {
-        RECT bar = { 0, kDockY, s_cw, s_ch }, line = { 0, kDockY, s_cw, kDockY + 2 };
+        int y = kDockY + s_dockOff;   // sliding in / out
+        RECT bar = { 0, y, s_cw, s_ch }, line = { 0, y, s_cw, y + 2 };
         // the orange part of the line shrinks to the moment the bar goes down
         DWORD el = GetTickCount() - s_dockTick;
-        RECT left = { 0, kDockY, el >= (DWORD)kDockMs ? 0 : (int)(s_cw * (kDockMs - el) / kDockMs), kDockY + 2 };
+        RECT left = { 0, y, el >= (DWORD)kDockMs ? 0 : (int)(s_cw * (kDockMs - el) / kDockMs), y + 2 };
         Darken(dc, bar, 0);
         HBRUSH l = CreateSolidBrush(kLine), o = CreateSolidBrush(kOrange);
         FillRect(dc, &line, l);
@@ -1430,12 +1602,19 @@ static void DrawButtons(HDC dc)
             DrawSign(dc, i, r, pressed);
             continue;
         }
-        // a slot of the bottom bar: only the sign (a mode that is on: the orange one), pressed = orange tile
+        // a slot of the bottom bar, as VestaHome's: the sign (a mode that is on: the orange one) and its caption
+        // under it; pressed = an orange tile with both dark
         if (pressed) {
             RECT p = { r.left + 6, r.top + 2, r.right - 6, r.bottom - 2 };
             Tile(dc, p, kOrange, kOrange, 24);
         }
-        DrawSign(dc, i, r, pressed);
+        // as VestaHome's bar: the 30 px sign 5 px under the slot's top (its 44 px picture centred there), the 12 px
+        // bold caption under it
+        RECT ic = { r.left, r.top - 2, r.right, r.top + 42 };
+        DrawSign(dc, i, ic, pressed);
+        bool on = i == B_TRF && g_cfg.traffic;
+        Text(dc, s_fontCap, pressed ? kInk : on ? kOrange : kTextDim, r.left, r.top + 39, r.right, r.bottom,
+             DT_CENTER, DockCaption(i));
     }
 }
 
@@ -1474,7 +1653,9 @@ static HFONT MakeFont(int height, int weight)
     lf.lfHeight = -height;
     lf.lfWeight = weight;
     lf.lfCharSet = DEFAULT_CHARSET;
-    lf.lfQuality = ANTIALIASED_QUALITY;
+    // no smoothing: on the unit ANTIALIASED_QUALITY comes out as ClearType - coloured fringes in the 16-bit
+    // frame (the user's report 2026-10-17; VestaHome found the same)
+    lf.lfQuality = NONANTIALIASED_QUALITY;
     wcscpy(lf.lfFaceName, L"Tahoma");
     return CreateFontIndirect(&lf);
 }
@@ -1489,14 +1670,15 @@ static void LogStat()
     memset(&ms, 0, sizeof(ms));
     ms.dwLength = sizeof(ms);
     GlobalMemoryStatus(&ms);
-    Log("stat: ram %lu%% used, %lu KB free, proc %lu KB free; cache %d KB; paints %d (max %lu ms); "
+    Log("stat: ram %lu%% used, %lu KB free, proc %lu KB free; cache %d KB; paints %d (max %lu ms), tiles drawn %d; "
         "gps %lu bytes, %d lines, %d bad",
         ms.dwMemoryLoad, ms.dwAvailPhys / 1024, ms.dwAvailVirtual / 1024, CacheBytes() / 1024,
-        s_statPaints, s_statPaintMax,
+        s_statPaints, s_statPaintMax, s_statSlots,
         s_gps.bytes - s_statGpsBytes, s_gps.lines - s_statGpsLines, s_gps.badLines - s_statGpsBad);
     s_statTick = GetTickCount();
     s_statPaints = 0;
     s_statPaintMax = 0;
+    s_statSlots = 0;
     s_statGpsBytes = s_gps.bytes;
     s_statGpsLines = s_gps.lines;
     s_statGpsBad = s_gps.badLines;
@@ -1523,13 +1705,14 @@ static void OnCreate(HWND hwnd)
     s_fontStatus = MakeFont(17, FW_NORMAL);
     s_fontClock = MakeFont(30, FW_BOLD);
     s_fontLabel = MakeFont(19, FW_BOLD);
+    s_fontCap = MakeFont(12, FW_BOLD);   // the bottom bar's captions, as VestaHome's
     // the map takes the whole screen (map_x/y/w/h of the ini are YaMapsCE's: its pictures are 600 x 450)
     g_cfg.mapX = 0;
     g_cfg.mapY = 0;
     g_cfg.mapW = s_cw;
     g_cfg.mapH = s_ch;
     LoadImages();
-    s_canvasBits = ImageCreate(kCanvas, kCanvas, &s_canvas);
+    s_ringBits = ImageCreate(kRingPx, kRingPx, &s_ring);
     CacheInit();
 
 #ifdef UNDER_CE
@@ -1551,6 +1734,7 @@ static void OnDestroy(HWND hwnd)
 {
     KillTimer(hwnd, TIMER_TICK);
     KillTimer(hwnd, TIMER_USER);
+    KillTimer(hwnd, TIMER_DOCK);
     ConfigSave();
     if (s_taskbar)
         ShowWindow(s_taskbar, SW_SHOWNORMAL);
@@ -1589,6 +1773,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     }
 
     case WM_TIMER:
+        if (wp == TIMER_DOCK) {
+            DockStep();
+            return 0;
+        }
         if (wp == TIMER_USER) {
             KillTimer(hwnd, TIMER_USER);
             s_userPending = false;
@@ -1596,6 +1784,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         } else {
             GpsGet(&s_gps);
             g_today = Today();
+            int sharedNight = NightShared();   // switched in VestaHome: follow it
+            if (sharedNight >= 0 && (sharedNight != 0) != (g_cfg.night != 0))
+                NightSet(sharedNight != 0);
             if (!s_dragging)
                 Ensure(REQ_AUTO);
             if (g_cfg.cacheKb > (LONG)g_cfg.cacheMb * 1024)
@@ -1608,8 +1799,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             if (GetTickCount() - s_statTick >= 60000)
                 LogStat();
             if (s_dockShown) {   // the bar's line shrinks every second; it goes down after kDockMs
-                if (s_pressed < 0 && GetTickCount() - s_dockTick >= (DWORD)kDockMs)
-                    s_dockShown = false;
+                if (s_pressed < 0 && s_dockDir == 0 && GetTickCount() - s_dockTick >= (DWORD)kDockMs)
+                    DockShow(false);   // slides down
                 InvalidateRect(hwnd, NULL, FALSE);
                 return 0;
             }
@@ -1695,8 +1886,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             if (s_dragMoved) {
                 UserChanged();
             } else {   // a tap on the map raises (and refreshes the traffic) / lowers the bottom bar
-                DockShow(!s_dockShown);
-                if (s_dockShown)
+                bool up = !DockUp();
+                DockShow(up);
+                if (up)
                     Ensure(REQ_FORCE);
             }
         }

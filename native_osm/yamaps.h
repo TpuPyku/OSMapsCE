@@ -151,3 +151,4 @@ bool        SameKey(const MapRequest& a, const MapRequest& b);
 // GPS: VestaCore (core/vgps.h) - the port shared with VestaHome through shared memory
 #include "vgps.h"
 #include "vlogdir.h"   // VestaCore: logs only on the SD card / USB disk
+#include "vnight.h"    // VestaCore: the night mode shared with VestaHome
