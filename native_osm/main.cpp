@@ -188,6 +188,30 @@ static void FollowGps()
     WorldToGeo(x, y, g_cfg.z, &g_cfg.lon, &g_cfg.lat);
 }
 
+// What a frame shows that changes by itself (2026-10-22, PLAN: "standing, no frame until something changed"):
+// the map's center and the car on it at pixel precision, the heading, the bar's GPS and traffic / network texts,
+// the clock's minute, night. With the GPS ticking once a second while the car stands, the frame stays the same and
+// is not drawn again; tiles arriving, taps, the bar and the settings draw as before.
+static DWORD s_paintSig;   // FrameSig() of the frame last drawn
+
+static DWORD FrameSig()
+{
+    double x, y, cx = 0, cy = 0;
+    GeoToWorld(g_cfg.lon, g_cfg.lat, g_cfg.z, &x, &y);
+    if (s_gps.valid)
+        GeoToWorld(s_gps.lon, s_gps.lat, g_cfg.z, &cx, &cy);
+    SYSTEMTIME t;
+    GetLocalTime(&t);
+    int v[] = { (int)x, (int)y, (int)cx, (int)cy, g_cfg.z, (int)s_heading, s_gps.valid, s_gps.sats,
+                (int)(s_gps.speedKmh + 0.5), s_gps.status, s_gps.lines > 0, s_gpsRunning, s_limitHit,
+                s_lastErr && GetTickCount() - s_lastErrTick < 60000, s_inflight, (int)(GetTickCount() / 60000),
+                t.wMinute, g_cfg.night, s_settings };
+    DWORD h = 2166136261u;   // FNV-1a over them
+    for (int i = 0; i < (int)(sizeof(v) / sizeof(v[0])); i++)
+        h = (h ^ (DWORD)v[i]) * 16777619u;
+    return h;
+}
+
 static int TrafficSource()
 {
     return kTrafficSrc[g_cfg.trafficSrc];
@@ -1765,6 +1789,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         DWORD t0 = GetTickCount();
         Paint(hdc);
         EndPaint(hwnd, &ps);
+        s_paintSig = FrameSig();
         s_lastPaintTick = GetTickCount();
         s_statPaints++;
         if (s_lastPaintTick - t0 > s_statPaintMax)
@@ -1804,8 +1829,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 InvalidateRect(hwnd, NULL, FALSE);
                 return 0;
             }
-            // the clock needs a frame a second; GPS updates may have drawn one already
-            if (GetTickCount() - s_lastPaintTick < 900)
+            // the clock (minutes) and the bar's texts: only when they changed
+            if (FrameSig() == s_paintSig)
                 return 0;
         }
         InvalidateRect(hwnd, NULL, FALSE);
@@ -1820,7 +1845,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             FollowGps();
             Ensure(REQ_AUTO);
         }
-        InvalidateRect(hwnd, NULL, FALSE);
+        if (FrameSig() != s_paintSig)   // standing: the same frame
+            InvalidateRect(hwnd, NULL, FALSE);
         return 0;
 
     case WM_APP_MAP:
