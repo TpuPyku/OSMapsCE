@@ -1,4 +1,6 @@
 ﻿#include "yamaps.h"
+#include "vversion.h"   // VestaCore: the version "major.minor.YYMMDD" (the date: this file's build)
+static const wchar_t* const kRelease = L"1.03";   // raise by hand: minor - significant changes, major - big releases
 
 // ---------------------------------------------------------------- UI layout
 // 800x480 in the VestaHome style (mockup VestaHome/skin/maps-skin-v2.pdf): the map over the whole screen, a
@@ -1494,6 +1496,8 @@ static void DrawSettings(HDC dc)
                *Counter(SRC_YANDEX), Limit(SRC_YANDEX), *Counter(SRC_2GIS), Limit(SRC_2GIS), g_cfg.osmCount);
     s[127] = 0;
     Text(dc, s_fontSmall, kTextDim, 36, 422, 580, 440, DT_LEFT, s);
+    _snwprintf(s, 128, L"OSMapsCE %s", AppVersion(kRelease));   // VestaCore vversion.h
+    Text(dc, s_fontSmall, kTextDim, 36, 440, 580, 458, DT_LEFT, s);
 }
 
 // The status bar over the map: GPS on the left, the traffic / network state, a big clock on the right
