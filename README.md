@@ -132,7 +132,7 @@ GPS — общий модуль [VestaCore](https://github.com/TpuPyku/VestaCore
 Сборка:
 1. `native_osm\build_bearssl.bat` — один раз, собирает BearSSL для ARM и x86.
 2. `native_osm\build.bat` — собирает `OSMapsCE\OSMapsCE.exe` (ARMv4, Windows CE) и `OSMapsCE\OSMapsPC.exe`
-   (версия для Windows, чтобы проверять на компьютере; стрелки, `+`/`-`, `T` пробки, `L` источник пробок, `G` GPS, `S` настройки).
+   (версия для Windows, чтобы проверять на компьютере; стрелки, `+`/`-` и колесо мыши — масштаб (колесо — вокруг точки под курсором), `T` пробки, `L` источник пробок, `G` GPS, `S` настройки, `F3` поиск).
 3. `native_osm\make_ta.py` — пересоздать встроенные корневые сертификаты (`trust_anchors.inc`) из набора CA,
    если сервер сменит удостоверяющий центр.
 4. `native_osm\make_regions.py` — пересоздать таблицу городов 2ГИС (`regions_2gis.inc`) из Catalog API 2ГИС;

@@ -3724,6 +3724,35 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         return 0;
     }
 
+#ifndef UNDER_CE
+#ifndef WM_MOUSEWHEEL
+#define WM_MOUSEWHEEL 0x020A   // (VS2005's headers declare it only for _WIN32_WINNT >= 0x0400)
+#endif
+    case WM_MOUSEWHEEL: {   // the PC: the wheel zooms - around the point under the cursor (following the car: around it)
+        if (s_settings || s_search || s_plan)
+            return 0;
+        POINT pt = { (short)LOWORD(lp), (short)HIWORD(lp) };
+        ScreenToClient(hwnd, &pt);
+        int dz = (short)HIWORD(wp) > 0 ? 1 : -1;
+        if (g_cfg.follow != FOLLOW_OFF || !InMap(pt.x, pt.y)) {
+            OnButton(dz > 0 ? B_PLUS : B_MINUS);
+            return 0;
+        }
+        double lon, lat, x, y, a = ViewAngle() * M_PI / 180.0;
+        ScreenToGeo(pt.x, pt.y, &lon, &lat);
+        int z = g_cfg.z;
+        Zoom(dz);
+        if (g_cfg.z != z) {   // the place under the cursor back under it
+            double sx = pt.x - (g_cfg.mapX + g_cfg.mapW / 2.0), sy = pt.y - (g_cfg.mapY + g_cfg.mapH / 2.0);
+            GeoToWorld(lon, lat, g_cfg.z, &x, &y);
+            WorldToGeo(x - (cos(a) * sx - sin(a) * sy), y - (sin(a) * sx + cos(a) * sy), g_cfg.z, &g_cfg.lon, &g_cfg.lat);
+        }
+        UserChanged();
+        InvalidateRect(hwnd, NULL, FALSE);
+        return 0;
+    }
+#endif
+
     case WM_KEYDOWN:
         if (s_search) {   // letters go to WM_CHAR
             if (wp == VK_ESCAPE)
