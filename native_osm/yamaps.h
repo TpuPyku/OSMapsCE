@@ -169,6 +169,12 @@ bool RouteStart(double gpsLon, double gpsLat, double course, bool gpsValid);   /
 void RouteTo(const SearchHit* to, double fromLon, double fromLat, double course);
 void RouteAddVia(const RoutePlace& p, double gpsLon, double gpsLat, double course, bool gpsValid);
 void PlaceLookup(const RoutePlace& p);   // its address into the plan when Photon answers
+// Alternatives of a new route without stops: >= 2 while the driver chooses (the first one is on meanwhile).
+int  RouteAlts();
+int  RouteAltCur();
+bool RouteAltGet(int k, const double** lonLat, int* np, double* timeS, double* distM);
+void RouteAltChoose(int k);
+void RouteAltsDone();                    // chosen: the others and the kept answer go
 void RouteClear();
 void RouteGps(double lon, double lat, double kmh, double course);   // each fix: progress, off -> a new route
 void RouteGet(RouteInfo* out);

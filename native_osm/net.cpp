@@ -12,7 +12,8 @@ static volatile bool    s_stop;
 static MapRequest       s_pending;
 static bool             s_hasPending;
 static DWORD            s_seq;
-// search / route / address requests, before the tiles: a few waiting, a newer one of a kind replaces the older
+// search / route / address requests, before the tiles: a few waiting; a newer search or route replaces the waiting
+// one of its kind, address lookups all go (each one names its own point)
 struct ApiJob { int kind; bool https; DWORD seq; char host[64]; char path[1024]; };
 static ApiJob           s_api[4];
 static int              s_nApi;
@@ -339,7 +340,7 @@ DWORD NetApi(int kind, const char* host, bool https, const char* path)
 {
     EnterCriticalSection(&s_cs);
     int i = 0;
-    while (i < s_nApi && s_api[i].kind != kind)
+    while (i < s_nApi && (s_api[i].kind != kind || kind == API_REVERSE))
         i++;
     if (i == s_nApi) {
         if (s_nApi < 4)

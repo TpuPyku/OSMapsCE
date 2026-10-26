@@ -1371,6 +1371,8 @@ static bool ClipSeg(double* x0, double* y0, double* x1, double* y1, double l, do
 // its right side); no traffic there - the route's blue. Looked up again only when a slot was drawn (new traffic,
 // a new view) - per point, while it is in sight.
 static const COLORREF kRouteBlue = RGB(66, 146, 255), kRouteEdge = RGB(18, 52, 128);
+static const COLORREF kTfFree = RGB(40, 190, 70), kTfSlow = RGB(255, 196, 0), kTfJam = RGB(232, 40, 30),
+                      kTfStand = RGB(140, 16, 16);
 static COLORREF* s_rcol;
 static DWORD*    s_rcolSig;
 static int*      s_ridx;
@@ -1396,14 +1398,7 @@ static bool OvPixel(const Overlay* ov, int x, int y, COLORREF* out)
             if (c[3] < 160 || mx - mn < 60)   // see-through, or the lines' white / grey edge: not a traffic colour
                 return false;
             // one of the four traffic colours, clean (the lines' anti-aliased pixels come out pale)
-            if (c[1] > c[0] + 30)
-                *out = RGB(40, 190, 70);       // free
-            else if (c[1] > 140)
-                *out = RGB(255, 196, 0);       // slow
-            else if (c[0] > 150)
-                *out = RGB(232, 40, 30);       // jam
-            else
-                *out = RGB(140, 16, 16);       // standing
+            *out = c[1] > c[0] + 30 ? kTfFree : c[1] > 140 ? kTfSlow : c[0] > 150 ? kTfJam : kTfStand;
             return true;
         }
         sx += count;
@@ -1416,16 +1411,20 @@ static COLORREF TrafficAt(double lon, double lat, double nx, double ny)
 {
     int src = TrafficSource();
     bool ya = src == SRC_YANDEX;
+    for (int dz = 0; dz <= 3; dz++) {   // the view's zoom, then the coarser ones still in memory
+    int z = g_cfg.z - dz;
+    if (z < 2)
+        break;
     double wx, wy;
     if (ya)
-        GeoToWorldYa(lon, lat, g_cfg.z, &wx, &wy);
+        GeoToWorldYa(lon, lat, z, &wx, &wy);
     else
-        GeoToWorld(lon, lat, g_cfg.z, &wx, &wy);
+        GeoToWorld(lon, lat, z, &wx, &wy);
     for (int k = 1; k <= 7; k += 2) {
         double x = wx + nx * k, y = wy + ny * k, ox, oy;
         MapRequest key;
         key.src = src;
-        key.z = g_cfg.z;
+        key.z = z;
         if (ya) {   // Yandex: 600 x 450 images centred at (x * 600, y * 450) of its own world pixels
             key.x = (int)floor(x / YA_W + 0.5);
             key.y = (int)floor(y / YA_H + 0.5);
@@ -1445,7 +1444,190 @@ static COLORREF TrafficAt(double lon, double lat, double nx, double ny)
         if (OvPixel(e->ov, (int)(x - ox), (int)(y - oy), &c))
             return c;
     }
+    }
     return kRouteBlue;
+}
+
+// ---- the alternatives: each one's time "from - to" by the traffic on it (an estimate, the user's wish
+// 2026-10-26: the choice stays the driver's). A segment's share of the server's time, times a factor of its colour:
+// free 1, slow 1.5..2.5, jam 2.5..5, standing 4..10; no traffic seen there - 1 (and the share seen is told).
+static void Tile(HDC dc, const RECT& r, COLORREF fill, COLORREF border, int radius);
+static void FmtDist(wchar_t* s, int cap, int m);
+static void RouteMarker(HDC dc, int x, int y, COLORREF fill, const wchar_t* t);
+struct AltEst { int minS, maxS, jamM, seenPct; DWORD sig; };
+static AltEst s_est[3];
+
+static void Estimate(int k, DWORD sig)
+{
+    AltEst& e = s_est[k];
+    if (e.sig == sig)
+        return;
+    memset(&e, 0, sizeof(e));
+    e.sig = sig;
+    const double* ll;
+    int np;
+    double timeS, distM;
+    if (!RouteAltGet(k, &ll, &np, &timeS, &distM) || np < 2)
+        return;
+    double kx = 111320 * cos(ll[1] * M_PI / 180), total = 0;
+    for (int i = 1; i < np; i++) {
+        double dx = (ll[i * 2] - ll[i * 2 - 2]) * kx, dy = (ll[i * 2 + 1] - ll[i * 2 - 1]) * 110540;
+        total += sqrt(dx * dx + dy * dy);
+    }
+    double mn = 0, mx = 0, seen = 0, jam = 0;
+    for (int i = 1; i < np && total > 0; i++) {
+        double dx = (ll[i * 2] - ll[i * 2 - 2]) * kx, dy = (ll[i * 2 + 1] - ll[i * 2 - 1]) * 110540;
+        double len = sqrt(dx * dx + dy * dy), t = timeS * len / total, f0 = 1, f1 = 1;
+        if (len > 0 && g_cfg.traffic) {
+            // the right of the way in world pixels: north is -y
+            COLORREF c = TrafficAt(ll[i * 2 - 2], ll[i * 2 - 1], -dy / len, -dx / len);
+            if (c != kRouteBlue)
+                seen += len;
+            if (c == kTfSlow) {
+                f0 = 1.5;
+                f1 = 2.5;
+            } else if (c == kTfJam) {
+                f0 = 2.5;
+                f1 = 5;
+                jam += len;
+            } else if (c == kTfStand) {
+                f0 = 4;
+                f1 = 10;
+                jam += len;
+            }
+        }
+        mn += t * f0;
+        mx += t * f1;
+    }
+    e.minS = (int)mn;
+    e.maxS = (int)mx;
+    e.jamM = (int)jam;
+    e.seenPct = total > 0 ? (int)(seen * 100 / total) : 0;
+}
+
+static bool CardRect(int k, RECT* r)
+{
+    int n = RouteAlts();
+    if (n < 2 || k < 0 || k >= n)
+        return false;
+    int w = (s_cw - 32 - (n - 1) * 8) / n;
+    SetRect(r, 16 + k * (w + 8), 392, 16 + k * (w + 8) + w, s_ch - 8);
+    return true;
+}
+
+static void FmtMin(wchar_t* s, int cap, int sec)
+{
+    int m = (sec + 59) / 60;
+    if (m >= 60)
+        _snwprintf(s, cap, L"%d ч %02d мин", m / 60, m % 60);
+    else
+        _snwprintf(s, cap, L"%d мин", m);
+    s[cap - 1] = 0;
+}
+
+static void DrawCards(HDC dc)
+{
+    DWORD sig = Mix(Mix(Mix(s_ringStamp, g_cfg.z), g_cfg.trafficSrc), g_cfg.traffic) | 1;
+    RECT r;
+    for (int k = 0; CardRect(k, &r); k++) {
+        Estimate(k, sig);
+        const AltEst& e = s_est[k];
+        const double* ll;
+        int np;
+        double timeS, distM;
+        RouteAltGet(k, &ll, &np, &timeS, &distM);
+        bool cur = k == RouteAltCur(), down = s_planPressed == 70 + k;
+        Darken(dc, r, 14);
+        Outline(dc, r, cur ? kOrange : kLine, 14);
+        if (down)
+            Tile(dc, r, kOrange, kOrange, 28);
+        wchar_t t[48], d[24], line[96];
+        FmtMin(t, 48, (int)timeS);
+        FmtDist(d, 24, (int)distM);
+        _snwprintf(line, 96, L"%d · %s · %s", k + 1, t, d);
+        line[95] = 0;
+        Text(dc, s_fontLabel, down ? kInk : kText, r.left + 12, r.top + 4, r.right - 8, r.top + 28, DT_LEFT, line);
+        // the range by the traffic seen on it
+        COLORREF c = kTextDim;
+        if (!g_cfg.traffic) {
+            wcscpy(line, L"пробки выключены");
+        } else if (!e.seenPct) {
+            wcscpy(line, L"пробок на пути не видно");
+        } else {
+            wchar_t a[24], b[24];
+            FmtMin(a, 24, e.minS);
+            FmtMin(b, 24, e.maxS);
+            if (e.maxS - e.minS < 120)
+                _snwprintf(line, 96, L"с пробками ~%s", a);
+            else if (e.maxS < 3600)
+                _snwprintf(line, 96, L"с пробками %d–%d мин", (e.minS + 59) / 60, (e.maxS + 59) / 60);
+            else
+                _snwprintf(line, 96, L"с пробками %s – %s", a, b);
+            c = e.jamM > 300 ? kTextErr : e.maxS > timeS * 1.3 ? kOrange : RGB(120, 220, 120);
+        }
+        line[95] = 0;
+        Text(dc, s_fontSmall, down ? kInk : c, r.left + 12, r.top + 28, r.right - 8, r.top + 48, DT_LEFT, line);
+        if (g_cfg.traffic && e.seenPct) {
+            FmtDist(d, 24, e.jamM);
+            if (e.jamM > 300)
+                _snwprintf(line, 96, e.seenPct < 90 ? L"пробка %s · видно %d%% пути" : L"пробка %s", d, e.seenPct);
+            else
+                _snwprintf(line, 96, e.seenPct < 90 ? L"без сильных пробок · видно %d%% пути"
+                                                    : L"без сильных пробок", e.seenPct);
+            line[95] = 0;
+            Text(dc, s_fontSmall, down ? kInk : kTextDim, r.left + 12, r.top + 48, r.right - 8, r.bottom - 4,
+                 DT_LEFT, line);
+        }
+    }
+}
+
+// The alternatives' lines under the chosen one: grey, a number in the middle.
+static void DrawAltLines(HDC dc, double cx, double cy, double vx, double vy, double angle)
+{
+    int n = RouteAlts();
+    if (n < 2)
+        return;
+    double ra = angle * M_PI / 180.0, rc = cos(ra), rs = sin(ra);
+    double l = g_cfg.mapX - 50, t = g_cfg.mapY - 50, r = g_cfg.mapX + g_cfg.mapW + 50, b = g_cfg.mapY + g_cfg.mapH + 50;
+    for (int k = 0; k < n; k++) {
+        const double* ll;
+        int np;
+        double timeS, distM;
+        if (k == RouteAltCur() || !RouteAltGet(k, &ll, &np, &timeS, &distM) || np < 2)
+            continue;
+        HPEN edge = CreatePen(PS_SOLID, 9, RGB(70, 76, 86)), in = CreatePen(PS_SOLID, 5, RGB(160, 170, 186));
+        double px = 0, py = 0;
+        for (int pass = 0; pass < 2; pass++) {
+            HGDIOBJ op = SelectObject(dc, pass ? in : edge);
+            for (int i = 0; i < np; i++) {
+                double gx, gy;
+                GeoToWorld(ll[i * 2], ll[i * 2 + 1], g_cfg.z, &gx, &gy);
+                double dx = gx - vx, dy = gy - vy, x = cx + dx * rc + dy * rs, y = cy - dx * rs + dy * rc;
+                if (i > 0) {
+                    double x0 = px, y0 = py, x1 = x, y1 = y;
+                    if (ClipSeg(&x0, &y0, &x1, &y1, l, t, r, b) && (fabs(x1 - x0) + fabs(y1 - y0) >= 1 || i == np - 1)) {
+                        POINT seg[2] = { { Round(x0), Round(y0) }, { Round(x1), Round(y1) } };
+                        Polyline(dc, seg, 2);
+                    } else if (fabs(x1 - x0) + fabs(y1 - y0) < 1) {
+                        continue;   // (too short: the next point continues from this one's start)
+                    }
+                }
+                px = x;
+                py = y;
+            }
+            SelectObject(dc, op);
+        }
+        DeleteObject(edge);
+        DeleteObject(in);
+        // its number at the middle of the line
+        const double* m = ll + (np / 2) * 2;
+        double gx, gy;
+        GeoToWorld(m[0], m[1], g_cfg.z, &gx, &gy);
+        double dx = gx - vx, dy = gy - vy;
+        wchar_t num[4];
+        _snwprintf(num, 4, L"%d", k + 1);
+        RouteMarker(dc, Round(cx + dx * rc + dy * rs), Round(cy - dx * rs + dy * rc), RGB(90, 98, 110), num);
+    }
 }
 
 static void RoutePass(HDC dc, const int* runs, int nr, int width, COLORREF c)
@@ -1495,6 +1677,7 @@ static void RouteMarker(HDC dc, int x, int y, COLORREF fill, const wchar_t* t)
 
 static void DrawRoute(HDC dc, double cx, double cy, double vx, double vy, double angle)
 {
+    DrawAltLines(dc, cx, cy, vx, vy, angle);
     double ra = angle * M_PI / 180.0, rc = cos(ra), rs = sin(ra);
     double dlon, dlat;
     bool dest = RouteDest(&dlon, &dlat);
@@ -2390,8 +2573,10 @@ static void DrawPlan(HDC dc)
             wcscpy(label, L"Откуда");
         else if (slot == 4)
             wcscpy(label, L"Куда");
+        else if (p->nvia > 1)   // (the user's word 2026-10-26)
+            _snwprintf(label, 16, L"Заехать %d", slot);
         else
-            _snwprintf(label, 16, L"Заезд %d", slot);
+            wcscpy(label, L"Заехать");
         const RoutePlace* pl = PlanSlot(slot);
         const wchar_t* v = pl->kind == PL_PLACE ? pl->name : pl->kind == PL_GPS
                          ? (s_gps.valid ? L"Моё местоположение" : L"Моё местоположение (нет GPS)") : L"не выбрано";
@@ -2405,7 +2590,7 @@ static void DrawPlan(HDC dc)
         }
     }
     if (PlanRect(P_ADDVIA, &r))
-        DrawCtl(dc, r, s_planPressed == P_ADDVIA, s_fontLabel, L"+ ЗАЕЗД");
+        DrawCtl(dc, r, s_planPressed == P_ADDVIA, s_fontLabel, L"+ ЗАЕХАТЬ");
     PlanRect(P_GO, &r);
     bool ready = p->to.kind == PL_PLACE && (p->from.kind == PL_PLACE || (p->from.kind == PL_GPS && s_gps.valid));
     Tile(dc, r, ready || s_planPressed == P_GO ? kOrange : kPanel2, ready ? kOrange : kLine, 20);
@@ -2450,6 +2635,9 @@ static bool MenuRect(int id, RECT* r)
 static int HitOverMap(int x, int y)
 {
     RECT r;
+    for (int k = 0; CardRect(k, &r); k++)
+        if (x >= r.left && x < r.right && y >= r.top && y < r.bottom)
+            return 70 + k;
     if (PickRect(&r) && x >= r.left && x < r.right && y >= r.top && y < r.bottom)
         return P_PICK_CANCEL;
     for (int id = M_VIA; id <= M_CANCEL; id++)
@@ -2460,7 +2648,9 @@ static int HitOverMap(int x, int y)
 
 static void OnOverMap(int id)
 {
-    if (id == P_PICK_CANCEL) {
+    if (id >= 70 && id < 73) {   // an alternative card: that route on
+        RouteAltChoose(id - 70);
+    } else if (id == P_PICK_CANCEL) {
         s_pickSlot = -1;
         s_plan = true;
     } else if (id == M_VIA) {
@@ -2481,11 +2671,12 @@ static void OnOverMap(int id)
 static void DrawOverMap(HDC dc)
 {
     RECT r;
+    DrawCards(dc);
     if (PickRect(&r)) {
         RECT bar = { 8, kStatusH + 6, s_cw - 8, kStatusH + 62 };
         Darken(dc, bar, 12);
         Outline(dc, bar, kOrange, 12);
-        static const wchar_t* kWhat[5] = { L"«Откуда»", L"заезд 1", L"заезд 2", L"заезд 3", L"«Куда»" };
+        static const wchar_t* kWhat[5] = { L"«Откуда»", L"«Заехать 1»", L"«Заехать 2»", L"«Заехать 3»", L"«Куда»" };
         wchar_t s[96];
         _snwprintf(s, 96, L"Нажмите на карту: точка для %s", kWhat[s_pickSlot]);
         s[95] = 0;
@@ -2502,7 +2693,7 @@ static void DrawOverMap(HDC dc)
                 DrawCtl(dc, r, s_planPressed == id, s_fontLabel, kMenu[id - M_VIA]);
             else if (id == M_VIA) {
                 SetRect(&r, 220, 300, 580, 350);
-                Text(dc, s_fontSmall, kTextDim, r.left, r.top, r.right, r.bottom, DT_CENTER, L"заездов уже три");
+                Text(dc, s_fontSmall, kTextDim, r.left, r.top, r.right, r.bottom, DT_CENTER, L"уже три точки «Заехать»");
             }
         }
     }
@@ -3016,8 +3207,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         HttpSetGpsDate(s_gps.date);   // a reliable date for HTTPS certificate checks
         if (wp == 1)
             OnGpsScanDone();
-        if (s_gps.valid)
+        if (s_gps.valid) {
+            if (RouteAlts() >= 2 && s_gps.speedKmh > 15)
+                RouteAltsDone();   // driving: the route chosen is the one on
             RouteGps(s_gps.lon, s_gps.lat, s_gps.speedKmh, s_gps.course);
+        }
         if (!s_dragging) {
             FollowGps();
             Ensure(REQ_AUTO);
@@ -3147,6 +3341,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                     OnLongPress(s_dragStart.x, s_dragStart.y);
             } else if (s_pickSlot >= 0) {
                 PickAt(x, y);
+            } else if (RouteAlts() >= 2) {
+                RouteAltsDone();
             } else {   // a tap on the map raises (and refreshes the traffic) / lowers the bottom bar
                 bool up = !DockUp();
                 DockShow(up);

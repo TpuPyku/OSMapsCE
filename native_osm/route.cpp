@@ -308,8 +308,43 @@ static DWORD     s_sig;
 static wchar_t   s_stateText[64];
 static double    s_gpsLon, s_gpsLat;   // the last fix (a new route from the car)
 static bool      s_gpsHave;
+// Alternatives (the user's wish 2026-10-26): a route without stops is asked with up to two more; while the driver
+// chooses, the answer is kept (the chosen one is read from it again) with each one's line, time and length.
+static bool      s_wantAlts;
+static char*     s_altBody;
+static int       s_nalt, s_cur;
+static double*   s_altPts[3];
+static int       s_altNp[3];
+static double    s_altTime[3], s_altDist[3];
 
 RoutePlan* RoutePlanGet() { return &s_plan; }
+
+void RouteAltsDone()
+{
+    free(s_altBody);
+    s_altBody = NULL;
+    for (int i = 0; i < 3; i++) {
+        free(s_altPts[i]);
+        s_altPts[i] = NULL;
+    }
+    if (s_nalt)
+        s_sig++;
+    s_nalt = 0;
+}
+
+int RouteAlts() { return s_nalt; }
+int RouteAltCur() { return s_cur; }
+
+bool RouteAltGet(int k, const double** ll, int* np, double* timeS, double* distM)
+{
+    if (k < 0 || k >= s_nalt)
+        return false;
+    *ll = s_altPts[k];
+    *np = s_altNp[k];
+    *timeS = s_altTime[k];
+    *distM = s_altDist[k];
+    return true;
+}
 
 static void FreeRoute()
 {
@@ -338,6 +373,8 @@ static void Ask(double fromLon, double fromLat, double course)
     if (n > 0)
         n += _snprintf(path + n, sizeof(path) - n, ";%.6f,%.6f?overview=full&geometries=polyline6&steps=true",
                        s_plan.to.lon, s_plan.to.lat);
+    if (n > 0 && s_wantAlts && !s_plan.nvia)
+        n += _snprintf(path + n, sizeof(path) - n, "&alternatives=2");
     if (n > 0 && course >= 0) {   // the way the car goes: no route starting with a U-turn; the rest - any
         n += _snprintf(path + n, sizeof(path) - n, "&bearings=%d,60", (int)course);
         for (int i = 0; i <= s_plan.nvia && n > 0; i++)
@@ -345,6 +382,7 @@ static void Ask(double fromLon, double fromLat, double course)
     }
     (void)head;
     path[sizeof(path) - 1] = 0;
+    s_wantAlts = false;   // (asked once: a new route off the line takes the best one)
     s_routeSeq = NetApi(API_ROUTE, kOsrm, false, path);
     s_reqTick = GetTickCount();
     if (!s_np)
@@ -365,6 +403,8 @@ bool RouteStart(double gpsLon, double gpsLat, double course, bool gpsValid)
     if (s_plan.to.kind != PL_PLACE || s_plan.from.kind == PL_NONE || (s_plan.from.kind == PL_GPS && !gpsValid))
         return false;
     FreeRoute();
+    RouteAltsDone();
+    s_wantAlts = true;
     s_off = false;
     s_offFixes = 0;
     s_stateText[0] = 0;
@@ -420,6 +460,7 @@ void RouteAddVia(const RoutePlace& p, double gpsLon, double gpsLat, double cours
     s_plan.via[best] = p;
     s_plan.nvia++;
     Log("route: a stop added as %d of %d", best + 1, s_plan.nvia);
+    RouteAltsDone();
     s_off = false;
     s_offFixes = 0;
     FromPlan(gpsLon, gpsLat, course, gpsValid);
@@ -428,14 +469,16 @@ void RouteAddVia(const RoutePlace& p, double gpsLon, double gpsLat, double cours
 void RouteClear()
 {
     FreeRoute();
+    RouteAltsDone();
     s_state = ROUTE_NONE;
     s_routeSeq = 0;
     s_sig++;
 }
 
 // ---- a place's name by its point (Photon's reverse): the editor shows an address, not the coordinates
-static DWORD s_revSeq;
-static double s_revLon, s_revLat;
+struct Lookup { DWORD seq; double lon, lat; };
+static Lookup s_rev[4];   // the lookups under way, by their sequence numbers
+static int    s_revNext;
 
 void PlaceLookup(const RoutePlace& p)
 {
@@ -444,19 +487,21 @@ void PlaceLookup(const RoutePlace& p)
     char path[120];
     _snprintf(path, sizeof(path), "/reverse?lon=%.6f&lat=%.6f&limit=1", p.lon, p.lat);
     path[sizeof(path) - 1] = 0;
-    s_revLon = p.lon;
-    s_revLat = p.lat;
-    s_revSeq = NetApi(API_REVERSE, kPhoton, true, path);
+    Lookup& l = s_rev[s_revNext];
+    s_revNext = (s_revNext + 1) % 4;
+    l.lon = p.lon;
+    l.lat = p.lat;
+    l.seq = NetApi(API_REVERSE, kPhoton, true, path);
 }
 
-static void OnReverse(const char* body)
+static void OnReverse(const char* body, double lon, double lat)
 {
     SearchHit h;
     if (!ParseHits(body, &h, 1))
         return;
     RoutePlace* all[kMaxVia + 2] = { &s_plan.from, &s_plan.to, &s_plan.via[0], &s_plan.via[1], &s_plan.via[2] };
     for (int i = 0; i < kMaxVia + 2; i++)
-        if (all[i]->kind == PL_PLACE && all[i]->lon == s_revLon && all[i]->lat == s_revLat) {
+        if (all[i]->kind == PL_PLACE && all[i]->lon == lon && all[i]->lat == lat) {
             wcsncpy(all[i]->name, h.name, 79);
             all[i]->name[79] = 0;
         }
@@ -583,20 +628,13 @@ static void Instruction(const char* step, const char* m, const char* type, const
     out[cap - 1] = 0;
 }
 
-static void OnRoute(const char* body)
+// A route's line (its encoded length is a bound of the point count: each point >= 2 characters); 0 = none.
+static int Line(const char* route, double** out)
 {
-    char code[32];
-    JStr(JKey(body, "code"), code, sizeof(code));
-    const char* route = JFirst(JKey(body, "routes"));
+    *out = NULL;
     const char* geom = JKey(route, "geometry");
-    if (strcmp(code, "Ok") || !geom || *geom != '"') {
-        Log("route: no route: %s", code);
-        if (!s_np)
-            s_state = ROUTE_FAIL;
-        wcscpy(s_stateText, L"Маршрут не найден");
-        return;
-    }
-    // the line: its encoded length is a bound of the point count (each point >= 2 characters)
+    if (!geom || *geom != '"')
+        return 0;
     const char* end = JSkip(geom);
     int cap = (int)(end - geom) / 2 + 2;
     char* enc = (char*)malloc(end - geom + 1);
@@ -604,11 +642,37 @@ static void OnRoute(const char* body)
     if (!enc || !pts) {
         free(enc);
         free(pts);
-        return;
+        return 0;
     }
     JStr(geom, enc, (int)(end - geom) + 1);
     int np = Decode(enc, pts, cap);
     free(enc);
+    *out = pts;
+    return np;
+}
+
+static const char* RouteN(const char* body, int k)
+{
+    const char* r = JFirst(JKey(body, "routes"));
+    for (int i = 0; i < k && r; i++)
+        r = JNext(r);
+    return r;
+}
+
+static void OnRoute(const char* body, int k)
+{
+    char code[32];
+    JStr(JKey(body, "code"), code, sizeof(code));
+    const char* route = RouteN(body, k);
+    double* pts;
+    int np = strcmp(code, "Ok") ? 0 : Line(route, &pts);
+    if (!np) {
+        Log("route: no route: %s", code);
+        if (!s_np)
+            s_state = ROUTE_FAIL;
+        wcscpy(s_stateText, L"Маршрут не найден");
+        return;
+    }
     const char* legs = JKey(route, "legs");
     int nm = 0;
     for (const char* lg = JFirst(legs); lg; lg = JNext(lg))
@@ -623,6 +687,7 @@ static void OnRoute(const char* body)
         return;
     }
     FreeRoute();
+    s_cur = k;
     s_pts = pts;
     s_np = np;
     s_cum = cum;
@@ -689,13 +754,34 @@ bool OnApiResult(ApiResult* r)
         else
             s_searchState = SEARCH_FAIL;
         redraw = true;
-    } else if (r->kind == API_REVERSE && r->seq == s_revSeq) {
-        if (ok)
-            OnReverse(r->body);
-        redraw = true;
+    } else if (r->kind == API_REVERSE) {
+        for (int i = 0; i < 4; i++)
+            if (s_rev[i].seq == r->seq) {
+                if (ok)
+                    OnReverse(r->body, s_rev[i].lon, s_rev[i].lat);
+                s_rev[i].seq = 0;
+                redraw = true;
+            }
     } else if (r->kind == API_ROUTE && r->seq == s_routeSeq && s_state != ROUTE_NONE) {
-        if (r->body && (r->httpStatus == 200 || r->httpStatus == 400))   // 400: OSRM's "NoRoute" with its code
-            OnRoute(r->body);
+        if (r->body && (r->httpStatus == 200 || r->httpStatus == 400)) {   // 400: OSRM's "NoRoute" with its code
+            RouteAltsDone();
+            int n = 0;
+            for (const char* rt = RouteN(r->body, 0); rt && n < 3; rt = JNext(rt)) {
+                s_altNp[n] = Line(rt, &s_altPts[n]);
+                s_altTime[n] = JNum(JKey(rt, "duration"), 0);
+                s_altDist[n] = JNum(JKey(rt, "distance"), 0);
+                n++;
+            }
+            if (n >= 2) {   // the driver chooses: the answer is kept
+                s_nalt = n;
+                s_altBody = r->body;
+                r->body = NULL;
+                Log("route: %d alternatives", n);
+            } else {
+                RouteAltsDone();
+            }
+            OnRoute(s_altBody ? s_altBody : r->body, 0);
+        }
         else {
             if (!s_np)
                 s_state = ROUTE_FAIL;
@@ -721,6 +807,14 @@ static double SegDist(double x, double y, int a, double* t)
     *t = k;
     double ex = ax + k * dx - x, ey = ay + k * dy - y;
     return sqrt(ex * ex + ey * ey);
+}
+
+void RouteAltChoose(int k)
+{
+    if (k < 0 || k >= s_nalt || !s_altBody)
+        return;
+    OnRoute(s_altBody, k);
+    s_sig++;
 }
 
 void RouteGps(double lon, double lat, double kmh, double course)
@@ -774,6 +868,7 @@ void RouteGps(double lon, double lat, double kmh, double course)
     bool off = s_offFixes >= kOffFixes && s_plan.from.kind == PL_GPS;
     if (off && GetTickCount() - s_reqTick > kRerouteMs) {
         Log("route: off by %d m, a new route", (int)best);
+        RouteAltsDone();
         Ask(lon, lat, kmh > 10 ? course : -1);
     }
     if (off != s_off)
@@ -830,5 +925,5 @@ DWORD RouteSig()
 {
     RouteInfo i;
     RouteGet(&i);
-    return s_sig * 7919 + s_state * 31 + i.nextM / 10 + (DWORD)i.leftM / 100 * 131;
+    return s_sig * 7919 + s_state * 31 + i.nextM / 10 + (DWORD)i.leftM / 100 * 131 + s_nalt * 17 + s_cur * 3;
 }
