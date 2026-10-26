@@ -1773,9 +1773,149 @@ static void OnDestroy(HWND hwnd)
     PostQuitMessage(0);
 }
 
+// ---------------------------------------------------------------- VestaHome's map widget
+// OSMapsCE as an add-on of VestaHome (VestaHome/docs/plugin-api.md, 4.1; 2026-10-26): when VestaHome runs, OSMapsCE
+// says hello and declares the picture widget "Карта" (2 x 2). While the widget is in sight (widget.show) the map is
+// drawn into the back buffer each second - minimized too - and its middle (the car) copied as RGB565 into the shared
+// memory VestaHome made; a tap on the widget brings OSMapsCE to the front. Without VestaHome nothing of this runs.
+#define VHAP_MAGIC 0x56484150   // 'VHAP'
+static HWND           s_vh;         // VestaHome's window
+static HANDLE         s_vhMap;
+static unsigned char* s_vhView;     // 16 bytes ('VHIM', w, h, frame number), then the rows
+static int            s_vhW, s_vhH;
+static bool           s_vhShown;
+static DWORD          s_vhSeq, s_vhHelloTick;
+
+static void VhSend(const wchar_t* fmt, ...)
+{
+    if (!s_vh || !IsWindow(s_vh)) {
+        s_vh = NULL;
+        return;
+    }
+    wchar_t t[256];
+    va_list a;
+    va_start(a, fmt);
+    int n = _vsnwprintf(t, 255, fmt, a);
+    va_end(a);
+    t[255] = 0;
+    if (n < 0)
+        n = (int)wcslen(t);
+    COPYDATASTRUCT c;
+    c.dwData = VHAP_MAGIC;
+    c.cbData = n * sizeof(wchar_t);
+    c.lpData = t;
+    SendMessage(s_vh, WM_COPYDATA, (WPARAM)s_wnd, (LPARAM)&c);
+}
+
+static bool VhField(const wchar_t* cmd, const wchar_t* key, wchar_t* out, int cap)
+{
+    out[0] = 0;
+    int kl = (int)wcslen(key);
+    for (const wchar_t* p = wcschr(cmd, L'\t'); p; p = wcschr(p + 1, L'\t')) {
+        if (wcsncmp(p + 1, key, kl) || p[1 + kl] != L'=')
+            continue;
+        const wchar_t* v = p + 2 + kl;
+        int n = 0;
+        while (v[n] && v[n] != L'\t' && n < cap - 1) {
+            out[n] = v[n];
+            n++;
+        }
+        out[n] = 0;
+        return true;
+    }
+    return false;
+}
+
+static void VhFree()
+{
+    if (s_vhView)
+        UnmapViewOfFile(s_vhView);
+    if (s_vhMap)
+        CloseHandle(s_vhMap);
+    s_vhView = NULL;
+    s_vhMap = NULL;
+    s_vhShown = false;
+}
+
+static void VhReceive(const wchar_t* cmd)
+{
+    wchar_t v[64];
+    if (!wcsncmp(cmd, L"welcome", 7)) {
+        VhSend(L"widget\tid=map\ttitle=Карта OSM\ticon=map\tsize=2x2\timage=1");
+    } else if (!wcsncmp(cmd, L"widget.size", 11)) {
+        VhFree();
+        VhField(cmd, L"w", v, 8);
+        s_vhW = _wtoi(v);
+        VhField(cmd, L"h", v, 8);
+        s_vhH = _wtoi(v);
+        VhField(cmd, L"shm", v, 64);
+        DWORD size = 16 + s_vhW * s_vhH * 2;
+        if (s_vhW > 0 && s_vhH > 0 && s_vhW <= s_cw && s_vhH <= s_ch) {   // the same memory: VestaHome made it
+            s_vhMap = CreateFileMapping(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, size, v);
+            s_vhView = s_vhMap ? (unsigned char*)MapViewOfFile(s_vhMap, FILE_MAP_ALL_ACCESS, 0, 0, size) : NULL;
+        }
+        Log("vestahome: map widget %d x %d %s", s_vhW, s_vhH, s_vhView ? "ok" : "NO MEMORY");
+    } else if (!wcsncmp(cmd, L"widget.show", 11)) {
+        VhField(cmd, L"value", v, 8);
+        s_vhShown = v[0] == L'1';
+    } else if (!wcsncmp(cmd, L"widget.tap", 10)) {   // to the front, the whole screen
+        ShowWindow(s_wnd, SW_SHOW);
+        SetForegroundWindow(s_wnd);
+        InvalidateRect(s_wnd, NULL, FALSE);
+    } else if (!wcsncmp(cmd, L"bye", 3) || !wcsncmp(cmd, L"quit", 4)) {   // VestaHome gone: OSMapsCE stays
+        VhFree();
+        s_vh = NULL;
+    }
+}
+
+// Each second: find VestaHome (again), and a frame for the widget while it is in sight.
+static void VhTick()
+{
+    if (!s_vh || !IsWindow(s_vh)) {
+        if (s_vh || s_vhView)
+            VhFree();
+        s_vh = NULL;
+        if (GetTickCount() - s_vhHelloTick < 5000)
+            return;
+        s_vhHelloTick = GetTickCount();
+        s_vh = FindWindow(L"VestaHome_Wnd", NULL);
+        if (s_vh)
+            VhSend(L"hello\tid=OSMapsCE\tname=OSMapsCE\tver=1\tapi=1\thwnd=%08X", (unsigned)(UINT_PTR)s_wnd);
+        return;
+    }
+    if (!s_vhShown || !s_vhView || !s_backBits || !s_back)
+        return;
+    HDC wdc = GetDC(s_wnd);
+    HDC dc = CreateCompatibleDC(wdc);
+    ReleaseDC(s_wnd, wdc);
+    HGDIOBJ ob = SelectObject(dc, s_back);
+    SetBkMode(dc, TRANSPARENT);
+    DrawMap(dc);   // (the next paint of our own window draws its frame anew)
+    SelectObject(dc, ob);
+    DeleteDC(dc);
+    int x0 = g_cfg.mapX + (g_cfg.mapW - s_vhW) / 2, y0 = g_cfg.mapY + (g_cfg.mapH - s_vhH) / 2, stride = BackStride();
+    unsigned short* dst = (unsigned short*)(s_vhView + 16);
+    for (int y = 0; y < s_vhH; y++)   // the back buffer is bottom-up, the widget's rows top down
+        memcpy(dst + y * s_vhW, s_backBits + (s_ch - 1 - (y0 + y)) * stride + x0, s_vhW * 2);
+    ((DWORD*)s_vhView)[3] = ++s_vhSeq;
+    VhSend(L"widget.frame\tid=map");
+}
+
 static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
     switch (msg) {
+    case WM_COPYDATA: {   // VestaHome's commands
+        const COPYDATASTRUCT* c = (const COPYDATASTRUCT*)lp;
+        if (!c || c->dwData != VHAP_MAGIC || !c->lpData)
+            return FALSE;
+        wchar_t cmd[256];
+        int n = (int)(c->cbData / sizeof(wchar_t));
+        n = n > 255 ? 255 : n;
+        memcpy(cmd, c->lpData, n * sizeof(wchar_t));
+        cmd[n] = 0;
+        VhReceive(cmd);
+        return TRUE;
+    }
     case WM_CREATE:
         OnCreate(hwnd);
         return 0;
@@ -1813,6 +1953,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         } else {
             GpsGet(&s_gps);
             g_today = Today();
+            VhTick();   // VestaHome's map widget
             int sharedNight = NightShared();   // switched in VestaHome: follow it
             if (sharedNight >= 0 && (sharedNight != 0) != (g_cfg.night != 0))
                 NightSet(sharedNight != 0);
