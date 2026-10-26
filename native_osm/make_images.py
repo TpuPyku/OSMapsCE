@@ -15,8 +15,8 @@ from PIL import Image, ImageDraw, ImageFont
 
 APP = 'OSMapsCE'                              # 'YaMapsCE' or 'OSMapsCE'
 
-INK, PANEL, LINE = (0x0b, 0x0c, 0x0e), (0x17, 0x19, 0x1c), (0x34, 0x38, 0x3f)   # VestaHome palette
-TEXT, MUTED, DIM, ORANGE = (0xf3, 0xf1, 0xec), (0xa3, 0xa8, 0xb0), (0x5d, 0x63, 0x6c), (0xff, 0x6b, 0x1a)
+INK, PANEL, LINE = (0x0e, 0x10, 0x13), (0x1a, 0x1d, 0x22), (0x2a, 0x2f, 0x37)   # VestaHome palette (design 0.6)
+TEXT, MUTED, DIM, ORANGE = (0xf5, 0xf3, 0xee), (0xaa, 0xb0, 0xb8), (0x6c, 0x72, 0x7c), (0xff, 0x6b, 0x1a)
 MAP = (2, 28, 600, 450)                       # default map_x, map_y, map_w, map_h (util.cpp)
 B, K = 50, 4                                  # button size, drawing scale
 FONT = os.path.join(os.environ.get('WINDIR', r'C:\Windows'), 'Fonts', 'tahomabd.ttf')
@@ -208,10 +208,77 @@ def sign_image(sg, on, pressed, size, dock=False):
     return im.resize((size, size), Image.LANCZOS)
 
 
+# ---- OSMapsCE: VestaHome's icons (the user 2026-10-26: the icons as VestaHome's) - Lucide (lucide.dev, ISC licence,
+# the SVGs cached in lucide/ with it), drawn as VestaHome/skin/make_icons.py does: stroke 2 of 24, round ends, its
+# own antialiasing; the traffic source stays a letter in VestaHome's Golos. Orange (the "on" state) is the design's:
+# OSMapsCE recolours it into the theme's accent when it loads the pictures.
+LUCIDE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'lucide')
+LUCIDE_URL = 'https://unpkg.com/lucide-static@1.61.0/'
+GOLOS = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'OSMapsCE', 'Fonts', 'GolosText-Bold.ttf')
+# picture name -> (Lucide icon or 'T:text', on: drawn in the accent, filled)
+LUCIDE_SIGNS = {'Bplus': ('plus', False, False), 'Bminus': ('minus', False, False),
+                'Bgps_on': ('navigation', True, True), 'Bgps_off': ('locate-fixed', False, False),
+                'Bgps_none': ('locate', False, False)}
+LUCIDE_DOCK = {'Bhome': ('house', False, False), 'Bset': ('settings', False, False), 'Bnight_on': ('sun', False, False),
+               'Bnight_off': ('moon', False, False), 'Btrf_on': ('car-front', True, False),
+               'Btrf_off': ('car-front', False, False), 'Btsrc_ya': ('T:Я', False, False),
+               'Btsrc_2g': ('T:2Г', False, False), 'Bsearch': ('search', False, False),
+               'Broff': ('route-off', False, False)}
+LUCIDE_SMALL = {'Sleft': ('chevron-left', False, False), 'Sright': ('chevron-right', False, False),
+                'Sback': ('undo-2', False, False)}
+
+
+def lucide_svg(name):
+    import urllib.request
+    path = os.path.join(LUCIDE, name + '.svg')
+    if not os.path.exists(path):
+        os.makedirs(LUCIDE, exist_ok=True)
+        open(path, 'wb').write(urllib.request.urlopen(LUCIDE_URL + 'icons/%s.svg' % name, timeout=30).read())
+        lic = os.path.join(LUCIDE, 'LICENSE')
+        if not os.path.exists(lic):
+            open(lic, 'wb').write(urllib.request.urlopen(LUCIDE_URL + 'LICENSE', timeout=30).read())
+    svg = open(path, encoding='utf-8').read()
+    import re
+    body = svg[svg.index('>', svg.index('<svg')) + 1:svg.rindex('</svg>')]
+    return re.sub(r'<!--.*?-->', '', body, flags=re.S)
+
+
+def lucide_image(spec, color, canvas, icon):
+    name, _, filled = spec
+    im = Image.new('RGBA', (canvas, canvas), (0, 0, 0, 0))
+    if name.startswith('T:'):   # a letter: VestaHome's font
+        f = ImageFont.truetype(GOLOS, int(icon * 0.72))
+        ImageDraw.Draw(im).text((canvas / 2, canvas / 2), name[2:], font=f, fill=color + (255,), anchor='mm')
+        return im
+    import pymupdf
+    hexc = '#%02x%02x%02x' % color
+    svg = ('<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="%s" stroke="%s" '
+           'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">%s</svg>'
+           % (hexc if filled else 'none', hexc, lucide_svg(name)))
+    doc = pymupdf.open(stream=svg.encode('utf-8'), filetype='svg')
+    pix = doc[0].get_pixmap(matrix=pymupdf.Matrix(icon / 24.0, icon / 24.0), alpha=True)
+    ic = Image.frombytes('RGBA', (pix.width, pix.height), pix.samples)
+    im.paste(ic, ((canvas - ic.width) // 2, (canvas - ic.height) // 2), ic)
+    return im
+
+
 def main():
     here = os.path.dirname(os.path.abspath(__file__))
     out = os.path.join(here, '..', APP, 'Images')
     if APP == 'OSMapsCE':
+        Image.new('RGB', (800, 480), INK).save(os.path.join(out, 'MapGL.png'))   # covered by the map
+        n = 1
+        # the round buttons: 28 px icons on 48; the bottom bar: 28 px on 44 (as VestaHome's bar); small: 28 on 32
+        for group, canvas, muted in ((LUCIDE_SIGNS, 48, False), (LUCIDE_DOCK, 44, True), (LUCIDE_SMALL, 32, False)):
+            for name, spec in group.items():
+                for pressed in (False, True):
+                    c = INK if pressed else ORANGE if spec[1] else MUTED if muted or name == 'Bgps_none' else TEXT
+                    lucide_image(spec, c, canvas, 28).save(
+                        os.path.join(out, '%s_%s.png' % (name, 'P' if pressed else 'N')))
+                    n += 1
+        print(out, n, 'files (Lucide)')
+        return
+    if APP == 'OSMapsCE_old':
         Image.new('RGB', (800, 480), INK).save(os.path.join(out, 'MapGL.png'))   # covered by the map
         n = 1
         for group, size in ((SIGNS, SIGN_SIZE), (DOCK, DOCK_SIZE), (SMALL, SMALL_SIZE)):

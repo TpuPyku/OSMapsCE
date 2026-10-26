@@ -42,20 +42,21 @@ static Button s_btn[B_COUNT] = {
 };
 static const int kDockOrder[] = { B_HOME, B_TRF, B_TSRC, B_SEARCH, B_ROUTEOFF, B_NIGHT, B_SETTINGS };
 static const int kDockCount = sizeof(kDockOrder) / sizeof(kDockOrder[0]);
-static Overlay*  s_arrow[2][2];   // settings: back / stepper arrows ([left, right][pressed])
+static Overlay*  s_arrow[2][2];   // the steppers' arrows ([left, right][pressed]); the search's "back"
+static Overlay*  s_backSign[2];   // VestaHome's "back" (undo-2) at the bottom left: settings, the route editor
 
 static const wchar_t* kWeekDays[7] = { L"Вс", L"Пн", L"Вт", L"Ср", L"Чт", L"Пт", L"Сб" };
 static const wchar_t* kTrafficTitle[TRF_COUNT] = { L"Яндекс", L"2ГИС" };
 static const int      kTrafficSrc[TRF_COUNT] = { SRC_YANDEX, SRC_2GIS };
 
-static const COLORREF kText    = RGB(0xf3, 0xf1, 0xec);   // VestaHome palette
-static const COLORREF kTextDim = RGB(0xa3, 0xa8, 0xb0);
+static const COLORREF kText    = RGB(0xf5, 0xf3, 0xee);   // VestaHome's palette (design 0.6, its skin.ini)
+static const COLORREF kTextDim = RGB(0xaa, 0xb0, 0xb8);
 static const COLORREF kTextErr = RGB(255, 120, 120);
 static const COLORREF kMapBg   = RGB(228, 226, 222);
-static const COLORREF kInk     = RGB(0x0b, 0x0c, 0x0e);   // bars
-static const COLORREF kPanel   = RGB(0x17, 0x19, 0x1c);   // tiles, settings
-static const COLORREF kPanel2  = RGB(0x22, 0x25, 0x2a);   // settings controls
-static const COLORREF kLine    = RGB(0x34, 0x38, 0x3f);   // 2 px borders
+static const COLORREF kInk     = RGB(0x0e, 0x10, 0x13);   // the background, the bottom bar
+static const COLORREF kPanel   = RGB(0x1a, 0x1d, 0x22);   // big panels (settings)
+static const COLORREF kPanel2  = RGB(0x23, 0x27, 0x2e);   // cards, round buttons, controls: VestaHome's tiles
+static const COLORREF kLine    = RGB(0x2a, 0x2f, 0x37);   // separators
 // The one accent (pressed / on / chosen, the car and its glow): VestaHome's theme (the user's rule 2026-10-26) -
 // its "welcome" / "theme" (add-on API) or, without VestaHome running, screen.accent of its VestaHome.ini; Марс else.
 static COLORREF       kOrange  = RGB(0xff, 0x6b, 0x1a);
@@ -192,8 +193,8 @@ static const RECT kSetCtl[S_COUNT] = {
     { 512, 148, 560, 192 }, { 712, 148, 760, 192 },
     { 512, 212, 560, 256 }, { 712, 212, 760, 256 },
     { 616, 280, 760, 324 },                            // find GPS
-    { 600, 408, 768, 452 },                            // exit the program
-    { 8, 4, 64, 52 },                                  // back (top bar)
+    { 600, 416, 784, 468 },                            // exit the program
+    { 8, 412, 80, 480 },                               // back: VestaHome's, at the bottom left
 };
 static const wchar_t* kSetCaption[S_COUNT] = { NULL, NULL, NULL, NULL, NULL, NULL, L"ПОИСК", L"ЗАВЕРШИТЬ", NULL };
 
@@ -857,6 +858,7 @@ static void LoadSigns()
     for (int p = 0; p < 2; p++) {
         s_arrow[0][p] = LoadSign(L"Sleft", p);
         s_arrow[1][p] = LoadSign(L"Sright", p);
+        s_backSign[p] = LoadSign(L"Sback", p);
     }
 }
 
@@ -885,6 +887,8 @@ static void AccentSet(COLORREF c)
         for (int p = 0; p < 2; p++) {
             free(s_arrow[k][p]);
             s_arrow[k][p] = NULL;
+            free(s_backSign[p]);
+            s_backSign[p] = NULL;
         }
     LoadSigns();
     Log("ui: accent %02X%02X%02X", GetRValue(c), GetGValue(c), GetBValue(c));
@@ -1025,6 +1029,24 @@ static void Outline(HDC dc, const RECT& r, COLORREF c, int radius)
     DeleteObject(pen);
 }
 
+// VestaHome's "back" of a nested screen (its BackButton): a disc of the tiles' colour at the bottom left (centre 44, 446,
+// radius 26), the turning-back arrow; pressed - the accent.
+static const RECT kBackRect = { 8, 412, 80, 480 };
+
+static void BackDisc(HDC dc, bool down)
+{
+    RECT c = { 18, 420, 70, 472 };
+    HBRUSH b = CreateSolidBrush(down ? kOrange : kPanel2);
+    HGDIOBJ ob = SelectObject(dc, b), op = SelectObject(dc, GetStockObject(NULL_PEN));
+    Ellipse(dc, c.left, c.top, c.right + 1, c.bottom + 1);
+    SelectObject(dc, op);
+    SelectObject(dc, ob);
+    DeleteObject(b);
+    const Overlay* ov = s_backSign[down ? 1 : 0];
+    if (ov)
+        BlendSign(dc, ov, 44 - ov->w / 2, 446 - ov->h / 2);
+}
+
 // The 1 px edge of a card over the dark night map (by day the shade is enough). Design rule 2026-10-26: buttons
 // have no border; a chosen thing - the accent's 2 px (Outline); cards over the map - only this edge at night.
 static void Hairline(HDC dc, const RECT& r, int radius)
@@ -1039,10 +1061,16 @@ static void Hairline(HDC dc, const RECT& r, int radius)
     DeleteObject(pen);
 }
 
-// A card over the map (design v3): the map under it at an eighth of its brightness, round corners, no border.
+// A card over the map (design v3): VestaHome's tile colour, solid (the user 2026-10-26: the panels and the bar as
+// VestaHome's), round corners, no border; at night the 1 px edge.
 static void Card(HDC dc, const RECT& r, int radius)
 {
-    Darken(dc, r, radius, 3);
+    HBRUSH b = CreateSolidBrush(kPanel2);
+    HGDIOBJ ob = SelectObject(dc, b), op = SelectObject(dc, GetStockObject(NULL_PEN));
+    RoundRect(dc, r.left, r.top, r.right + 1, r.bottom + 1, radius * 2, radius * 2);
+    SelectObject(dc, op);
+    SelectObject(dc, ob);
+    DeleteObject(b);
     Hairline(dc, r, radius);
 }
 
@@ -2080,29 +2108,21 @@ static void Stepper(HDC dc, int prev, int next, const wchar_t* value)
 // with "back", the clock, one panel with the rows; centred on the 800 px screen.
 static void DrawSettings(HDC dc)
 {
-    RECT all = { 0, 0, s_cw, s_ch }, top = { 0, 0, s_cw, 54 }, topLine = { 0, 54, s_cw, 56 };
-    HBRUSH ink = CreateSolidBrush(kInk), line = CreateSolidBrush(kLine);
+    RECT all = { 0, 0, s_cw, s_ch };
+    HBRUSH ink = CreateSolidBrush(kInk);
     FillRect(dc, &all, ink);
-    FillRect(dc, &top, ink);
-    FillRect(dc, &topLine, line);
     DeleteObject(ink);
-    DeleteObject(line);
 
+    // as VestaHome's screens: the title at the top left, the clock at the right, no line; "back" at the bottom left
     wchar_t s[128];
-    const RECT& back = kSetCtl[S_BACK];
-    bool backDown = s_setPressed == S_BACK;
-    if (backDown)
-        Tile(dc, back, kOrange, kOrange, 24);
-    if (s_arrow[0][backDown ? 1 : 0])
-        BlendSign(dc, s_arrow[0][backDown ? 1 : 0], (back.left + back.right - s_arrow[0][0]->w) / 2,
-                  (back.top + back.bottom - s_arrow[0][0]->h) / 2);
-    Text(dc, s_fontBig, kText, 76, 0, 500, 54, DT_LEFT, L"НАСТРОЙКИ КАРТЫ");
+    Text(dc, s_fontBig, kText, 20, 0, 500, 56, DT_LEFT, L"Настройки карты");
     SYSTEMTIME t;
     GetLocalTime(&t);
     _snwprintf(s, 128, L"%02d:%02d", t.wHour, t.wMinute);
-    Text(dc, s_fontClock, kText, s_cw - 160, 0, s_cw - 14, 54, DT_RIGHT, s);
+    Text(dc, s_fontClock, kText, s_cw - 160, 0, s_cw - 16, 56, DT_RIGHT, s);
+    BackDisc(dc, s_setPressed == S_BACK);
 
-    RECT panel = { 16, 68, s_cw - 16, s_ch - 12 };
+    RECT panel = { 16, 64, s_cw - 16, 408 };
     Tile(dc, panel, kPanel, kPanel, 32);
 
     // the receiver's state, under "GPS port"
@@ -2158,39 +2178,37 @@ static void DrawSettings(HDC dc)
         }
     }
     s[127] = 0;
-    Text(dc, s_fontSmall, c, 36, 332, 580, 350, DT_LEFT, s);
+    Text(dc, s_fontSmall, c, 36, 330, 580, 348, DT_LEFT, s);
 
     _snwprintf(s, 128, L"NMEA: %d строк, с ошибкой %d", s_gps.lines, s_gps.badLines);
-    Text(dc, s_fontSmall, s_gps.lines ? kText : kTextDim, 36, 350, 580, 368, DT_LEFT, s);
+    Text(dc, s_fontSmall, s_gps.lines ? kText : kTextDim, 36, 348, 580, 366, DT_LEFT, s);
 
     if (s_gps.valid)
         _snwprintf(s, 128, L"Координаты: %.5f, %.5f  (%d спутн.)", s_gps.lat, s_gps.lon, s_gps.sats);
     else
         _snwprintf(s, 128, L"Координат пока нет (%d спутн.)", s_gps.sats);
     s[127] = 0;
-    Text(dc, s_fontSmall, s_gps.valid ? kText : kTextDim, 36, 368, 580, 386, DT_LEFT, s);
-
-    MultiByteToWideChar(CP_ACP, 0, s_gps.last, -1, s, 128);
-    s[127] = 0;
-    Text(dc, s_fontSmall, kTextDim, 36, 386, 580, 404, DT_LEFT, s[0] ? s : L"-");
+    Text(dc, s_fontSmall, s_gps.valid ? kText : kTextDim, 36, 366, 580, 384, DT_LEFT, s);
 
     if (s_gps.found == 1) {
         _snwprintf(s, 128, L"Найден GPS: %s %lu, настройки сохранены", s_gps.port, s_gps.baud);
-        Text(dc, s_fontSmall, RGB(120, 220, 120), 36, 404, 580, 422, DT_LEFT, s);
+        Text(dc, s_fontSmall, RGB(120, 220, 120), 36, 384, 580, 402, DT_LEFT, s);
     } else if (s_gps.found == -1) {
-        Text(dc, s_fontSmall, kTextErr, 36, 404, 580, 422, DT_LEFT, L"GPS не найден на COM1..COM9");
-    } else {
-        Text(dc, s_fontSmall, kTextDim, 36, 404, 580, 422, DT_LEFT,
-             L"Нет строк - не тот порт. Строки с ошибкой - не та скорость.");
+        Text(dc, s_fontSmall, kTextErr, 36, 384, 580, 402, DT_LEFT, L"GPS не найден на COM1..COM9");
+    } else {   // the last line as it came (no fix yet), or the hint
+        MultiByteToWideChar(CP_ACP, 0, s_gps.last, -1, s, 128);
+        s[127] = 0;
+        Text(dc, s_fontSmall, kTextDim, 36, 384, 580, 402, DT_LEFT,
+             s[0] && !s_gps.valid ? s : L"Нет строк - не тот порт. Строки с ошибкой - не та скорость.");
     }
 
     _snwprintf(s, 128, L"Запросов: Яндекс %d/%d, 2ГИС %d/%d, OSM %d, поиск и маршрут %d/%d",
                *Counter(SRC_YANDEX), Limit(SRC_YANDEX), *Counter(SRC_2GIS), Limit(SRC_2GIS), g_cfg.osmCount,
                g_cfg.apiCount, g_cfg.apiLimit);
     s[127] = 0;
-    Text(dc, s_fontSmall, kTextDim, 36, 422, s_cw - 36, 440, DT_LEFT, s);
+    Text(dc, s_fontTiny, kTextDim, 92, 418, 592, 442, DT_LEFT, s);
     _snwprintf(s, 128, L"OSMapsCE %s", AppVersion(kRelease));   // VestaCore vversion.h
-    Text(dc, s_fontSmall, kTextDim, 36, 440, 580, 458, DT_LEFT, s);
+    Text(dc, s_fontTiny, kTextDim, 92, 442, 592, 466, DT_LEFT, s);
 }
 
 // Distance as the bar shows it: metres by 10 (by 50 above 100), km with a tenth up to 10 km.
@@ -2211,47 +2229,51 @@ static void FmtDist(wchar_t* s, int cap, int m)
 // a dot, a roundabout - a ring with the way out up.
 static void DrawTurn(HDC dc, const RECT& r, int turn, COLORREF col = kText)
 {
-    int cx = (r.left + r.right) / 2, cy = (r.top + r.bottom) / 2 + 4;
-    HPEN pen = CreatePen(PS_SOLID, 7, col);
+    // drawn for a 76 px box; a smaller one: everything scaled (Q: the length times the box over 76)
+    int q = r.right - r.left;
+#define Q(v) ((v) * q / 76)
+    int cx = (r.left + r.right) / 2, cy = (r.top + r.bottom) / 2 + Q(4);
+    HPEN pen = CreatePen(PS_SOLID, Q(7) < 3 ? 3 : Q(7), col);
     HBRUSH br = CreateSolidBrush(col);
     HGDIOBJ op = SelectObject(dc, pen), ob = SelectObject(dc, br);
     if (turn == 999) {
         SelectObject(dc, GetStockObject(NULL_BRUSH));
-        Ellipse(dc, cx - 20, cy - 24, cx + 20, cy + 16);
+        Ellipse(dc, cx - Q(20), cy - Q(24), cx + Q(20), cy + Q(16));
         SelectObject(dc, br);
-        Ellipse(dc, cx - 6, cy - 10, cx + 6, cy + 2);
+        Ellipse(dc, cx - Q(6), cy - Q(10), cx + Q(6), cy + Q(2));
     } else {
         double a;
         int hx, hy;
         if (turn == 998) {
             SelectObject(dc, GetStockObject(NULL_BRUSH));
-            Ellipse(dc, cx - 14, cy - 8, cx + 14, cy + 20);
-            POINT st[2] = { { cx, cy - 8 }, { cx, cy - 26 } };
+            Ellipse(dc, cx - Q(14), cy - Q(8), cx + Q(14), cy + Q(20));
+            POINT st[2] = { { cx, cy - Q(8) }, { cx, cy - Q(26) } };
             Polyline(dc, st, 2);
             SelectObject(dc, br);
             a = 0;
             hx = cx;
-            hy = cy - 26;
+            hy = cy - Q(26);
         } else if (turn >= 170 || turn <= -170) {   // U-turn: up and back down on the turn's side
             int k = turn > 0 ? 1 : -1;
-            POINT u[4] = { { cx - 12 * k, r.bottom - 10 }, { cx - 12 * k, r.top + 20 }, { cx + 12 * k, r.top + 20 },
-                           { cx + 12 * k, cy + 4 } };
+            POINT u[4] = { { cx - Q(12) * k, r.bottom - Q(10) }, { cx - Q(12) * k, r.top + Q(20) },
+                           { cx + Q(12) * k, r.top + Q(20) }, { cx + Q(12) * k, cy + Q(4) } };
             Polyline(dc, u, 4);
             a = M_PI;
-            hx = cx + 12 * k;
-            hy = cy + 4;
+            hx = cx + Q(12) * k;
+            hy = cy + Q(4);
         } else {
             a = turn * M_PI / 180.0;
-            POINT st[3] = { { cx, r.bottom - 10 }, { cx, cy }, { cx + (int)(sin(a) * 22), cy - (int)(cos(a) * 22) } };
+            POINT st[3] = { { cx, r.bottom - Q(10) }, { cx, cy },
+                            { cx + (int)(sin(a) * Q(22)), cy - (int)(cos(a) * Q(22)) } };
             Polyline(dc, st, 3);
             hx = st[2].x;
             hy = st[2].y;
         }
         // the head: a triangle pointing along a
         double c = cos(a), sn = sin(a);
-        POINT h[3] = { { hx + (int)(sn * 14), hy - (int)(c * 14) },
-                       { hx + (int)(c * 12 - sn * 4), hy + (int)(sn * 12 + c * 4) },
-                       { hx - (int)(c * 12 + sn * 4), hy - (int)(sn * 12 - c * 4) } };
+        POINT h[3] = { { hx + (int)(sn * Q(14)), hy - (int)(c * Q(14)) },
+                       { hx + (int)(c * Q(12) - sn * Q(4)), hy + (int)(sn * Q(12) + c * Q(4)) },
+                       { hx - (int)(c * Q(12) + sn * Q(4)), hy - (int)(sn * Q(12) - c * Q(4)) } };
         HPEN thin = CreatePen(PS_SOLID, 1, col);
         SelectObject(dc, thin);
         Polygon(dc, h, 3);
@@ -2262,10 +2284,12 @@ static void DrawTurn(HDC dc, const RECT& r, int turn, COLORREF col = kText)
     SelectObject(dc, op);
     DeleteObject(br);
     DeleteObject(pen);
+#undef Q
 }
 
-// The turn card at the top left (design v3): the turn's sign in the accent's square, the distance big, what to do,
-// the street, "then ..." under a line; or the route's state (being laid, not found, arrived).
+// The turn (the user 2026-10-26): the big card only before it - 300 m or 20 s at the speed, whichever is more -
+// narrower than the mockup's; the rest of the time a compact one, about a quarter of it: the sign and the distance.
+// Off the route: the compact card says so in red. Not on (being laid, not found, arrived): a line card.
 static void DrawGuide(HDC dc)
 {
     RouteInfo ri;
@@ -2279,26 +2303,36 @@ static void DrawGuide(HDC dc)
              DT_LEFT, ri.text);
         return;
     }
-    RECT p = { 16, 56, 330, ri.thenText ? 238 : 204 };
-    Card(dc, p, 22);
-    if (ri.off)
-        Outline(dc, p, kTextErr, 22);
-    RECT sq = { 28, 68, 112, 152 };
-    Tile(dc, sq, kOrange, kOrange, 36);
-    DrawTurn(dc, sq, ri.turn, kInk);
-    // the distance: the number big, its unit beside it
     wchar_t d[32], num[16];
     FmtDist(d, 32, ri.nextM);
     const wchar_t* unit = wcsrchr(d, L' ');
     int n = unit ? (int)(unit - d) : (int)wcslen(d);
     wcsncpy(num, d, n);
     num[n] = 0;
+    double soonM = s_gps.speedKmh / 3.6 * 20;
+    bool big = !ri.off && ri.nextM <= (soonM > 300 ? soonM : 300);
+    if (!big) {   // compact: the sign in the accent's square and the distance
+        RECT p = { 16, 56, ri.off ? 330 : 182, 112 };
+        Card(dc, p, 18);
+        RECT sq = { 22, 62, 66, 106 };
+        Tile(dc, sq, ri.off ? kTextErr : kOrange, ri.off ? kTextErr : kOrange, 24);
+        DrawTurn(dc, sq, ri.turn, kInk);
+        Text(dc, ri.off ? s_fontSmall : s_fontKm, ri.off ? kTextErr : kText, 76, 56, p.right - 8, 112, DT_LEFT,
+             ri.off ? ri.text : d);
+        return;
+    }
+    // big: 250 px wide
+    RECT p = { 16, 56, 266, ri.thenText ? 222 : 188 };
+    Card(dc, p, 22);
+    RECT sq = { 28, 68, 96, 136 };
+    Tile(dc, sq, kOrange, kOrange, 32);
+    DrawTurn(dc, sq, ri.turn, kInk);
     SelectObject(dc, s_fontHuge);
     SIZE sz;
     GetTextExtentPoint32(dc, num, n, &sz);
-    Text(dc, s_fontHuge, kText, 126, 66, 330, 120, DT_LEFT, num);
+    Text(dc, s_fontHuge, kText, 108, 62, 266, 116, DT_LEFT, num);
     if (unit)
-        Text(dc, s_fontKm, kTextDim, 126 + sz.cx + 6, 80, 330, 118, DT_LEFT, unit + 1);
+        Text(dc, s_fontKm, kTextDim, 108 + sz.cx + 5, 76, 266, 114, DT_LEFT, unit + 1);
     // "Поверните направо: Московская улица" -> what to do under the distance, the street in the line below
     wchar_t act[112], street[112] = L"";
     wcsncpy(act, ri.text, 111);
@@ -2311,33 +2345,36 @@ static void DrawGuide(HDC dc)
         wcscpy(street, act);
         act[0] = 0;
     }
-    Text(dc, s_fontSmall, kTextDim, 126, 120, 324, 146, DT_LEFT, act);
+    const wchar_t* verb = act;   // "Поверните направо" -> "направо": the sign says the rest
+    if (!wcsncmp(act, L"Поверните ", 10))
+        verb = act + 10;
+    Text(dc, s_fontSmall, kTextDim, 108, 114, 262, 138, DT_LEFT, verb);
     // the street big; a longer one smaller, the longest in two lines
     SelectObject(dc, s_fontStreet);
     GetTextExtentPoint32(dc, street, (int)wcslen(street), &sz);
     HFONT sf = s_fontStreet;
-    if (sz.cx > 292) {
+    if (sz.cx > 226) {
         SelectObject(dc, s_fontLabel);
         GetTextExtentPoint32(dc, street, (int)wcslen(street), &sz);
-        sf = sz.cx > 292 ? NULL : s_fontLabel;
+        sf = sz.cx > 226 ? NULL : s_fontLabel;
     }
     if (sf) {
-        Text(dc, sf, ri.off ? kTextErr : kText, 30, 160, 322, 196, DT_LEFT, street);
+        Text(dc, sf, kText, 28, 144, 258, 180, DT_LEFT, street);
     } else {
-        RECT sr = { 30, 154, 322, 200 };
+        RECT sr = { 28, 142, 258, 184 };
         SelectObject(dc, s_fontSmall);
-        SetTextColor(dc, ri.off ? kTextErr : kText);
+        SetTextColor(dc, kText);
         DrawText(dc, street, -1, &sr, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);
     }
     if (ri.thenText) {
-        RECT l = { 30, 203, 316, 204 };
+        RECT l = { 28, 188, 254, 189 };
         HBRUSH b = CreateSolidBrush(kLine);
         FillRect(dc, &l, b);
         DeleteObject(b);
         wchar_t t[128];
         _snwprintf(t, 128, L"затем — %s", ri.thenText);
         t[127] = 0;
-        Text(dc, s_fontSmall, kTextDim, 30, 208, 322, 232, DT_LEFT, t);
+        Text(dc, s_fontTiny, kTextDim, 28, 192, 258, 216, DT_LEFT, t);
     }
 }
 
@@ -2421,7 +2458,7 @@ static int KbRowLen(int row)
 static bool SearchRect(int id, RECT* r)
 {
     if (id == K_BACK) {
-        SetRect(r, 8, 4, 64, 52);
+        SetRect(r, 8, 8, 64, 48);
         return true;
     }
     if (id == K_FIELD) {
@@ -2529,18 +2566,15 @@ static void OnSearchKey(int id)
 
 static void DrawSearch(HDC dc)
 {
-    RECT all = { 0, 0, s_cw, s_ch }, topLine = { 0, 54, s_cw, 56 };
-    HBRUSH ink = CreateSolidBrush(kInk), line = CreateSolidBrush(kLine);
+    RECT all = { 0, 0, s_cw, s_ch };
+    HBRUSH ink = CreateSolidBrush(kInk);
     FillRect(dc, &all, ink);
-    FillRect(dc, &topLine, line);
     DeleteObject(ink);
-    DeleteObject(line);
 
     RECT r;
     SearchRect(K_BACK, &r);
     bool down = s_kbPressed == K_BACK;
-    if (down)
-        Tile(dc, r, kOrange, kOrange, 24);
+    Tile(dc, r, down ? kOrange : kPanel2, down ? kOrange : kPanel2, 40);   // (VestaHome's keyboard: "back" up here)
     if (s_arrow[0][0])
         BlendSign(dc, s_arrow[0][down ? 1 : 0], (r.left + r.right - s_arrow[0][0]->w) / 2,
                   (r.top + r.bottom - s_arrow[0][0]->h) / 2);
@@ -2625,8 +2659,8 @@ static int ChoiceId(int i)   // "my place" only for "from"
 static bool PlanRect(int id, RECT* r)
 {
     RoutePlan* p = RoutePlanGet();
-    if (id == P_BACK) {
-        SetRect(r, 8, 4, 64, 52);
+    if (id == P_BACK) {   // VestaHome's: at the bottom left
+        *r = kBackRect;
         return true;
     }
     if (s_planChoose >= 0) {   // the choices over the editor: only they answer
@@ -2656,11 +2690,11 @@ static bool PlanRect(int id, RECT* r)
     if (id == P_ADDVIA) {
         if (p->nvia >= kMaxVia)
             return false;
-        SetRect(r, 16, 412, 300, 468);
+        SetRect(r, 92, 416, 376, 468);
         return true;
     }
     if (id == P_GO) {
-        SetRect(r, 540, 412, 784, 468);
+        SetRect(r, 540, 416, 784, 468);
         return true;
     }
     return false;
@@ -2806,21 +2840,13 @@ static void OnPlanCtl(int id)
 static void DrawPlan(HDC dc)
 {
     RoutePlan* p = RoutePlanGet();
-    RECT all = { 0, 0, s_cw, s_ch }, topLine = { 0, 54, s_cw, 56 };
-    HBRUSH ink = CreateSolidBrush(kInk), line = CreateSolidBrush(kLine);
+    RECT all = { 0, 0, s_cw, s_ch };
+    HBRUSH ink = CreateSolidBrush(kInk);
     FillRect(dc, &all, ink);
-    FillRect(dc, &topLine, line);
     DeleteObject(ink);
-    DeleteObject(line);
     RECT r;
-    PlanRect(P_BACK, &r);
-    bool down = s_planPressed == P_BACK;
-    if (down)
-        Tile(dc, r, kOrange, kOrange, 24);
-    if (s_arrow[0][0])
-        BlendSign(dc, s_arrow[0][down ? 1 : 0], (r.left + r.right - s_arrow[0][0]->w) / 2,
-                  (r.top + r.bottom - s_arrow[0][0]->h) / 2);
-    Text(dc, s_fontBig, kText, 76, 0, 500, 54, DT_LEFT, L"МАРШРУТ");
+    Text(dc, s_fontBig, kText, 20, 0, 500, 56, DT_LEFT, L"Маршрут");
+    BackDisc(dc, s_planPressed == P_BACK);
 
     int choose = s_planChoose;
     s_planChoose = -1;   // (the rows' places)
@@ -3103,15 +3129,14 @@ static void DrawButtons(HDC dc)
     RECT r;
     if (s_dockShown && !s_settings && !s_search) {
         int y = kDockY + s_dockOff;   // sliding in / out
-        RECT bar = { 0, y, s_cw, s_ch }, line = { 0, y, s_cw, y + 2 };
-        // the orange part of the line shrinks to the moment the bar goes down
+        RECT bar = { 0, y, s_cw, s_ch };
+        // as VestaHome's bar: solid; the accent's line on its top shrinks to the moment it goes down
         DWORD el = GetTickCount() - s_dockTick;
         RECT left = { 0, y, el >= (DWORD)kDockMs ? 0 : (int)(s_cw * (kDockMs - el) / kDockMs), y + 2 };
-        Darken(dc, bar, 0);
-        HBRUSH l = CreateSolidBrush(kLine), o = CreateSolidBrush(kOrange);
-        FillRect(dc, &line, l);
+        HBRUSH ib = CreateSolidBrush(kInk), o = CreateSolidBrush(kOrange);
+        FillRect(dc, &bar, ib);
         FillRect(dc, &left, o);
-        DeleteObject(l);
+        DeleteObject(ib);
         DeleteObject(o);
     }
     for (int i = 0; i < B_COUNT; i++) {
