@@ -130,7 +130,7 @@ const wchar_t* NetErrorText(int err);
 void  CachePath(wchar_t* out, const MapRequest& r);
 // One search / route request besides the tiles (GET, the answer's body as text); a newer one replaces a
 // waiting one, it goes before the tiles.
-enum { API_SEARCH = 1, API_ROUTE };
+enum { API_SEARCH = 1, API_ROUTE, API_REVERSE };
 struct ApiResult {
     int    kind;
     DWORD  seq;
@@ -149,7 +149,8 @@ struct RouteInfo {
     int            state;       // ROUTE_*
     const wchar_t* text;        // the next maneuver's instruction (or the state's text)
     int            nextM;       // metres to it
-    int            turn;        // its turn, degrees (-180..180, + right), 999 = destination, 998 = roundabout
+    int            turn;        // its turn, degrees (-180..180, + right), 999 = destination, 998 = roundabout,
+                                // 997 = a stop on the way
     int            leftM, leftS;   // to the destination
     bool           off;         // off the route, a new one is asked for
 };
@@ -157,7 +158,17 @@ void SearchStart(const wchar_t* q, double lon, double lat);
 int  SearchState();
 int  SearchCount();
 const SearchHit* SearchGet(int i);
-void RouteTo(const SearchHit* to, double fromLon, double fromLat, double course);   // course < 0: unknown
+// The route editor's plan: from the car or a place, stops on the way, the destination.
+enum { PL_NONE, PL_GPS, PL_PLACE };
+enum { kMaxVia = 3 };
+struct RoutePlace { int kind; wchar_t name[80]; double lon, lat; };
+struct RoutePlan { RoutePlace from, via[kMaxVia], to; int nvia; };
+RoutePlan* RoutePlanGet();
+bool RouteStart(double gpsLon, double gpsLat, double course, bool gpsValid);   // false: the plan is not complete
+// From the search: the car (course >= 0 or -1: unknown) or, course == -2, the map's center as a fixed start.
+void RouteTo(const SearchHit* to, double fromLon, double fromLat, double course);
+void RouteAddVia(const RoutePlace& p, double gpsLon, double gpsLat, double course, bool gpsValid);
+void PlaceLookup(const RoutePlace& p);   // its address into the plan when Photon answers
 void RouteClear();
 void RouteGps(double lon, double lat, double kmh, double course);   // each fix: progress, off -> a new route
 void RouteGet(RouteInfo* out);

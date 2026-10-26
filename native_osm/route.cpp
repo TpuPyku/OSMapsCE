@@ -229,15 +229,15 @@ static void Join(wchar_t* out, int cap, const wchar_t* s)
     out[cap - 1] = 0;
 }
 
-static void OnSearch(const char* body)
+static int ParseHits(const char* body, SearchHit* hits, int max)
 {
-    s_hitCount = 0;
-    for (const char* f = JFirst(JKey(body, "features")); f && s_hitCount < kMaxHits; f = JNext(f)) {
+    int count = 0;
+    for (const char* f = JFirst(JKey(body, "features")); f && count < max; f = JNext(f)) {
         const char* pr = JKey(f, "properties");
         const char* c = JFirst(JKey(JKey(f, "geometry"), "coordinates"));
         if (!pr || !c)
             continue;
-        SearchHit& h = s_hits[s_hitCount];
+        SearchHit& h = hits[count];
         h.lon = JNum(c, 0);
         h.lat = JNum(JNext(c), 0);
         wchar_t name[80], street[80], house[24], city[64], state[64];
@@ -266,12 +266,22 @@ static void OnSearch(const char* body)
         if (!city[0] || wcscmp(city, state))
             Join(h.sub, 96, state);
         if (h.name[0])
-            s_hitCount++;
+            count++;
     }
+    return count;
+}
+
+static void OnSearch(const char* body)
+{
+    s_hitCount = ParseHits(body, s_hits, kMaxHits);
     s_searchState = SEARCH_DONE;
 }
 
 // ---------------------------------------------------------------- route
+
+// The plan (the route editor's fields): from (the car or a place), up to kMaxVia stops on the way, to. Stops the
+// car has passed leave the plan, so a new route (off the line) goes only through the ones ahead.
+static RoutePlan s_plan;
 
 struct Maneuver {
     int     shape;          // its point on the line
@@ -286,8 +296,9 @@ static float*    s_cum;          // metres from the start to each point
 static int       s_np;
 static Maneuver* s_man;
 static int       s_nm;
+static int       s_viaShape[kMaxVia];   // the plan's stops on the line (at the time of the route)
+static int       s_nViaShape;
 static double    s_timeS;        // the route's time, s (the rest: in proportion to the distance)
-static SearchHit s_dest;
 static int       s_seg;          // the line's segment the car is on
 static double    s_along;        // metres from the start to the car
 static int       s_offFixes;
@@ -295,6 +306,10 @@ static bool      s_off;
 static DWORD     s_reqTick;
 static DWORD     s_sig;
 static wchar_t   s_stateText[64];
+static double    s_gpsLon, s_gpsLat;   // the last fix (a new route from the car)
+static bool      s_gpsHave;
+
+RoutePlan* RoutePlanGet() { return &s_plan; }
 
 static void FreeRoute()
 {
@@ -304,9 +319,10 @@ static void FreeRoute()
     s_pts = NULL;
     s_cum = NULL;
     s_man = NULL;
-    s_np = s_nm = 0;
+    s_np = s_nm = s_nViaShape = 0;
 }
 
+// The request for the plan: from the car (fromLon / fromLat) or the plan's place, its stops, its end.
 static void Ask(double fromLon, double fromLat, double course)
 {
     if (!Budget()) {
@@ -315,11 +331,19 @@ static void Ask(double fromLon, double fromLat, double course)
         s_sig++;
         return;
     }
-    char head[32] = "", path[400];
-    if (course >= 0)   // the way the car goes: no route starting with a U-turn
-        _snprintf(head, sizeof(head), "&bearings=%d,60;", (int)course);
-    _snprintf(path, sizeof(path), "/routed-car/route/v1/driving/%.6f,%.6f;%.6f,%.6f?overview=full&geometries=polyline6"
-              "&steps=true%s", fromLon, fromLat, s_dest.lon, s_dest.lat, head);
+    char head[48] = "", path[600];
+    int n = _snprintf(path, sizeof(path), "/routed-car/route/v1/driving/%.6f,%.6f", fromLon, fromLat);
+    for (int i = 0; i < s_plan.nvia && n > 0; i++)
+        n += _snprintf(path + n, sizeof(path) - n, ";%.6f,%.6f", s_plan.via[i].lon, s_plan.via[i].lat);
+    if (n > 0)
+        n += _snprintf(path + n, sizeof(path) - n, ";%.6f,%.6f?overview=full&geometries=polyline6&steps=true",
+                       s_plan.to.lon, s_plan.to.lat);
+    if (n > 0 && course >= 0) {   // the way the car goes: no route starting with a U-turn; the rest - any
+        n += _snprintf(path + n, sizeof(path) - n, "&bearings=%d,60", (int)course);
+        for (int i = 0; i <= s_plan.nvia && n > 0; i++)
+            n += _snprintf(path + n, sizeof(path) - n, ";");
+    }
+    (void)head;
     path[sizeof(path) - 1] = 0;
     s_routeSeq = NetApi(API_ROUTE, kOsrm, false, path);
     s_reqTick = GetTickCount();
@@ -328,15 +352,77 @@ static void Ask(double fromLon, double fromLat, double course)
     s_sig++;
 }
 
-void RouteTo(const SearchHit* to, double fromLon, double fromLat, double course)
+static void FromPlan(double gpsLon, double gpsLat, double course, bool gpsValid)
 {
+    if (s_plan.from.kind == PL_GPS)
+        Ask(gpsLon, gpsLat, gpsValid ? course : -1);
+    else
+        Ask(s_plan.from.lon, s_plan.from.lat, -1);
+}
+
+bool RouteStart(double gpsLon, double gpsLat, double course, bool gpsValid)
+{
+    if (s_plan.to.kind != PL_PLACE || s_plan.from.kind == PL_NONE || (s_plan.from.kind == PL_GPS && !gpsValid))
+        return false;
     FreeRoute();
-    s_dest = *to;
     s_off = false;
     s_offFixes = 0;
     s_stateText[0] = 0;
-    Log("route: to %.5f,%.5f from %.5f,%.5f course %d", to->lat, to->lon, fromLat, fromLon, (int)course);
-    Ask(fromLon, fromLat, course);
+    Log("route: to %.5f,%.5f, %d stops, from %s", s_plan.to.lat, s_plan.to.lon, s_plan.nvia,
+        s_plan.from.kind == PL_GPS ? "the car" : "a place");
+    FromPlan(gpsLon, gpsLat, course, gpsValid);
+    return true;
+}
+
+void RouteTo(const SearchHit* to, double fromLon, double fromLat, double course)
+{
+    memset(&s_plan, 0, sizeof(s_plan));
+    s_plan.to.kind = PL_PLACE;
+    wcscpy(s_plan.to.name, to->name);
+    s_plan.to.lon = to->lon;
+    s_plan.to.lat = to->lat;
+    // the search's own start: the car when it has a fix, the map's center otherwise
+    s_plan.from.kind = course == -2 ? PL_PLACE : PL_GPS;
+    s_plan.from.lon = fromLon;
+    s_plan.from.lat = fromLat;
+    wcscpy(s_plan.from.name, L"Центр карты");
+    RouteStart(fromLon, fromLat, course < 0 ? -1 : course, true);
+}
+
+// A stop added while a route is on: put where it lengthens the way least (straight lines: the car - the stops -
+// the end), then a new route.
+static double Dist(double lon0, double lat0, double lon1, double lat1)
+{
+    double kx = 111320 * cos(lat0 * M_PI / 180), dx = (lon1 - lon0) * kx, dy = (lat1 - lat0) * 110540;
+    return sqrt(dx * dx + dy * dy);
+}
+
+void RouteAddVia(const RoutePlace& p, double gpsLon, double gpsLat, double course, bool gpsValid)
+{
+    if (s_plan.nvia >= kMaxVia)
+        return;
+    double sx = s_plan.from.kind == PL_GPS && gpsValid ? gpsLon : s_plan.from.lon;
+    double sy = s_plan.from.kind == PL_GPS && gpsValid ? gpsLat : s_plan.from.lat;
+    int best = 0;
+    double bestAdd = 1e18;
+    for (int i = 0; i <= s_plan.nvia; i++) {   // between point i-1 (or the start) and point i (or the end)
+        const RoutePlace& a = i ? s_plan.via[i - 1] : s_plan.from;
+        const RoutePlace& b = i < s_plan.nvia ? s_plan.via[i] : s_plan.to;
+        double ax = i ? a.lon : sx, ay = i ? a.lat : sy;
+        double add = Dist(ax, ay, p.lon, p.lat) + Dist(p.lon, p.lat, b.lon, b.lat) - Dist(ax, ay, b.lon, b.lat);
+        if (add < bestAdd) {
+            bestAdd = add;
+            best = i;
+        }
+    }
+    for (int i = s_plan.nvia; i > best; i--)
+        s_plan.via[i] = s_plan.via[i - 1];
+    s_plan.via[best] = p;
+    s_plan.nvia++;
+    Log("route: a stop added as %d of %d", best + 1, s_plan.nvia);
+    s_off = false;
+    s_offFixes = 0;
+    FromPlan(gpsLon, gpsLat, course, gpsValid);
 }
 
 void RouteClear()
@@ -344,6 +430,36 @@ void RouteClear()
     FreeRoute();
     s_state = ROUTE_NONE;
     s_routeSeq = 0;
+    s_sig++;
+}
+
+// ---- a place's name by its point (Photon's reverse): the editor shows an address, not the coordinates
+static DWORD s_revSeq;
+static double s_revLon, s_revLat;
+
+void PlaceLookup(const RoutePlace& p)
+{
+    if (!Budget())
+        return;
+    char path[120];
+    _snprintf(path, sizeof(path), "/reverse?lon=%.6f&lat=%.6f&limit=1", p.lon, p.lat);
+    path[sizeof(path) - 1] = 0;
+    s_revLon = p.lon;
+    s_revLat = p.lat;
+    s_revSeq = NetApi(API_REVERSE, kPhoton, true, path);
+}
+
+static void OnReverse(const char* body)
+{
+    SearchHit h;
+    if (!ParseHits(body, &h, 1))
+        return;
+    RoutePlace* all[kMaxVia + 2] = { &s_plan.from, &s_plan.to, &s_plan.via[0], &s_plan.via[1], &s_plan.via[2] };
+    for (int i = 0; i < kMaxVia + 2; i++)
+        if (all[i]->kind == PL_PLACE && all[i]->lon == s_revLon && all[i]->lat == s_revLat) {
+            wcsncpy(all[i]->name, h.name, 79);
+            all[i]->name[79] = 0;
+        }
     s_sig++;
 }
 
@@ -382,10 +498,10 @@ static int Decode(const char* s, double* out, int max)
 }
 
 // OSRM's maneuver (step.maneuver) -> RouteInfo::turn
-static int Turn(const char* m, const char* type, const char* mod)
+static int Turn(const char* m, const char* type, const char* mod, bool stop)
 {
     if (!strcmp(type, "arrive"))
-        return 999;
+        return stop ? 997 : 999;
     if (!strcmp(type, "roundabout") || !strcmp(type, "rotary") || !strcmp(type, "roundabout turn"))
         return 998;
     if (!strcmp(mod, "uturn"))
@@ -419,7 +535,8 @@ static const wchar_t* Keep(const char* mod)   // "правее" / "левее" f
 }
 
 // The instruction of a step, as a driver says it: what to do, then onto which road.
-static void Instruction(const char* step, const char* m, const char* type, const char* mod, wchar_t* out, int cap)
+static void Instruction(const char* step, const char* m, const char* type, const char* mod, bool stop, wchar_t* out,
+                        int cap)
 {
     wchar_t name[80], ref[32], road[120] = L"";
     JWide(JKey(step, "name"), name, 80);
@@ -433,7 +550,7 @@ static void Instruction(const char* step, const char* m, const char* type, const
     if (!strcmp(type, "depart"))
         wcscpy(act, L"Начало маршрута");
     else if (!strcmp(type, "arrive"))
-        wcscpy(act, L"Вы у цели");
+        wcscpy(act, stop ? L"Промежуточная точка" : L"Вы у цели");
     else if (!strcmp(type, "roundabout") || !strcmp(type, "rotary")) {
         int exit = (int)JNum(JKey(m, "exit"), 0);
         if (exit > 0)
@@ -492,10 +609,11 @@ static void OnRoute(const char* body)
     JStr(geom, enc, (int)(end - geom) + 1);
     int np = Decode(enc, pts, cap);
     free(enc);
-    const char* steps = JKey(JFirst(JKey(route, "legs")), "steps");
+    const char* legs = JKey(route, "legs");
     int nm = 0;
-    for (const char* st = JFirst(steps); st; st = JNext(st))
-        nm++;
+    for (const char* lg = JFirst(legs); lg; lg = JNext(lg))
+        for (const char* st = JFirst(JKey(lg, "steps")); st; st = JNext(st))
+            nm++;
     float* cum = (float*)malloc((np > 0 ? np : 1) * sizeof(float));
     Maneuver* man = (Maneuver*)malloc((nm ? nm : 1) * sizeof(Maneuver));
     if (np < 2 || !cum || !man) {
@@ -515,32 +633,40 @@ static void OnRoute(const char* body)
         double dx = (pts[i * 2] - pts[i * 2 - 2]) * s_kx, dy = (pts[i * 2 + 1] - pts[i * 2 - 1]) * s_ky;
         cum[i] = cum[i - 1] + (float)sqrt(dx * dx + dy * dy);
     }
-    // each step's maneuver point on the line: the nearest point from the previous step's on
-    int from = 0;
-    for (const char* st = JFirst(steps); st && s_nm < nm; st = JNext(st)) {
-        const char* m = JKey(st, "maneuver");
-        char type[24], mod[24];
-        JStr(JKey(m, "type"), type, sizeof(type));
-        JStr(JKey(m, "modifier"), mod, sizeof(mod));
-        if (!strcmp(type, "notification"))
-            continue;
-        const char* loc = JFirst(JKey(m, "location"));
-        double mx = JNum(loc, 0) * s_kx, my = JNum(loc ? JNext(loc) : NULL, 0) * s_ky, best = 1e18;
-        int at = from;
-        for (int i = from; i < np; i++) {
-            double dx = pts[i * 2] * s_kx - mx, dy = pts[i * 2 + 1] * s_ky - my, d = dx * dx + dy * dy;
-            if (d < best) {
-                best = d;
-                at = i;
+    // each step's maneuver point on the line: the nearest point from the previous step's on; a leg (one per stop)
+    // ends with "arrive" - the stop - and the next one starts with "depart" (left out)
+    int from = 0, leg = 0, nlegs = 0;
+    for (const char* lg = JFirst(legs); lg; lg = JNext(lg))
+        nlegs++;
+    for (const char* lg = JFirst(legs); lg; lg = JNext(lg), leg++) {
+        bool stop = leg < nlegs - 1;
+        for (const char* st = JFirst(JKey(lg, "steps")); st && s_nm < nm; st = JNext(st)) {
+            const char* m = JKey(st, "maneuver");
+            char type[24], mod[24];
+            JStr(JKey(m, "type"), type, sizeof(type));
+            JStr(JKey(m, "modifier"), mod, sizeof(mod));
+            if (!strcmp(type, "notification") || (leg > 0 && !strcmp(type, "depart")))
+                continue;
+            const char* loc = JFirst(JKey(m, "location"));
+            double mx = JNum(loc, 0) * s_kx, my = JNum(loc ? JNext(loc) : NULL, 0) * s_ky, best = 1e18;
+            int at = from;
+            for (int i = from; i < np; i++) {
+                double dx = pts[i * 2] * s_kx - mx, dy = pts[i * 2 + 1] * s_ky - my, d = dx * dx + dy * dy;
+                if (d < best) {
+                    best = d;
+                    at = i;
+                }
+                if (best < 1 && d > 1e6)   // found it and gone 1 km past: the line may come back later
+                    break;
             }
-            if (best < 1 && d > 1e6)   // found it and gone 1 km past: the line may come back later
-                break;
+            from = at;
+            Maneuver& d = man[s_nm++];
+            d.shape = at;
+            d.turn = Turn(m, type, mod, stop);
+            Instruction(st, m, type, mod, stop, d.text, 112);
+            if (stop && !strcmp(type, "arrive") && s_nViaShape < kMaxVia)
+                s_viaShape[s_nViaShape++] = at;
         }
-        from = at;
-        Maneuver& d = man[s_nm++];
-        d.shape = at;
-        d.turn = Turn(m, type, mod);
-        Instruction(st, m, type, mod, d.text, 112);
     }
     s_timeS = JNum(JKey(route, "duration"), 0);
     s_seg = 0;
@@ -549,7 +675,8 @@ static void OnRoute(const char* body)
     s_offFixes = 0;
     s_state = ROUTE_ON;
     s_stateText[0] = 0;
-    Log("route: %d points, %d maneuvers, %.1f km, %d min", np, s_nm, cum[np - 1] / 1000, (int)(s_timeS / 60));
+    Log("route: %d points, %d maneuvers, %d stops, %.1f km, %d min", np, s_nm, s_nViaShape, cum[np - 1] / 1000,
+        (int)(s_timeS / 60));
 }
 
 bool OnApiResult(ApiResult* r)
@@ -561,6 +688,10 @@ bool OnApiResult(ApiResult* r)
             OnSearch(r->body);
         else
             s_searchState = SEARCH_FAIL;
+        redraw = true;
+    } else if (r->kind == API_REVERSE && r->seq == s_revSeq) {
+        if (ok)
+            OnReverse(r->body);
         redraw = true;
     } else if (r->kind == API_ROUTE && r->seq == s_routeSeq && s_state != ROUTE_NONE) {
         if (r->body && (r->httpStatus == 200 || r->httpStatus == 400))   // 400: OSRM's "NoRoute" with its code
@@ -594,6 +725,9 @@ static double SegDist(double x, double y, int a, double* t)
 
 void RouteGps(double lon, double lat, double kmh, double course)
 {
+    s_gpsLon = lon;
+    s_gpsLat = lat;
+    s_gpsHave = true;
     if (s_state != ROUTE_ON || !s_np)
         return;
     double x = lon * s_kx, y = lat * s_ky;
@@ -615,7 +749,18 @@ void RouteGps(double lon, double lat, double kmh, double course)
     }
     s_seg = seg;
     s_along = s_cum[seg] + bestT * (s_cum[seg + 1] - s_cum[seg]);
-    double dx = (s_dest.lon - lon) * s_kx, dy = (s_dest.lat - lat) * s_ky;
+    // stops passed: out of the plan (the line keeps them, the next new route goes without them)
+    while (s_nViaShape && s_plan.nvia && best < kOffM && s_along > s_cum[s_viaShape[0]] - kArriveM) {
+        Log("route: stop passed");
+        for (int i = 1; i < s_plan.nvia; i++)
+            s_plan.via[i - 1] = s_plan.via[i];
+        s_plan.nvia--;
+        for (int i = 1; i < s_nViaShape; i++)
+            s_viaShape[i - 1] = s_viaShape[i];
+        s_nViaShape--;
+        s_sig++;
+    }
+    double dx = (s_plan.to.lon - lon) * s_kx, dy = (s_plan.to.lat - lat) * s_ky;
     if (sqrt(dx * dx + dy * dy) < kArriveM || (s_cum[s_np - 1] - s_along < kArriveM && best < kOffM)) {
         FreeRoute();
         s_state = ROUTE_ARRIVED;
@@ -623,8 +768,10 @@ void RouteGps(double lon, double lat, double kmh, double course)
         s_sig++;
         return;
     }
+    // off the line: a new route from here - only when the route goes from the car (a planned one from elsewhere
+    // stays as it is)
     s_offFixes = best > kOffM && kmh > 5 ? s_offFixes + 1 : 0;
-    bool off = s_offFixes >= kOffFixes;
+    bool off = s_offFixes >= kOffFixes && s_plan.from.kind == PL_GPS;
     if (off && GetTickCount() - s_reqTick > kRerouteMs) {
         Log("route: off by %d m, a new route", (int)best);
         Ask(lon, lat, kmh > 10 ? course : -1);
@@ -674,8 +821,8 @@ bool RouteDest(double* lon, double* lat)
 {
     if (s_state != ROUTE_ON && s_state != ROUTE_BUSY)
         return false;
-    *lon = s_dest.lon;
-    *lat = s_dest.lat;
+    *lon = s_plan.to.lon;
+    *lat = s_plan.to.lat;
     return true;
 }
 

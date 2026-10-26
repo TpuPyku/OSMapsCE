@@ -12,10 +12,10 @@ static volatile bool    s_stop;
 static MapRequest       s_pending;
 static bool             s_hasPending;
 static DWORD            s_seq;
-// the search / route request: one waiting at most, before the tiles
-struct ApiJob { int kind; bool https; char host[64]; char path[1024]; };
-static ApiJob           s_api;
-static bool             s_hasApi;
+// search / route / address requests, before the tiles: a few waiting, a newer one of a kind replaces the older
+struct ApiJob { int kind; bool https; DWORD seq; char host[64]; char path[1024]; };
+static ApiJob           s_api[4];
+static int              s_nApi;
 static DWORD            s_apiSeq;
 
 const wchar_t* NetErrorText(int err)
@@ -265,13 +265,16 @@ static DWORD WINAPI NetThread(LPVOID)
             if (s_stop)
                 break;
             EnterCriticalSection(&s_cs);
-            bool api = s_hasApi;
+            bool api = s_nApi > 0;
             ApiJob job;
-            DWORD apiSeq = s_apiSeq;
-            if (api)
-                job = s_api;
-            s_hasApi = false;
+            if (api) {
+                job = s_api[0];
+                for (int i = 1; i < s_nApi; i++)
+                    s_api[i - 1] = s_api[i];
+                s_nApi--;
+            }
             LeaveCriticalSection(&s_cs);
+            DWORD apiSeq = job.seq;
             if (api) {
                 ApiResult* ar = (ApiResult*)calloc(1, sizeof(ApiResult));
                 if (!ar)
@@ -335,14 +338,23 @@ DWORD NetRequest(const MapRequest& r)
 DWORD NetApi(int kind, const char* host, bool https, const char* path)
 {
     EnterCriticalSection(&s_cs);
-    s_api.kind = kind;
-    s_api.https = https;
-    strncpy(s_api.host, host, sizeof(s_api.host) - 1);
-    s_api.host[sizeof(s_api.host) - 1] = 0;
-    strncpy(s_api.path, path, sizeof(s_api.path) - 1);
-    s_api.path[sizeof(s_api.path) - 1] = 0;
-    s_hasApi = true;
-    DWORD seq = ++s_apiSeq;
+    int i = 0;
+    while (i < s_nApi && s_api[i].kind != kind)
+        i++;
+    if (i == s_nApi) {
+        if (s_nApi < 4)
+            s_nApi++;
+        else
+            i = 3;
+    }
+    ApiJob& j = s_api[i];
+    j.kind = kind;
+    j.https = https;
+    strncpy(j.host, host, sizeof(j.host) - 1);
+    j.host[sizeof(j.host) - 1] = 0;
+    strncpy(j.path, path, sizeof(j.path) - 1);
+    j.path[sizeof(j.path) - 1] = 0;
+    DWORD seq = j.seq = ++s_apiSeq;
     LeaveCriticalSection(&s_cs);
     SetEvent(s_wake);
     return seq;

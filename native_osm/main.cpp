@@ -58,7 +58,7 @@ static const COLORREF kPanel2  = RGB(0x22, 0x25, 0x2a);   // settings controls
 static const COLORREF kLine    = RGB(0x34, 0x38, 0x3f);   // 2 px borders
 static const COLORREF kOrange  = RGB(0xff, 0x6b, 0x1a);   // the one accent: pressed / on
 
-enum { TIMER_TICK = 1, TIMER_USER = 2, TIMER_DOCK = 3 };
+enum { TIMER_TICK = 1, TIMER_USER = 2, TIMER_DOCK = 3, TIMER_LONG = 4 };
 static const UINT kUserDelayMs = 900;    // wait for the user to stop pressing buttons
 
 // GPS button modes (g_cfg.follow)
@@ -151,6 +151,24 @@ static const wchar_t* kKeys[2][4] = {
     { L"1234567890-", L"qwertyuiop", L"asdfghjkl", L"zxcvbnm.," },
 };
 enum { kKbY = 66, kKbRowH = 81, kHitY = 62, kHitH = 58 };
+
+// The route editor (a long press on the map, the user's design 2026-10-26): "from" (the car by default, or an
+// address, or a point on the map), up to three stops, "to"; a field tapped opens its choices. With a route on, a
+// long press offers a stop there or a new route there. Slots: 0 from, 1..3 the stops, 4 to.
+enum { P_BACK = 1, P_ROW = 10, P_DEL = 20, P_ADDVIA = 30, P_GO, P_CH_GPS = 40, P_CH_SEARCH, P_CH_MAP, P_CH_CANCEL,
+       P_PICK_CANCEL = 50, M_VIA = 60, M_NEW, M_CANCEL };
+static bool       s_plan;
+static int        s_planChoose = -1;   // the slot whose choices are open
+static int        s_planPressed = -1;
+static int        s_pickSlot = -1;     // the map picks a point for this slot
+static int        s_searchSlot = -1;   // the search picks a place for this slot
+static bool       s_lpMenu;            // the long press menu (a route is on)
+static double     s_lpLon, s_lpLat;
+static bool       s_longDone;          // the press became a long one: its release does nothing more
+static DWORD      s_downTick;          // when the finger went down on the map
+static const wchar_t* s_planMsg;
+enum { kRowY = 66, kRowH = 56, kLongMs = 650 };
+static RoutePlace* PlanSlot(int slot);
 static int        s_setPort;        // 1..9 -> COMn:
 static int        s_setBaud;        // index in kSetBauds
 static int        s_setCache;       // index in kSetCacheMb
@@ -223,7 +241,7 @@ static DWORD FrameSig()
     int v[] = { (int)x, (int)y, (int)cx, (int)cy, g_cfg.z, (int)s_heading, s_gps.valid, s_gps.sats,
                 (int)(s_gps.speedKmh + 0.5), s_gps.status, s_gps.lines > 0, s_gpsRunning, s_limitHit,
                 s_lastErr && GetTickCount() - s_lastErrTick < 60000, s_inflight, (int)(GetTickCount() / 60000),
-                t.wMinute, g_cfg.night, s_settings, (int)RouteSig(), s_search, SearchState() };
+                t.wMinute, g_cfg.night, s_settings, (int)RouteSig(), s_search, SearchState(), s_plan, s_pickSlot, s_lpMenu };
     DWORD h = 2166136261u;   // FNV-1a over them
     for (int i = 0; i < (int)(sizeof(v) / sizeof(v[0])); i++)
         h = (h ^ (DWORD)v[i]) * 16777619u;
@@ -710,7 +728,7 @@ static int ButtonState(int b)
 // bar's ones are there only while it is up, the traffic provider only while traffic is on).
 static bool ButtonRect(int b, RECT* r)
 {
-    if (s_settings || s_search)
+    if (s_settings || s_search || s_plan)
         return false;
     if (b == B_GPS || b == B_MINUS || b == B_PLUS) {
         SetRect(r, s_btn[b].x, s_btn[b].y, s_btn[b].x + kTile, s_btn[b].y + kTile);
@@ -1348,6 +1366,88 @@ static bool ClipSeg(double* x0, double* y0, double* x1, double* y1, double l, do
     return true;
 }
 
+// Traffic on the route (the user's wish 2026-10-26: the line hid it): each point of the line takes the colour of
+// the traffic overlay under it, looked up a few pixels to the right of the way (both providers draw a direction on
+// its right side); no traffic there - the route's blue. Looked up again only when a slot was drawn (new traffic,
+// a new view) - per point, while it is in sight.
+static const COLORREF kRouteBlue = RGB(66, 146, 255), kRouteEdge = RGB(18, 52, 128);
+static COLORREF* s_rcol;
+static DWORD*    s_rcolSig;
+static int*      s_ridx;
+static int       s_rcolCap;
+static const CacheEntry* s_tfLast;
+
+static bool OvPixel(const Overlay* ov, int x, int y, COLORREF* out)
+{
+    if (x < 0 || y < 0 || x >= ov->w || y >= ov->h)
+        return false;
+    const unsigned char* p = (const unsigned char*)ov + ov->rowOfs[y];
+    int runs = *(const unsigned short*)p, sx = 0;
+    p += 4;
+    for (int r = 0; r < runs; r++) {
+        const unsigned short* rh = (const unsigned short*)p;
+        sx += rh[0];
+        int count = rh[1];
+        if (x >= sx && x < sx + count) {
+            const unsigned char* c = p + 4 + (x - sx) * 4;
+            int mx = c[0] > c[1] ? c[0] : c[1], mn = c[0] < c[1] ? c[0] : c[1];
+            mx = c[2] > mx ? c[2] : mx;
+            mn = c[2] < mn ? c[2] : mn;
+            if (c[3] < 160 || mx - mn < 60)   // see-through, or the lines' white / grey edge: not a traffic colour
+                return false;
+            // one of the four traffic colours, clean (the lines' anti-aliased pixels come out pale)
+            if (c[1] > c[0] + 30)
+                *out = RGB(40, 190, 70);       // free
+            else if (c[1] > 140)
+                *out = RGB(255, 196, 0);       // slow
+            else if (c[0] > 150)
+                *out = RGB(232, 40, 30);       // jam
+            else
+                *out = RGB(140, 16, 16);       // standing
+            return true;
+        }
+        sx += count;
+        p += 4 + count * 4;
+    }
+    return false;
+}
+
+static COLORREF TrafficAt(double lon, double lat, double nx, double ny)
+{
+    int src = TrafficSource();
+    bool ya = src == SRC_YANDEX;
+    double wx, wy;
+    if (ya)
+        GeoToWorldYa(lon, lat, g_cfg.z, &wx, &wy);
+    else
+        GeoToWorld(lon, lat, g_cfg.z, &wx, &wy);
+    for (int k = 1; k <= 7; k += 2) {
+        double x = wx + nx * k, y = wy + ny * k, ox, oy;
+        MapRequest key;
+        key.src = src;
+        key.z = g_cfg.z;
+        if (ya) {   // Yandex: 600 x 450 images centred at (x * 600, y * 450) of its own world pixels
+            key.x = (int)floor(x / YA_W + 0.5);
+            key.y = (int)floor(y / YA_H + 0.5);
+            ox = key.x * (double)YA_W - YA_W / 2.0;
+            oy = key.y * (double)YA_H - YA_H / 2.0;
+        } else {
+            key.x = (int)floor(x / TILE);
+            key.y = (int)floor(y / TILE);
+            ox = key.x * (double)TILE;
+            oy = key.y * (double)TILE;
+        }
+        const CacheEntry* e = s_tfLast && SameKey(s_tfLast->req, key) ? s_tfLast : CacheFind(key, false);
+        if (!e || !e->ov)
+            continue;
+        s_tfLast = e;
+        COLORREF c;
+        if (OvPixel(e->ov, (int)(x - ox), (int)(y - oy), &c))
+            return c;
+    }
+    return kRouteBlue;
+}
+
 static void RoutePass(HDC dc, const int* runs, int nr, int width, COLORREF c)
 {
     HPEN pen = CreatePen(PS_SOLID, width, c);
@@ -1356,6 +1456,41 @@ static void RoutePass(HDC dc, const int* runs, int nr, int width, COLORREF c)
         Polyline(dc, s_rpts + runs[i * 2], runs[i * 2 + 1]);
     SelectObject(dc, op);
     DeleteObject(pen);
+}
+
+// The inner line, piece by piece of one colour.
+static void RouteColours(HDC dc, const int* runs, int nr, int width)
+{
+    for (int i = 0; i < nr; i++) {
+        int a = runs[i * 2], n = runs[i * 2 + 1];
+        for (int j = 0; j + 1 < n;) {
+            COLORREF c = s_rcol[s_ridx[a + j]];
+            int k = j + 1;
+            while (k + 1 < n && s_rcol[s_ridx[a + k]] == c)
+                k++;
+            HPEN pen = CreatePen(PS_SOLID, width, c);
+            HGDIOBJ op = SelectObject(dc, pen);
+            Polyline(dc, s_rpts + a + j, k - j + 1);
+            SelectObject(dc, op);
+            DeleteObject(pen);
+            j = k;
+        }
+    }
+}
+
+// A round marker with a letter or a digit (the start, the stops).
+static void RouteMarker(HDC dc, int x, int y, COLORREF fill, const wchar_t* t)
+{
+    HPEN pen = CreatePen(PS_SOLID, 3, RGB(255, 255, 255));
+    HBRUSH br = CreateSolidBrush(fill);
+    HGDIOBJ op = SelectObject(dc, pen), ob = SelectObject(dc, br);
+    Ellipse(dc, x - 13, y - 13, x + 14, y + 14);
+    SelectObject(dc, ob);
+    SelectObject(dc, op);
+    DeleteObject(br);
+    DeleteObject(pen);
+    if (t)
+        Text(dc, s_fontCap, RGB(255, 255, 255), x - 13, y - 13, x + 14, y + 14, DT_CENTER, t);
 }
 
 static void DrawRoute(HDC dc, double cx, double cy, double vx, double vy, double angle)
@@ -1367,12 +1502,25 @@ static void DrawRoute(HDC dc, double cx, double cy, double vx, double vy, double
     int np = RoutePoints(&ll);
     if (np >= 2 && s_rptCap < np * 2) {
         free(s_rpts);
+        free(s_ridx);
         s_rptCap = np * 2;
         s_rpts = (POINT*)malloc(s_rptCap * sizeof(POINT));
-        if (!s_rpts)
+        s_ridx = (int*)malloc(s_rptCap * sizeof(int));
+        if (!s_rpts || !s_ridx)
             s_rptCap = 0;
     }
-    if (np >= 2 && s_rpts) {
+    if (np >= 2 && s_rcolCap < np) {
+        free(s_rcol);
+        free(s_rcolSig);
+        s_rcolCap = np;
+        s_rcol = (COLORREF*)malloc(np * sizeof(COLORREF));
+        s_rcolSig = (DWORD*)calloc(np, sizeof(DWORD));
+        if (!s_rcol || !s_rcolSig)
+            s_rcolCap = 0;
+    }
+    if (np >= 2 && s_rpts && s_ridx && s_rcolCap >= np) {
+        // the colours' signature: the slots drawn (traffic came), the zoom, the provider, this route
+        DWORD sig = Mix(Mix(Mix(Mix(s_ringStamp, g_cfg.z), g_cfg.trafficSrc), g_cfg.traffic), (DWORD)(size_t)ll) | 1;
         double l = g_cfg.mapX - 50, t = g_cfg.mapY - 50, r = g_cfg.mapX + g_cfg.mapW + 50, b = g_cfg.mapY + g_cfg.mapH + 50;
         static int runs[512];
         int nr = 0, n = 0, runStart = 0;
@@ -1387,18 +1535,36 @@ static void DrawRoute(HDC dc, double cx, double cy, double vx, double vy, double
                 double x0 = px, y0 = py, x1 = x, y1 = y;
                 bool in = ClipSeg(&x0, &y0, &x1, &y1, l, t, r, b);
                 if (in) {
+                    if (s_rcolSig[i - 1] != sig) {   // the segment's colour: at its start, to the right of it
+                        int j = i - 1;
+                        COLORREF c = kRouteBlue;
+                        if (g_cfg.traffic) {
+                            double ax, ay;
+                            GeoToWorld(ll[j * 2], ll[j * 2 + 1], g_cfg.z, &ax, &ay);
+                            double ex = gx - ax, ey = gy - ay, len = sqrt(ex * ex + ey * ey);
+                            if (len > 0)
+                                c = TrafficAt(ll[j * 2], ll[j * 2 + 1], -ey / len, ex / len);
+                        }
+                        s_rcol[j] = c;
+                        s_rcolSig[j] = sig;
+                    }
                     if (!open) {
                         runStart = n;
                         s_rpts[n].x = Round(x0);
                         s_rpts[n].y = Round(y0);
+                        s_ridx[n] = i - 1;
                         n++;
                         open = true;
                     }
                     POINT q = { Round(x1), Round(y1) };
                     const POINT& last = s_rpts[n - 1];
                     bool cut = x1 != x || y1 != y;   // leaves the box here
-                    if (cut || abs(q.x - last.x) + abs(q.y - last.y) >= 2 || i == np - 1)
+                    // a point is left out when it is close to the last one - unless the colour changes there
+                    if (cut || abs(q.x - last.x) + abs(q.y - last.y) >= 2 || i == np - 1 ||
+                        (i + 1 < np && s_rcolSig[i] == sig && s_rcol[i] != s_rcol[s_ridx[n - 1]])) {
+                        s_ridx[n] = i;
                         s_rpts[n++] = q;
+                    }
                     if (cut) {
                         if (nr < 256) {
                             runs[nr * 2] = runStart;
@@ -1424,22 +1590,48 @@ static void DrawRoute(HDC dc, double cx, double cy, double vx, double vy, double
             runs[nr * 2 + 1] = n - runStart;
             nr++;
         }
-        RoutePass(dc, runs, nr, 11, RGB(18, 52, 128));
-        RoutePass(dc, runs, nr, 7, RGB(66, 146, 255));
+        RoutePass(dc, runs, nr, 11, kRouteEdge);
+        RouteColours(dc, runs, nr, 7);
     }
-    if (dest) {
+    // the markers: a fixed start "А", the stops 1..3, the destination, the long press's point
+    RoutePlan* plan = RoutePlanGet();
+    RouteInfo ri;
+    RouteGet(&ri);
+    bool on = ri.state == ROUTE_ON || ri.state == ROUTE_BUSY;
+    for (int m = 0; m < 6; m++) {
+        double lon, lat;
+        COLORREF fill = kRouteEdge;
+        wchar_t t[4] = L"";
+        if (m == 0) {
+            if (!on || plan->from.kind != PL_PLACE)
+                continue;
+            lon = plan->from.lon;
+            lat = plan->from.lat;
+            fill = RGB(40, 150, 70);
+            wcscpy(t, L"А");
+        } else if (m <= kMaxVia) {
+            if (!on || m > plan->nvia || plan->via[m - 1].kind != PL_PLACE)
+                continue;
+            lon = plan->via[m - 1].lon;
+            lat = plan->via[m - 1].lat;
+            fill = kOrange;
+            _snwprintf(t, 4, L"%d", m);
+        } else if (m == 4) {
+            if (!dest)
+                continue;
+            lon = dlon;
+            lat = dlat;
+        } else {
+            if (!s_lpMenu)
+                continue;
+            lon = s_lpLon;
+            lat = s_lpLat;
+            fill = kOrange;
+        }
         double gx, gy;
-        GeoToWorld(dlon, dlat, g_cfg.z, &gx, &gy);
+        GeoToWorld(lon, lat, g_cfg.z, &gx, &gy);
         double dx = gx - vx, dy = gy - vy;
-        int x = Round(cx + dx * rc + dy * rs), y = Round(cy - dx * rs + dy * rc);
-        HPEN pen = CreatePen(PS_SOLID, 4, RGB(255, 255, 255));
-        HBRUSH br = CreateSolidBrush(RGB(18, 52, 128));
-        HGDIOBJ op = SelectObject(dc, pen), ob = SelectObject(dc, br);
-        Ellipse(dc, x - 11, y - 11, x + 11, y + 11);
-        SelectObject(dc, ob);
-        SelectObject(dc, op);
-        DeleteObject(br);
-        DeleteObject(pen);
+        RouteMarker(dc, Round(cx + dx * rc + dy * rs), Round(cy - dx * rs + dy * rc), fill, t[0] ? t : NULL);
     }
 }
 
@@ -1838,8 +2030,13 @@ static void OnSearchKey(int id)
     if (id == K_BACK) {
         if (s_showHits)
             s_showHits = false;
-        else
+        else {
             s_search = false;
+            if (s_searchSlot >= 0) {   // back to the route editor
+                s_searchSlot = -1;
+                s_plan = true;
+            }
+        }
     } else if (id == K_FIELD) {
         s_showHits = false;
     } else if (id == K_LANG) {
@@ -1859,10 +2056,19 @@ static void OnSearchKey(int id)
         }
     } else if (id >= K_HIT) {
         const SearchHit* h = SearchGet(id - K_HIT);
-        if (h) {
+        if (h && s_searchSlot >= 0) {   // a place for the route editor
+            RoutePlace* p = PlanSlot(s_searchSlot);
+            p->kind = PL_PLACE;
+            wcscpy(p->name, h->name);
+            p->lon = h->lon;
+            p->lat = h->lat;
+            s_searchSlot = -1;
+            s_search = false;
+            s_plan = true;
+        } else if (h) {
             double lon, lat;
             SearchFrom(&lon, &lat);
-            RouteTo(h, lon, lat, s_gps.valid && s_gps.speedKmh > 10 ? s_gps.course : -1);
+            RouteTo(h, lon, lat, !s_gps.valid ? -2 : s_gps.speedKmh > 10 ? s_gps.course : -1);
             s_search = false;
             if (!s_gps.valid) {   // no car to follow: show where the route goes
                 g_cfg.follow = FOLLOW_OFF;
@@ -1941,6 +2147,364 @@ static void DrawSearch(HDC dc)
         Tile(dc, r, p || (id == K_FIND && s_query[0]) ? kOrange : kPanel2, p ? kOrange : kLine, 16);
         Text(dc, id < K_LANG ? s_fontBig : s_fontLabel, p || (id == K_FIND && s_query[0]) ? kInk : kText, r.left,
              r.top, r.right, r.bottom, DT_CENTER, cap);
+    }
+}
+
+// ---- the route editor
+static RoutePlace* PlanSlot(int slot)
+{
+    RoutePlan* p = RoutePlanGet();
+    return slot == 0 ? &p->from : slot == 4 ? &p->to : &p->via[slot - 1];
+}
+
+static int RowSlot(int row)   // rows: from, the stops, to
+{
+    int n = RoutePlanGet()->nvia;
+    return row == 0 ? 0 : row <= n ? row : 4;
+}
+
+static int SlotRow(int slot)
+{
+    return slot == 4 ? RoutePlanGet()->nvia + 1 : slot;
+}
+
+static int ChoiceCount()
+{
+    return s_planChoose == 0 ? 4 : 3;
+}
+
+static int ChoiceId(int i)   // "my place" only for "from"
+{
+    return s_planChoose == 0 ? P_CH_GPS + i : P_CH_SEARCH + i;
+}
+
+static bool PlanRect(int id, RECT* r)
+{
+    RoutePlan* p = RoutePlanGet();
+    if (id == P_BACK) {
+        SetRect(r, 8, 4, 64, 52);
+        return true;
+    }
+    if (s_planChoose >= 0) {   // the choices over the editor: only they answer
+        for (int i = 0; i < ChoiceCount(); i++)
+            if (ChoiceId(i) == id) {
+                SetRect(r, 220, 120 + i * 66, 580, 120 + i * 66 + 56);
+                return true;
+            }
+        return false;
+    }
+    if (id >= P_ROW && id <= P_ROW + 4) {
+        int slot = id - P_ROW;
+        if (slot >= 1 && slot <= 3 && slot > p->nvia)
+            return false;
+        int y = kRowY + SlotRow(slot) * kRowH;
+        SetRect(r, 16, y, slot >= 1 && slot <= 3 ? 720 : 784, y + kRowH - 6);
+        return true;
+    }
+    if (id >= P_DEL + 1 && id <= P_DEL + 3) {
+        int slot = id - P_DEL;
+        if (slot > p->nvia)
+            return false;
+        int y = kRowY + SlotRow(slot) * kRowH;
+        SetRect(r, 728, y, 784, y + kRowH - 6);
+        return true;
+    }
+    if (id == P_ADDVIA) {
+        if (p->nvia >= kMaxVia)
+            return false;
+        SetRect(r, 16, 412, 300, 468);
+        return true;
+    }
+    if (id == P_GO) {
+        SetRect(r, 540, 412, 784, 468);
+        return true;
+    }
+    return false;
+}
+
+static int HitPlan(int x, int y)
+{
+    static const int ids[] = { P_BACK, P_ROW, P_ROW + 1, P_ROW + 2, P_ROW + 3, P_ROW + 4, P_DEL + 1, P_DEL + 2,
+                               P_DEL + 3, P_ADDVIA, P_GO, P_CH_GPS, P_CH_SEARCH, P_CH_MAP, P_CH_CANCEL };
+    RECT r;
+    for (int i = 0; i < (int)(sizeof(ids) / sizeof(ids[0])); i++)
+        if (PlanRect(ids[i], &r) && x >= r.left && x < r.right && y >= r.top && y < r.bottom)
+            return ids[i];
+    return -1;
+}
+
+// The screen point -> its place (the inverse of the map's turn).
+static void ScreenToGeo(int x, int y, double* lon, double* lat)
+{
+    double vx, vy;
+    ViewWorld(&vx, &vy);
+    double a = ViewAngle() * M_PI / 180.0, c = cos(a), sn = sin(a);
+    double sx = x - (g_cfg.mapX + g_cfg.mapW / 2.0), sy = y - (g_cfg.mapY + g_cfg.mapH / 2.0);
+    WorldToGeo(vx + c * sx - sn * sy, vy + sn * sx + c * sy, g_cfg.z, lon, lat);
+}
+
+static RoutePlace MapPlace(double lon, double lat)
+{
+    RoutePlace p;
+    p.kind = PL_PLACE;
+    _snwprintf(p.name, 80, L"Точка на карте (%.5f, %.5f)", lat, lon);
+    p.name[79] = 0;
+    p.lon = lon;
+    p.lat = lat;
+    return p;
+}
+
+// A new plan to a point: from the car, no stops; its address is asked for.
+static void PlanNew(double lon, double lat)
+{
+    RoutePlan* p = RoutePlanGet();
+    memset(p, 0, sizeof(*p));
+    p->from.kind = PL_GPS;
+    p->to = MapPlace(lon, lat);
+    PlaceLookup(p->to);
+    s_planMsg = NULL;
+    s_planChoose = -1;
+    s_plan = true;
+}
+
+static void OnLongPress(int x, int y)
+{
+    double lon, lat;
+    ScreenToGeo(x, y, &lon, &lat);
+    Log("ui: long press %.5f,%.5f", lat, lon);
+    RouteInfo ri;
+    RouteGet(&ri);
+    s_dockShown = false;
+    if (ri.state == ROUTE_ON || ri.state == ROUTE_BUSY) {
+        s_lpMenu = true;
+        s_lpLon = lon;
+        s_lpLat = lat;
+    } else {
+        PlanNew(lon, lat);
+    }
+    InvalidateRect(s_wnd, NULL, FALSE);
+}
+
+// The map in the picker mode: a tap is the point for the slot.
+static void PickAt(int x, int y)
+{
+    double lon, lat;
+    ScreenToGeo(x, y, &lon, &lat);
+    RoutePlace* p = PlanSlot(s_pickSlot);
+    *p = MapPlace(lon, lat);
+    PlaceLookup(*p);
+    s_pickSlot = -1;
+    s_plan = true;
+}
+
+static void OnPlanCtl(int id)
+{
+    RoutePlan* p = RoutePlanGet();
+    s_planMsg = NULL;
+    if (id == P_BACK) {
+        if (s_planChoose >= 0)
+            s_planChoose = -1;
+        else
+            s_plan = false;
+    } else if (id >= P_ROW && id <= P_ROW + 4) {
+        s_planChoose = id - P_ROW;
+    } else if (id >= P_DEL + 1 && id <= P_DEL + 3) {
+        for (int i = id - P_DEL; i < p->nvia; i++)
+            p->via[i - 1] = p->via[i];
+        p->nvia--;
+    } else if (id == P_ADDVIA) {
+        memset(&p->via[p->nvia], 0, sizeof(RoutePlace));
+        p->nvia++;
+        s_planChoose = p->nvia;   // at once: where is it
+    } else if (id == P_GO) {
+        for (int i = 0; i < p->nvia;) {   // stops left empty: out
+            if (p->via[i].kind == PL_NONE) {
+                for (int k = i + 1; k < p->nvia; k++)
+                    p->via[k - 1] = p->via[k];
+                p->nvia--;
+            } else
+                i++;
+        }
+        bool gps = s_gps.valid != 0;
+        if (p->to.kind != PL_PLACE)
+            s_planMsg = L"Выберите, куда ехать";
+        else if (!RouteStart(s_gps.lon, s_gps.lat, gps && s_gps.speedKmh > 10 ? s_gps.course : -1, gps))
+            s_planMsg = L"Нет GPS: выберите «Откуда» адресом или точкой на карте";
+        else {
+            s_plan = false;
+            if (p->from.kind == PL_PLACE) {   // a planned route: show its start
+                g_cfg.follow = FOLLOW_OFF;
+                g_cfg.lon = p->from.lon;
+                g_cfg.lat = p->from.lat;
+                UserChanged();
+            }
+        }
+    } else if (id == P_CH_GPS) {
+        p->from.kind = PL_GPS;
+        s_planChoose = -1;
+    } else if (id == P_CH_SEARCH) {
+        s_searchSlot = s_planChoose;
+        s_planChoose = -1;
+        s_plan = false;
+        s_search = true;
+        s_showHits = false;
+    } else if (id == P_CH_MAP) {
+        s_pickSlot = s_planChoose;
+        s_planChoose = -1;
+        s_plan = false;
+        s_dockShown = false;
+    } else if (id == P_CH_CANCEL) {
+        s_planChoose = -1;
+    }
+    InvalidateRect(s_wnd, NULL, FALSE);
+}
+
+static void DrawPlan(HDC dc)
+{
+    RoutePlan* p = RoutePlanGet();
+    RECT all = { 0, 0, s_cw, s_ch }, topLine = { 0, 54, s_cw, 56 };
+    HBRUSH ink = CreateSolidBrush(kInk), line = CreateSolidBrush(kLine);
+    FillRect(dc, &all, ink);
+    FillRect(dc, &topLine, line);
+    DeleteObject(ink);
+    DeleteObject(line);
+    RECT r;
+    PlanRect(P_BACK, &r);
+    bool down = s_planPressed == P_BACK;
+    if (down)
+        Tile(dc, r, kOrange, kOrange, 24);
+    if (s_arrow[0][0])
+        BlendSign(dc, s_arrow[0][down ? 1 : 0], (r.left + r.right - s_arrow[0][0]->w) / 2,
+                  (r.top + r.bottom - s_arrow[0][0]->h) / 2);
+    Text(dc, s_fontBig, kText, 76, 0, 500, 54, DT_LEFT, L"МАРШРУТ");
+
+    int choose = s_planChoose;
+    s_planChoose = -1;   // (the rows' places)
+    for (int row = 0; row < p->nvia + 2; row++) {
+        int slot = RowSlot(row);
+        PlanRect(P_ROW + slot, &r);
+        bool pr = s_planPressed == P_ROW + slot;
+        Tile(dc, r, pr ? kOrange : kPanel, choose == slot ? kOrange : kLine, 16);
+        wchar_t label[16];
+        if (slot == 0)
+            wcscpy(label, L"Откуда");
+        else if (slot == 4)
+            wcscpy(label, L"Куда");
+        else
+            _snwprintf(label, 16, L"Заезд %d", slot);
+        const RoutePlace* pl = PlanSlot(slot);
+        const wchar_t* v = pl->kind == PL_PLACE ? pl->name : pl->kind == PL_GPS
+                         ? (s_gps.valid ? L"Моё местоположение" : L"Моё местоположение (нет GPS)") : L"не выбрано";
+        Text(dc, s_fontSmall, pr ? kInk : kTextDim, r.left + 16, r.top, r.left + 110, r.bottom, DT_LEFT, label);
+        Text(dc, s_fontLabel, pr ? kInk : pl->kind == PL_NONE ? kTextDim : kText, r.left + 112, r.top, r.right - 12,
+             r.bottom, DT_LEFT, v);
+        if (slot >= 1 && slot <= 3 && PlanRect(P_DEL + slot, &r)) {
+            bool dp = s_planPressed == P_DEL + slot;
+            Tile(dc, r, dp ? kOrange : kPanel2, kLine, 16);
+            Text(dc, s_fontBig, dp ? kInk : kText, r.left, r.top, r.right, r.bottom, DT_CENTER, L"×");
+        }
+    }
+    if (PlanRect(P_ADDVIA, &r))
+        DrawCtl(dc, r, s_planPressed == P_ADDVIA, s_fontLabel, L"+ ЗАЕЗД");
+    PlanRect(P_GO, &r);
+    bool ready = p->to.kind == PL_PLACE && (p->from.kind == PL_PLACE || (p->from.kind == PL_GPS && s_gps.valid));
+    Tile(dc, r, ready || s_planPressed == P_GO ? kOrange : kPanel2, ready ? kOrange : kLine, 20);
+    Text(dc, s_fontLabel, ready ? kInk : kTextDim, r.left, r.top, r.right, r.bottom, DT_CENTER, L"ПОЕХАЛИ");
+    if (s_planMsg)
+        Text(dc, s_fontSmall, kTextErr, 24, 360, s_cw - 24, 400, DT_LEFT, s_planMsg);
+    else
+        Text(dc, s_fontSmall, kTextDim, 24, 360, s_cw - 24, 400, DT_LEFT,
+             L"Нажмите на поле: своё место, адрес или точка на карте. Долгое нажатие на карту — маршрут туда.");
+    s_planChoose = choose;
+    if (choose < 0)
+        return;
+    // the field's choices over the editor
+    RECT box = { 196, 96, 604, 120 + ChoiceCount() * 66 + 14 };
+    Tile(dc, box, kInk, kOrange, 24);
+    static const wchar_t* kChoice[4] = { L"МОЁ МЕСТОПОЛОЖЕНИЕ", L"НАЙТИ АДРЕС", L"ТОЧКА НА КАРТЕ", L"ОТМЕНА" };
+    for (int i = 0; i < ChoiceCount(); i++) {
+        int id = ChoiceId(i);
+        PlanRect(id, &r);
+        DrawCtl(dc, r, s_planPressed == id, s_fontLabel, kChoice[id - P_CH_GPS]);
+    }
+}
+
+// The picker's bar over the map and the long press menu.
+static bool PickRect(RECT* r)
+{
+    SetRect(r, s_cw - 168, kStatusH + 12, s_cw - 16, kStatusH + 56);
+    return s_pickSlot >= 0;
+}
+
+static bool MenuRect(int id, RECT* r)
+{
+    if (!s_lpMenu || id < M_VIA || id > M_CANCEL)
+        return false;
+    if (id == M_VIA && RoutePlanGet()->nvia >= kMaxVia)
+        return false;
+    int i = id - M_VIA;
+    SetRect(r, 220, 300 + i * 58, 580, 300 + i * 58 + 50);
+    return true;
+}
+
+static int HitOverMap(int x, int y)
+{
+    RECT r;
+    if (PickRect(&r) && x >= r.left && x < r.right && y >= r.top && y < r.bottom)
+        return P_PICK_CANCEL;
+    for (int id = M_VIA; id <= M_CANCEL; id++)
+        if (MenuRect(id, &r) && x >= r.left && x < r.right && y >= r.top && y < r.bottom)
+            return id;
+    return -1;
+}
+
+static void OnOverMap(int id)
+{
+    if (id == P_PICK_CANCEL) {
+        s_pickSlot = -1;
+        s_plan = true;
+    } else if (id == M_VIA) {
+        RoutePlace p = MapPlace(s_lpLon, s_lpLat);
+        PlaceLookup(p);
+        bool gps = s_gps.valid != 0;
+        RouteAddVia(p, s_gps.lon, s_gps.lat, gps && s_gps.speedKmh > 10 ? s_gps.course : -1, gps);
+        s_lpMenu = false;
+    } else if (id == M_NEW) {
+        s_lpMenu = false;
+        PlanNew(s_lpLon, s_lpLat);
+    } else if (id == M_CANCEL) {
+        s_lpMenu = false;
+    }
+    InvalidateRect(s_wnd, NULL, FALSE);
+}
+
+static void DrawOverMap(HDC dc)
+{
+    RECT r;
+    if (PickRect(&r)) {
+        RECT bar = { 8, kStatusH + 6, s_cw - 8, kStatusH + 62 };
+        Darken(dc, bar, 12);
+        Outline(dc, bar, kOrange, 12);
+        static const wchar_t* kWhat[5] = { L"«Откуда»", L"заезд 1", L"заезд 2", L"заезд 3", L"«Куда»" };
+        wchar_t s[96];
+        _snwprintf(s, 96, L"Нажмите на карту: точка для %s", kWhat[s_pickSlot]);
+        s[95] = 0;
+        Text(dc, s_fontLabel, kText, bar.left + 16, bar.top, r.left - 8, bar.bottom, DT_LEFT, s);
+        DrawCtl(dc, r, s_planPressed == P_PICK_CANCEL, s_fontLabel, L"ОТМЕНА");
+    }
+    if (s_lpMenu) {
+        RECT box = { 204, 288, 596, 300 + 3 * 58 + 4 };
+        Darken(dc, box, 20);
+        Outline(dc, box, kLine, 20);
+        static const wchar_t* kMenu[3] = { L"ЗАЕХАТЬ СЮДА", L"МАРШРУТ СЮДА", L"ОТМЕНА" };
+        for (int id = M_VIA; id <= M_CANCEL; id++) {
+            if (MenuRect(id, &r))
+                DrawCtl(dc, r, s_planPressed == id, s_fontLabel, kMenu[id - M_VIA]);
+            else if (id == M_VIA) {
+                SetRect(&r, 220, 300, 580, 350);
+                Text(dc, s_fontSmall, kTextDim, r.left, r.top, r.right, r.bottom, DT_CENTER, L"заездов уже три");
+            }
+        }
     }
 }
 
@@ -2111,10 +2675,14 @@ static void Paint(HDC hdc)
         DrawSettings(dc);
     } else if (s_search) {
         DrawSearch(dc);
+    } else if (s_plan) {
+        DrawPlan(dc);
     } else {
         DrawStatus(dc);
-        DrawGuide(dc);
+        if (s_pickSlot < 0)
+            DrawGuide(dc);
         DrawButtons(dc);
+        DrawOverMap(dc);
     }
 
     BitBlt(hdc, 0, 0, s_cw, s_ch, dc, 0, 0, SRCCOPY);
@@ -2212,6 +2780,7 @@ static void OnDestroy(HWND hwnd)
     KillTimer(hwnd, TIMER_TICK);
     KillTimer(hwnd, TIMER_USER);
     KillTimer(hwnd, TIMER_DOCK);
+    KillTimer(hwnd, TIMER_LONG);
     ConfigSave();
     if (s_taskbar)
         ShowWindow(s_taskbar, SW_SHOWNORMAL);
@@ -2395,6 +2964,18 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             DockStep();
             return 0;
         }
+        if (wp == TIMER_LONG) {   // the finger stayed on the map: a point for a route
+            KillTimer(hwnd, TIMER_LONG);
+            if (s_dragging && !s_dragMoved) {
+                s_longDone = true;
+                if (s_pickSlot >= 0)
+                    PickAt(s_dragStart.x, s_dragStart.y);
+                else
+                    OnLongPress(s_dragStart.x, s_dragStart.y);
+                InvalidateRect(hwnd, NULL, FALSE);
+            }
+            return 0;
+        }
         if (wp == TIMER_USER) {
             KillTimer(hwnd, TIMER_USER);
             s_userPending = false;
@@ -2480,7 +3061,16 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             s_setPressed = HitSettings(x, y);
         } else if (s_search) {
             s_kbPressed = HitSearch(x, y);
+        } else if (s_plan) {
+            s_planPressed = HitPlan(x, y);
+        } else if ((s_planPressed = HitOverMap(x, y)) >= 0) {
+            // the picker's "cancel", the long press menu
+        } else if (s_lpMenu) {
+            s_lpMenu = false;   // a tap beside the menu closes it
         } else if (InMap(x, y)) {
+            SetTimer(hwnd, TIMER_LONG, kLongMs, NULL);
+            s_longDone = false;
+            s_downTick = GetTickCount();
             s_dragging = true;
             s_dragMoved = false;
             s_dragStart.x = x;
@@ -2501,8 +3091,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             }
         } else if (s_dragging) {
             int dx = x - s_dragStart.x, dy = y - s_dragStart.y;
-            if (!s_dragMoved && (abs(dx) > 6 || abs(dy) > 6))
+            if (!s_dragMoved && (abs(dx) > 6 || abs(dy) > 6)) {
                 s_dragMoved = true;
+                KillTimer(hwnd, TIMER_LONG);
+            }
             if (s_dragMoved) {
                 WorldToGeo(s_dragWx - dx, s_dragWy - dy, g_cfg.z, &g_cfg.lon, &g_cfg.lat);
                 g_cfg.follow = FOLLOW_OFF;
@@ -2531,10 +3123,30 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             s_kbPressed = -1;
             if (HitSearch(x, y) == c)
                 OnSearchKey(c);
+        } else if (s_planPressed >= 0) {
+            int c = s_planPressed;
+            s_planPressed = -1;
+            if (s_plan ? HitPlan(x, y) == c : HitOverMap(x, y) == c) {
+                if (s_plan)
+                    OnPlanCtl(c);
+                else
+                    OnOverMap(c);
+            }
         } else if (s_dragging) {
             s_dragging = false;
-            if (s_dragMoved) {
+            KillTimer(hwnd, TIMER_LONG);
+            if (s_longDone) {
+                s_longDone = false;   // done when it fired
+            } else if (s_dragMoved) {
                 UserChanged();
+            } else if (GetTickCount() - s_downTick >= (DWORD)kLongMs) {
+                // held long, but the timer did not come in time (the thread was busy: input goes before timers)
+                if (s_pickSlot >= 0)
+                    PickAt(s_dragStart.x, s_dragStart.y);
+                else
+                    OnLongPress(s_dragStart.x, s_dragStart.y);
+            } else if (s_pickSlot >= 0) {
+                PickAt(x, y);
             } else {   // a tap on the map raises (and refreshes the traffic) / lowers the bottom bar
                 bool up = !DockUp();
                 DockShow(up);
@@ -2550,6 +3162,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         if (s_search) {   // letters go to WM_CHAR
             if (wp == VK_ESCAPE)
                 OnSearchKey(K_BACK);
+            return 0;
+        }
+        if (s_plan && wp == VK_ESCAPE) {
+            OnPlanCtl(P_BACK);
             return 0;
         }
         switch (wp) {
