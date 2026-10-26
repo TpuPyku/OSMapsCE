@@ -14,7 +14,7 @@ static const wchar_t* const kRelease = L"1.03";   // raise by hand: minor - sign
 enum { B_SETTINGS, B_NIGHT, B_EXIT, B_TRF, B_TSRC, B_GPS, B_LEFT, B_RIGHT, B_UP, B_DOWN, B_MINUS, B_PLUS,
        B_HOME, B_SEARCH, B_ROUTEOFF, B_COUNT };
 
-enum { kTile = 72, kSign = 48, kStatusH = 44, kDockY = 404, kDockMs = 6000, kDockH = 76, kDockStep = 16,
+enum { kTile = 72, kRound = 60, kSign = 48, kStatusH = 44, kDockY = 404, kDockMs = 6000, kDockH = 76, kDockStep = 16,
        kDockAnimMs = 30 };   // the bar slides in / out by kDockStep px every kDockAnimMs
 
 struct Button {
@@ -29,13 +29,13 @@ static Button s_btn[B_COUNT] = {
     { 0, 0, { NULL } },   // exit: a button of the settings screen (Esc on the PC)
     { 0, 0, { L"Btrf_on", L"Btrf_off" } },
     { 0, 0, { L"Btsrc_ya", L"Btsrc_2g" } },   // traffic provider, only while traffic is on
-    { 16, 312, { L"Bgps_on", L"Bgps_off", L"Bgps_none" } },
+    { 724, 286, { L"Bgps_on", L"Bgps_off", L"Bgps_none" } },
     { 0, 0, { NULL } },   // pan: keys only
     { 0, 0, { NULL } },
     { 0, 0, { NULL } },
     { 0, 0, { NULL } },
-    { 712, 312, { L"Bminus" } },
-    { 712, 232, { L"Bplus" } },
+    { 724, 218, { L"Bminus" } },
+    { 724, 150, { L"Bplus" } },
     { 0, 0, { L"Bhome" } },
     { 0, 0, { L"Bsearch" } },   // search a place, a route to it (route.cpp)
     { 0, 0, { L"Broff" } },     // the route off, only while there is one
@@ -56,7 +56,10 @@ static const COLORREF kInk     = RGB(0x0b, 0x0c, 0x0e);   // bars
 static const COLORREF kPanel   = RGB(0x17, 0x19, 0x1c);   // tiles, settings
 static const COLORREF kPanel2  = RGB(0x22, 0x25, 0x2a);   // settings controls
 static const COLORREF kLine    = RGB(0x34, 0x38, 0x3f);   // 2 px borders
-static const COLORREF kOrange  = RGB(0xff, 0x6b, 0x1a);   // the one accent: pressed / on
+// The one accent (pressed / on / chosen, the car and its glow): VestaHome's theme (the user's rule 2026-10-26) -
+// its "welcome" / "theme" (add-on API) or, without VestaHome running, screen.accent of its VestaHome.ini; Марс else.
+static COLORREF       kOrange  = RGB(0xff, 0x6b, 0x1a);
+static const COLORREF kHair    = RGB(64, 68, 77);         // night: a card's 1 px edge over the dark map
 
 enum { TIMER_TICK = 1, TIMER_USER = 2, TIMER_DOCK = 3, TIMER_LONG = 4 };
 static const UINT kUserDelayMs = 900;    // wait for the user to stop pressing buttons
@@ -103,6 +106,7 @@ static unsigned short* s_nightLut;      // RGB565 -> night color, only while nig
 static int        s_cw, s_ch;
 static Image      s_bg;
 static HFONT      s_fontBig, s_fontSmall, s_fontTiny, s_fontStatus, s_fontClock, s_fontLabel, s_fontCap;
+static HFONT      s_fontHuge, s_fontKm, s_fontStreet, s_fontSpeed;   // design v3: the turn's distance, the trip
 static bool       s_dockShown;          // the bottom bar is up
 static int        s_dockOff;            // how far it is pushed down while sliding (0 = all up, kDockH = gone)
 static int        s_dockDir;            // sliding: -1 in, +1 out, 0 still
@@ -156,7 +160,7 @@ enum { kKbY = 66, kKbRowH = 81, kHitY = 62, kHitH = 58 };
 // address, or a point on the map), up to three stops, "to"; a field tapped opens its choices. With a route on, a
 // long press offers a stop there or a new route there. Slots: 0 from, 1..3 the stops, 4 to.
 enum { P_BACK = 1, P_ROW = 10, P_DEL = 20, P_ADDVIA = 30, P_GO, P_CH_GPS = 40, P_CH_SEARCH, P_CH_MAP, P_CH_CANCEL,
-       P_PICK_CANCEL = 50, M_VIA = 60, M_NEW, M_CANCEL };
+       P_PICK_CANCEL = 50, M_VIA = 60, M_NEW, M_CANCEL, P_TRIP_X = 80 };
 static bool       s_plan;
 static int        s_planChoose = -1;   // the slot whose choices are open
 static int        s_planPressed = -1;
@@ -730,8 +734,8 @@ static bool ButtonRect(int b, RECT* r)
 {
     if (s_settings || s_search || s_plan)
         return false;
-    if (b == B_GPS || b == B_MINUS || b == B_PLUS) {
-        SetRect(r, s_btn[b].x, s_btn[b].y, s_btn[b].x + kTile, s_btn[b].y + kTile);
+    if (b == B_GPS || b == B_MINUS || b == B_PLUS) {   // round, on the right (design v3)
+        SetRect(r, s_btn[b].x, s_btn[b].y, s_btn[b].x + kRound, s_btn[b].y + kRound);
         return true;
     }
     if (!s_dockShown)
@@ -800,6 +804,29 @@ static bool InMap(int x, int y)
 // ---------------------------------------------------------------- drawing
 
 // A sign picture (PNG with alpha) as an overlay: blended over the frame by BlendSign.
+// The signs' orange (make_images.py draws the "on" ones in the design's orange) -> the theme's accent.
+static void RecolorSign(Overlay* ov)
+{
+    if (kOrange == RGB(0xff, 0x6b, 0x1a))
+        return;
+    for (int y = 0; y < ov->h; y++) {
+        unsigned char* p = (unsigned char*)ov + ov->rowOfs[y];
+        int runs = *(unsigned short*)p;
+        p += 4;
+        for (int r = 0; r < runs; r++) {
+            int count = ((unsigned short*)p)[1];
+            unsigned char* c = p + 4;
+            for (int i = 0; i < count; i++, c += 4)
+                if (c[0] > 200 && c[1] > 60 && c[1] < 160 && c[2] < 100) {
+                    c[0] = GetRValue(kOrange);
+                    c[1] = GetGValue(kOrange);
+                    c[2] = GetBValue(kOrange);
+                }
+            p += 4 + count * 4;
+        }
+    }
+}
+
 static Overlay* LoadSign(const wchar_t* name, int pressed)
 {
     wchar_t file[64], path[MAX_PATH];
@@ -815,16 +842,13 @@ static Overlay* LoadSign(const wchar_t* name, int pressed)
     }
     if (!ov)
         Log("ui: no image %S", path);
+    else
+        RecolorSign(ov);
     return ov;
 }
 
-static void LoadImages()
+static void LoadSigns()
 {
-    wchar_t path[MAX_PATH];
-    PathInDir(path, L"Images\\MapGL.png");
-    if (!ImageFromFile(path, &s_bg))
-        Log("ui: no background %S", path);
-
     for (int i = 0; i < B_COUNT; i++)
         for (int state = 0; state < 3; state++)
             if (s_btn[i].name[state])
@@ -833,6 +857,69 @@ static void LoadImages()
     for (int p = 0; p < 2; p++) {
         s_arrow[0][p] = LoadSign(L"Sleft", p);
         s_arrow[1][p] = LoadSign(L"Sright", p);
+    }
+}
+
+static void LoadImages()
+{
+    wchar_t path[MAX_PATH];
+    PathInDir(path, L"Images\\MapGL.png");
+    if (!ImageFromFile(path, &s_bg))
+        Log("ui: no background %S", path);
+    LoadSigns();
+}
+
+// The theme's accent changed: the signs again in it.
+static void AccentSet(COLORREF c)
+{
+    if (c == kOrange)
+        return;
+    kOrange = c;
+    for (int i = 0; i < B_COUNT; i++)
+        for (int st = 0; st < 3; st++)
+            for (int p = 0; p < 2; p++) {
+                free(s_btn[i].ov[st][p]);
+                s_btn[i].ov[st][p] = NULL;
+            }
+    for (int k = 0; k < 2; k++)
+        for (int p = 0; p < 2; p++) {
+            free(s_arrow[k][p]);
+            s_arrow[k][p] = NULL;
+        }
+    LoadSigns();
+    Log("ui: accent %02X%02X%02X", GetRValue(c), GetGValue(c), GetBValue(c));
+    if (s_wnd)
+        InvalidateRect(s_wnd, NULL, FALSE);
+}
+
+// Without VestaHome running: its setting (a Lada Vesta paint code, VestaHome's kAccents) in its ini next to us
+// (\SDMMC\OSMapsCE and \SDMMC\VestaHome; the PC: the repos side by side).
+static void AccentFromIni()
+{
+    static const struct { int code; COLORREF c; } kAcc[] = { { 130, RGB(0xff, 0x6b, 0x1a) }, { 195, RGB(0xdc, 0x3c, 0x3c) },
+        { 247, RGB(0xc3, 0xb8, 0x9c) }, { 372, RGB(0x72, 0xc0, 0x59) }, { 476, RGB(0x4f, 0x7a, 0xca) },
+        { 619, RGB(0xab, 0xba, 0xd8) }, { 691, RGB(0xee, 0xee, 0xee) } };
+    static const wchar_t* kIni[2] = { L"..\\VestaHome\\VestaHome.ini", L"..\\..\\VestaHome\\VestaHome\\VestaHome\\VestaHome.ini" };
+    for (int f = 0; f < 2; f++) {
+        wchar_t path[MAX_PATH];
+        PathInDir(path, kIni[f]);
+        unsigned char* data;
+        int len;
+        if (!ReadWholeFile(path, &data, &len))
+            continue;
+        char* buf = (char*)realloc(data, len + 1);
+        if (!buf) {
+            free(data);
+            return;
+        }
+        buf[len] = 0;
+        const char* k = strstr(buf, "\nscreen.accent=");
+        int code = k ? atoi(k + 15) : 130;
+        free(buf);
+        for (int i = 0; i < (int)(sizeof(kAcc) / sizeof(kAcc[0])); i++)
+            if (kAcc[i].code == code)
+                kOrange = kAcc[i].c;   // (before the signs are loaded)
+        return;
     }
 }
 
@@ -862,8 +949,9 @@ static int BackStride()
 
 // The map under r at a quarter of its brightness (two shifts and a mask per RGB565 pixel), rounded corners
 // of the given radius. Without the frame's pixels (no DIB): filled with the bar colour instead.
-static void Darken(HDC dc, const RECT& r, int radius)
+static void Darken(HDC dc, const RECT& r, int radius, int shift = 2)
 {
+    unsigned short mask = shift == 3 ? 0x18E3 : 0x39E7;   // (RGB565 >> 2 or >> 3, the bits that cross out)
     if (!s_backBits) {
         HBRUSH b = CreateSolidBrush(kInk);
         FillRect(dc, &r, b);
@@ -883,7 +971,7 @@ static void Darken(HDC dc, const RECT& r, int radius)
         unsigned short* p = s_backBits + (s_ch - 1 - y) * stride;
         int x1 = r.right - inset > s_cw ? s_cw : r.right - inset;
         for (int x = r.left + inset < 0 ? 0 : r.left + inset; x < x1; x++)
-            p[x] = (unsigned short)((p[x] >> 2) & 0x39E7);
+            p[x] = (unsigned short)((p[x] >> shift) & mask);
     }
 }
 
@@ -937,6 +1025,62 @@ static void Outline(HDC dc, const RECT& r, COLORREF c, int radius)
     DeleteObject(pen);
 }
 
+// The 1 px edge of a card over the dark night map (by day the shade is enough). Design rule 2026-10-26: buttons
+// have no border; a chosen thing - the accent's 2 px (Outline); cards over the map - only this edge at night.
+static void Hairline(HDC dc, const RECT& r, int radius)
+{
+    if (!g_cfg.night)
+        return;
+    HPEN pen = CreatePen(PS_SOLID, 1, kHair);
+    HGDIOBJ op = SelectObject(dc, pen), ob = SelectObject(dc, GetStockObject(NULL_BRUSH));
+    RoundRect(dc, r.left, r.top, r.right, r.bottom, radius * 2, radius * 2);
+    SelectObject(dc, ob);
+    SelectObject(dc, op);
+    DeleteObject(pen);
+}
+
+// A card over the map (design v3): the map under it at an eighth of its brightness, round corners, no border.
+static void Card(HDC dc, const RECT& r, int radius)
+{
+    Darken(dc, r, radius, 3);
+    Hairline(dc, r, radius);
+}
+
+// The car's glow: the accent laid softly around it (as VestaHome's saver spot), straight into the frame's pixels.
+static void Glow(int cx, int cy)
+{
+    static unsigned char w[61][61];   // the weight, 0..115, made once
+    static bool made;
+    if (!made) {
+        for (int y = 0; y < 61; y++)
+            for (int x = 0; x < 61; x++) {
+                double d = sqrt((double)((x - 30) * (x - 30) + (y - 30) * (y - 30))) / 30;
+                w[y][x] = (unsigned char)(d >= 1 ? 0 : 115 * (1 - d) * (1 - d));
+            }
+        made = true;
+    }
+    if (!s_backBits)
+        return;
+#ifndef UNDER_CE
+    GdiFlush();
+#endif
+    int ar = GetRValue(kOrange), ag = GetGValue(kOrange), ab = GetBValue(kOrange), stride = BackStride();
+    for (int y = 0; y < 61; y++) {
+        int sy = cy - 30 + y;
+        if (sy < 0 || sy >= s_ch)
+            continue;
+        unsigned short* row = s_backBits + (s_ch - 1 - sy) * stride;
+        for (int x = 0; x < 61; x++) {
+            int sx = cx - 30 + x, a = w[y][x];
+            if (!a || sx < 0 || sx >= s_cw)
+                continue;
+            unsigned short d = row[sx];
+            int r = (d >> 8) & 0xF8, g = (d >> 3) & 0xFC, b = (d << 3) & 0xF8;
+            row[sx] = RGB565(r + (ar - r) * a / 255, g + (ag - g) * a / 255, b + (ab - b) * a / 255);
+        }
+    }
+}
+
 // Car marker. (cx, cy) - screen point of the view center (vx, vy); angle - map rotation.
 static void DrawGpsMarker(HDC dc, double cx, double cy, double vx, double vy, double angle)
 {
@@ -950,6 +1094,8 @@ static void DrawGpsMarker(HDC dc, double cx, double cy, double vx, double vy, do
     int py = (int)floor(cy - dx * rs + dy * rc + 0.5);
 
     bool fresh = s_gps.valid && GetTickCount() - s_gps.fixTick < 5000;
+    if (fresh)
+        Glow(px, py);
     HBRUSH brush = CreateSolidBrush(fresh ? kOrange : RGB(140, 140, 140));   // VestaHome accent
     HPEN pen = CreatePen(PS_SOLID, 2, RGB(255, 255, 255));
     HGDIOBJ ob = SelectObject(dc, brush);
@@ -1457,6 +1603,8 @@ static void RouteMarker(HDC dc, int x, int y, COLORREF fill, const wchar_t* t);
 struct AltEst { int minS, maxS, jamM, seenPct; DWORD sig; };
 static AltEst s_est[3];
 
+static void EstimateLine(const double* ll, int np, double timeS, AltEst& e);
+
 static void Estimate(int k, DWORD sig)
 {
     AltEst& e = s_est[k];
@@ -1467,8 +1615,12 @@ static void Estimate(int k, DWORD sig)
     const double* ll;
     int np;
     double timeS, distM;
-    if (!RouteAltGet(k, &ll, &np, &timeS, &distM) || np < 2)
-        return;
+    if (RouteAltGet(k, &ll, &np, &timeS, &distM) && np >= 2)
+        EstimateLine(ll, np, timeS, e);
+}
+
+static void EstimateLine(const double* ll, int np, double timeS, AltEst& e)
+{
     double kx = 111320 * cos(ll[1] * M_PI / 180), total = 0;
     for (int i = 1; i < np; i++) {
         double dx = (ll[i * 2] - ll[i * 2 - 2]) * kx, dy = (ll[i * 2 + 1] - ll[i * 2 - 1]) * 110540;
@@ -1537,8 +1689,9 @@ static void DrawCards(HDC dc)
         double timeS, distM;
         RouteAltGet(k, &ll, &np, &timeS, &distM);
         bool cur = k == RouteAltCur(), down = s_planPressed == 70 + k;
-        Darken(dc, r, 14);
-        Outline(dc, r, cur ? kOrange : kLine, 14);
+        Card(dc, r, 14);
+        if (cur)   // the chosen one: the accent's border
+            Outline(dc, r, kOrange, 14);
         if (down)
             Tile(dc, r, kOrange, kOrange, 28);
         wchar_t t[48], d[24], line[96];
@@ -1885,7 +2038,7 @@ static void Tile(HDC dc, const RECT& r, COLORREF fill, COLORREF border, int radi
 // Settings controls: a dark tile with a border, pressed = orange with a dark caption.
 static void DrawCtl(HDC dc, const RECT& r, bool pressed, HFONT font, const wchar_t* caption)
 {
-    Tile(dc, r, pressed ? kOrange : kPanel2, pressed ? kOrange : kLine, 20);
+    Tile(dc, r, pressed ? kOrange : kPanel2, pressed ? kOrange : kPanel2, 20);
     Text(dc, font, pressed ? kInk : kText, r.left, r.top, r.right, r.bottom, DT_CENTER, caption);
 }
 
@@ -1908,7 +2061,7 @@ static void Stepper(HDC dc, int prev, int next, const wchar_t* value)
     const RECT& a = kSetCtl[prev];
     const RECT& b = kSetCtl[next];
     RECT box = { a.left, a.top, b.right, b.bottom };
-    Tile(dc, box, kInk, kLine, 20);
+    Tile(dc, box, kInk, kInk, 20);
     for (int k = 0; k < 2; k++) {
         const RECT& z = k ? b : a;
         bool down = s_setPressed == (k ? next : prev);
@@ -1950,7 +2103,7 @@ static void DrawSettings(HDC dc)
     Text(dc, s_fontClock, kText, s_cw - 160, 0, s_cw - 14, 54, DT_RIGHT, s);
 
     RECT panel = { 16, 68, s_cw - 16, s_ch - 12 };
-    Tile(dc, panel, kPanel, kLine, 32);
+    Tile(dc, panel, kPanel, kPanel, 32);
 
     // the receiver's state, under "GPS port"
     COLORREF c = kText;
@@ -2056,11 +2209,11 @@ static void FmtDist(wchar_t* s, int cap, int m)
 
 // The next turn's sign in r: a stem from below and the arrow the way of the turn; the destination - a ring with
 // a dot, a roundabout - a ring with the way out up.
-static void DrawTurn(HDC dc, const RECT& r, int turn)
+static void DrawTurn(HDC dc, const RECT& r, int turn, COLORREF col = kText)
 {
     int cx = (r.left + r.right) / 2, cy = (r.top + r.bottom) / 2 + 4;
-    HPEN pen = CreatePen(PS_SOLID, 7, kText);
-    HBRUSH br = CreateSolidBrush(kText);
+    HPEN pen = CreatePen(PS_SOLID, 7, col);
+    HBRUSH br = CreateSolidBrush(col);
     HGDIOBJ op = SelectObject(dc, pen), ob = SelectObject(dc, br);
     if (turn == 999) {
         SelectObject(dc, GetStockObject(NULL_BRUSH));
@@ -2099,7 +2252,7 @@ static void DrawTurn(HDC dc, const RECT& r, int turn)
         POINT h[3] = { { hx + (int)(sn * 14), hy - (int)(c * 14) },
                        { hx + (int)(c * 12 - sn * 4), hy + (int)(sn * 12 + c * 4) },
                        { hx - (int)(c * 12 + sn * 4), hy - (int)(sn * 12 - c * 4) } };
-        HPEN thin = CreatePen(PS_SOLID, 1, kText);
+        HPEN thin = CreatePen(PS_SOLID, 1, col);
         SelectObject(dc, thin);
         Polygon(dc, h, 3);
         SelectObject(dc, pen);
@@ -2111,44 +2264,151 @@ static void DrawTurn(HDC dc, const RECT& r, int turn)
     DeleteObject(pen);
 }
 
-// The guidance panel at the top left, under the status bar: the next turn, the distance to it, the instruction,
-// what is left to the destination; or the route's state (being laid, not found, arrived).
+// The turn card at the top left (design v3): the turn's sign in the accent's square, the distance big, what to do,
+// the street, "then ..." under a line; or the route's state (being laid, not found, arrived).
 static void DrawGuide(HDC dc)
 {
     RouteInfo ri;
     RouteGet(&ri);
     if (ri.state == ROUTE_NONE)
         return;
-    bool on = ri.state == ROUTE_ON;
-    RECT p = { 8, kStatusH + 6, 408, kStatusH + 6 + (on ? 118 : 50) };
-    Darken(dc, p, 12);
-    Outline(dc, p, ri.off ? kTextErr : kLine, 12);
-    if (!on) {
-        Text(dc, s_fontLabel, ri.state == ROUTE_FAIL ? kTextErr : kText, p.left + 16, p.top, p.right - 12, p.bottom,
+    if (ri.state != ROUTE_ON) {
+        RECT p = { 16, kStatusH + 12, 400, kStatusH + 64 };
+        Card(dc, p, 18);
+        Text(dc, s_fontLabel, ri.state == ROUTE_FAIL ? kTextErr : kText, p.left + 18, p.top, p.right - 12, p.bottom,
              DT_LEFT, ri.text);
         return;
     }
-    RECT ic = { p.left + 6, p.top + 6, p.left + 82, p.top + 82 };
-    DrawTurn(dc, ic, ri.turn);
-    wchar_t s[96], d[32];
+    RECT p = { 16, 56, 330, ri.thenText ? 238 : 204 };
+    Card(dc, p, 22);
+    if (ri.off)
+        Outline(dc, p, kTextErr, 22);
+    RECT sq = { 28, 68, 112, 152 };
+    Tile(dc, sq, kOrange, kOrange, 36);
+    DrawTurn(dc, sq, ri.turn, kInk);
+    // the distance: the number big, its unit beside it
+    wchar_t d[32], num[16];
     FmtDist(d, 32, ri.nextM);
-    Text(dc, s_fontClock, kText, p.left + 92, p.top + 4, p.right - 10, p.top + 40, DT_LEFT, d);
-    RECT tr = { p.left + 92, p.top + 42, p.right - 10, p.top + 82 };
-    SelectObject(dc, s_fontSmall);
-    SetTextColor(dc, ri.off ? kTextErr : kText);
-    DrawText(dc, ri.text, -1, &tr, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);
-    // left to the destination, and the time of arrival by the clock
+    const wchar_t* unit = wcsrchr(d, L' ');
+    int n = unit ? (int)(unit - d) : (int)wcslen(d);
+    wcsncpy(num, d, n);
+    num[n] = 0;
+    SelectObject(dc, s_fontHuge);
+    SIZE sz;
+    GetTextExtentPoint32(dc, num, n, &sz);
+    Text(dc, s_fontHuge, kText, 126, 66, 330, 120, DT_LEFT, num);
+    if (unit)
+        Text(dc, s_fontKm, kTextDim, 126 + sz.cx + 6, 80, 330, 118, DT_LEFT, unit + 1);
+    // "Поверните направо: Московская улица" -> what to do under the distance, the street in the line below
+    wchar_t act[112], street[112] = L"";
+    wcsncpy(act, ri.text, 111);
+    act[111] = 0;
+    wchar_t* colon = wcsstr(act, L": ");
+    if (colon) {
+        wcscpy(street, colon + 2);
+        *colon = 0;
+    } else {
+        wcscpy(street, act);
+        act[0] = 0;
+    }
+    Text(dc, s_fontSmall, kTextDim, 126, 120, 324, 146, DT_LEFT, act);
+    // the street big; a longer one smaller, the longest in two lines
+    SelectObject(dc, s_fontStreet);
+    GetTextExtentPoint32(dc, street, (int)wcslen(street), &sz);
+    HFONT sf = s_fontStreet;
+    if (sz.cx > 292) {
+        SelectObject(dc, s_fontLabel);
+        GetTextExtentPoint32(dc, street, (int)wcslen(street), &sz);
+        sf = sz.cx > 292 ? NULL : s_fontLabel;
+    }
+    if (sf) {
+        Text(dc, sf, ri.off ? kTextErr : kText, 30, 160, 322, 196, DT_LEFT, street);
+    } else {
+        RECT sr = { 30, 154, 322, 200 };
+        SelectObject(dc, s_fontSmall);
+        SetTextColor(dc, ri.off ? kTextErr : kText);
+        DrawText(dc, street, -1, &sr, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);
+    }
+    if (ri.thenText) {
+        RECT l = { 30, 203, 316, 204 };
+        HBRUSH b = CreateSolidBrush(kLine);
+        FillRect(dc, &l, b);
+        DeleteObject(b);
+        wchar_t t[128];
+        _snwprintf(t, 128, L"затем — %s", ri.thenText);
+        t[127] = 0;
+        Text(dc, s_fontSmall, kTextDim, 30, 208, 322, 232, DT_LEFT, t);
+    }
+}
+
+// The trip at the bottom (design v3): the arrival, the minutes (with the range by the traffic seen), the km, and
+// "x" - the route off. Not while the bottom bar or the alternatives' cards are up.
+static AltEst s_estCur;
+
+static bool TripShown()
+{
+    RouteInfo ri;
+    RouteGet(&ri);
+    return ri.state == ROUTE_ON && !s_dockShown && RouteAlts() < 2 && s_pickSlot < 0 && !s_lpMenu;
+}
+
+static void DrawTrip(HDC dc)
+{
+    RouteInfo ri;
+    RouteGet(&ri);
+    if (s_gps.valid && !s_dockShown && RouteAlts() < 2) {   // the speed, bottom left
+        RECT c = { 20, 394, 94, 468 };
+        Card(dc, c, 37);
+        wchar_t v[8];
+        _snwprintf(v, 8, L"%d", (int)(s_gps.speedKmh + 0.5));
+        Text(dc, s_fontSpeed, kText, c.left, c.top + 8, c.right, c.top + 46, DT_CENTER, v);
+        Text(dc, s_fontCap, kTextDim, c.left, c.top + 44, c.right, c.top + 62, DT_CENTER, L"км/ч");
+    }
+    if (!TripShown())
+        return;
+    RECT p = { 196, 400, 604, 466 };
+    Card(dc, p, 33);
     SYSTEMTIME t;
     GetLocalTime(&t);
     int at = (t.wHour * 60 + t.wMinute + (ri.leftS + 59) / 60) % (24 * 60);
-    FmtDist(d, 32, ri.leftM);
-    if (ri.leftS >= 3600)
-        _snwprintf(s, 96, L"осталось %s · %d ч %02d мин · в %02d:%02d", d, ri.leftS / 3600, ri.leftS % 3600 / 60,
-                   at / 60, at % 60);
+    wchar_t big[3][24], under[3][40];
+    _snwprintf(big[0], 24, L"%02d:%02d", at / 60, at % 60);
+    wcscpy(under[0], L"прибытие");
+    int mins = (ri.leftS + 59) / 60;
+    if (mins >= 60)
+        _snwprintf(big[1], 24, L"%d ч %02d", mins / 60, mins % 60);
     else
-        _snwprintf(s, 96, L"осталось %s · %d мин · в %02d:%02d", d, (ri.leftS + 59) / 60, at / 60, at % 60);
-    s[95] = 0;
-    Text(dc, s_fontSmall, kTextDim, p.left + 16, p.top + 86, p.right - 10, p.bottom - 6, DT_LEFT, s);
+        _snwprintf(big[1], 24, L"%d мин", mins);
+    wcscpy(under[1], L"в пути");
+    const double* ll;
+    int np = RoutePoints(&ll);
+    if (g_cfg.traffic && np > ri.seg + 1) {   // the range by the traffic on the rest of the way
+        DWORD sig = Mix(Mix(Mix(s_ringStamp, g_cfg.z), g_cfg.trafficSrc), ri.seg / 10) | 1;
+        if (s_estCur.sig != sig) {
+            memset(&s_estCur, 0, sizeof(s_estCur));
+            s_estCur.sig = sig;
+            EstimateLine(ll + ri.seg * 2, np - ri.seg, ri.leftS, s_estCur);
+        }
+        if (s_estCur.seenPct && s_estCur.maxS - s_estCur.minS >= 120)
+            _snwprintf(under[1], 40, L"с пробками %d–%d", (s_estCur.minS + 59) / 60, (s_estCur.maxS + 59) / 60);
+    }
+    FmtDist(big[2], 24, ri.leftM);
+    wcscpy(under[2], L"осталось");
+    for (int i = 0; i < 3; i++) {
+        int cx = 262 + i * 120;
+        Text(dc, s_fontKm, kText, cx - 62, 406, cx + 62, 432, DT_CENTER, big[i]);
+        Text(dc, s_fontCap, kTextDim, cx - 62, 432, cx + 62, 452, DT_CENTER, under[i]);
+    }
+    RECT x = { 552, 413, 592, 453 };
+    bool down = s_planPressed == P_TRIP_X;
+    Tile(dc, x, down ? kOrange : kPanel2, down ? kOrange : kPanel2, 40);
+    HPEN pen = CreatePen(PS_SOLID, 3, down ? kInk : kText);
+    HGDIOBJ op = SelectObject(dc, pen);
+    POINT a[2] = { { 565, 426 }, { 580, 441 } }, b2[2] = { { 580, 426 }, { 565, 441 } };
+    Polyline(dc, a, 2);
+    Polyline(dc, b2, 2);
+    SelectObject(dc, op);
+    DeleteObject(pen);
 }
 
 // ---- the search screen
@@ -2285,7 +2545,7 @@ static void DrawSearch(HDC dc)
         BlendSign(dc, s_arrow[0][down ? 1 : 0], (r.left + r.right - s_arrow[0][0]->w) / 2,
                   (r.top + r.bottom - s_arrow[0][0]->h) / 2);
     SearchRect(K_FIELD, &r);
-    Tile(dc, r, kPanel2, s_showHits ? kLine : kOrange, 20);
+    Tile(dc, r, kPanel2, s_showHits ? kPanel2 : kOrange, 20);
     wchar_t s[128];
     _snwprintf(s, 128, s_showHits ? L"%s" : L"%s|", s_query);
     s[127] = 0;
@@ -2305,7 +2565,7 @@ static void DrawSearch(HDC dc)
         for (int i = 0; i < n; i++) {
             const SearchHit* h = SearchGet(i);
             SearchRect(K_HIT + i, &r);
-            Tile(dc, r, s_kbPressed == K_HIT + i ? kOrange : kPanel, kLine, 16);
+            Tile(dc, r, s_kbPressed == K_HIT + i ? kOrange : kPanel, s_kbPressed == K_HIT + i ? kOrange : kPanel, 16);
             COLORREF c = s_kbPressed == K_HIT + i ? kInk : kText;
             Text(dc, s_fontLabel, c, r.left + 16, r.top + 4, r.right - 120, r.top + 28, DT_LEFT, h->name);
             Text(dc, s_fontSmall, s_kbPressed == K_HIT + i ? kInk : kTextDim, r.left + 16, r.top + 28, r.right - 120,
@@ -2327,7 +2587,8 @@ static void DrawSearch(HDC dc)
             cap[0] = kKeys[s_kbLang][id / 16][id % 16];
         else
             wcscpy(cap, id == K_LANG ? (s_kbLang ? L"РУС" : L"ENG") : kBottom[id - K_LANG]);
-        Tile(dc, r, p || (id == K_FIND && s_query[0]) ? kOrange : kPanel2, p ? kOrange : kLine, 16);
+        COLORREF kc = p || (id == K_FIND && s_query[0]) ? kOrange : kPanel2;
+        Tile(dc, r, kc, kc, 16);
         Text(dc, id < K_LANG ? s_fontBig : s_fontLabel, p || (id == K_FIND && s_query[0]) ? kInk : kText, r.left,
              r.top, r.right, r.bottom, DT_CENTER, cap);
     }
@@ -2567,7 +2828,7 @@ static void DrawPlan(HDC dc)
         int slot = RowSlot(row);
         PlanRect(P_ROW + slot, &r);
         bool pr = s_planPressed == P_ROW + slot;
-        Tile(dc, r, pr ? kOrange : kPanel, choose == slot ? kOrange : kLine, 16);
+        Tile(dc, r, pr ? kOrange : kPanel, choose == slot || pr ? kOrange : kPanel, 16);
         wchar_t label[16];
         if (slot == 0)
             wcscpy(label, L"Откуда");
@@ -2585,7 +2846,7 @@ static void DrawPlan(HDC dc)
              r.bottom, DT_LEFT, v);
         if (slot >= 1 && slot <= 3 && PlanRect(P_DEL + slot, &r)) {
             bool dp = s_planPressed == P_DEL + slot;
-            Tile(dc, r, dp ? kOrange : kPanel2, kLine, 16);
+            Tile(dc, r, dp ? kOrange : kPanel2, dp ? kOrange : kPanel2, 16);
             Text(dc, s_fontBig, dp ? kInk : kText, r.left, r.top, r.right, r.bottom, DT_CENTER, L"×");
         }
     }
@@ -2593,7 +2854,8 @@ static void DrawPlan(HDC dc)
         DrawCtl(dc, r, s_planPressed == P_ADDVIA, s_fontLabel, L"+ ЗАЕХАТЬ");
     PlanRect(P_GO, &r);
     bool ready = p->to.kind == PL_PLACE && (p->from.kind == PL_PLACE || (p->from.kind == PL_GPS && s_gps.valid));
-    Tile(dc, r, ready || s_planPressed == P_GO ? kOrange : kPanel2, ready ? kOrange : kLine, 20);
+    COLORREF go = ready || s_planPressed == P_GO ? kOrange : kPanel2;
+    Tile(dc, r, go, go, 20);
     Text(dc, s_fontLabel, ready ? kInk : kTextDim, r.left, r.top, r.right, r.bottom, DT_CENTER, L"ПОЕХАЛИ");
     if (s_planMsg)
         Text(dc, s_fontSmall, kTextErr, 24, 360, s_cw - 24, 400, DT_LEFT, s_planMsg);
@@ -2605,7 +2867,7 @@ static void DrawPlan(HDC dc)
         return;
     // the field's choices over the editor
     RECT box = { 196, 96, 604, 120 + ChoiceCount() * 66 + 14 };
-    Tile(dc, box, kInk, kOrange, 24);
+    Tile(dc, box, kPanel, kPanel, 24);
     static const wchar_t* kChoice[4] = { L"МОЁ МЕСТОПОЛОЖЕНИЕ", L"НАЙТИ АДРЕС", L"ТОЧКА НА КАРТЕ", L"ОТМЕНА" };
     for (int i = 0; i < ChoiceCount(); i++) {
         int id = ChoiceId(i);
@@ -2632,9 +2894,13 @@ static bool MenuRect(int id, RECT* r)
     return true;
 }
 
+static bool TripShown();
+
 static int HitOverMap(int x, int y)
 {
     RECT r;
+    if (TripShown() && x >= 548 && x < 596 && y >= 409 && y < 457)
+        return P_TRIP_X;
     for (int k = 0; CardRect(k, &r); k++)
         if (x >= r.left && x < r.right && y >= r.top && y < r.bottom)
             return 70 + k;
@@ -2648,7 +2914,10 @@ static int HitOverMap(int x, int y)
 
 static void OnOverMap(int id)
 {
-    if (id >= 70 && id < 73) {   // an alternative card: that route on
+    if (id == P_TRIP_X) {   // the trip's "x": the route off
+        RouteClear();
+        Log("ui: route off");
+    } else if (id >= 70 && id < 73) {   // an alternative card: that route on
         RouteAltChoose(id - 70);
     } else if (id == P_PICK_CANCEL) {
         s_pickSlot = -1;
@@ -2674,8 +2943,8 @@ static void DrawOverMap(HDC dc)
     DrawCards(dc);
     if (PickRect(&r)) {
         RECT bar = { 8, kStatusH + 6, s_cw - 8, kStatusH + 62 };
-        Darken(dc, bar, 12);
-        Outline(dc, bar, kOrange, 12);
+        Card(dc, bar, 12);
+        Outline(dc, bar, kOrange, 12);   // (a mode: the map picks a point)
         static const wchar_t* kWhat[5] = { L"«Откуда»", L"«Заехать 1»", L"«Заехать 2»", L"«Заехать 3»", L"«Куда»" };
         wchar_t s[96];
         _snwprintf(s, 96, L"Нажмите на карту: точка для %s", kWhat[s_pickSlot]);
@@ -2685,8 +2954,7 @@ static void DrawOverMap(HDC dc)
     }
     if (s_lpMenu) {
         RECT box = { 204, 288, 596, 300 + 3 * 58 + 4 };
-        Darken(dc, box, 20);
-        Outline(dc, box, kLine, 20);
+        Card(dc, box, 20);
         static const wchar_t* kMenu[3] = { L"ЗАЕХАТЬ СЮДА", L"МАРШРУТ СЮДА", L"ОТМЕНА" };
         for (int id = M_VIA; id <= M_CANCEL; id++) {
             if (MenuRect(id, &r))
@@ -2699,81 +2967,110 @@ static void DrawOverMap(HDC dc)
     }
 }
 
-// The status bar over the map: GPS on the left, the traffic / network state, a big clock on the right
-// (as the top bar of VestaHome).
+// The top (design v3): no bar - the map darkens softly towards the edge; on it the chips (GPS; the traffic or the
+// network) and the clock.
+static void ShadeTop()
+{
+    static int f[60];
+    static bool made;
+    if (!made) {
+        for (int y = 0; y < 60; y++)
+            f[y] = 256 - (int)(200 * pow(1 - y / 60.0, 1.5));
+        made = true;
+    }
+    if (!s_backBits)
+        return;
+#ifndef UNDER_CE
+    GdiFlush();
+#endif
+    int stride = BackStride();
+    for (int y = 0; y < 60 && y < s_ch; y++) {
+        unsigned short* row = s_backBits + (s_ch - 1 - y) * stride;
+        int k = f[y];
+        for (int x = 0; x < s_cw; x++) {
+            unsigned d = row[x];
+            row[x] = (unsigned short)((((d >> 11) * k >> 8) << 11) | ((((d >> 5) & 63) * k >> 8) << 5) | ((d & 31) * k >> 8));
+        }
+    }
+}
+
+static int Chip(HDC dc, int x, const wchar_t* s, COLORREF fg, COLORREF bg)   // a round-ended label; its right edge
+{
+    SelectObject(dc, s_fontCap);
+    SIZE sz;
+    GetTextExtentPoint32(dc, s, (int)wcslen(s), &sz);
+    RECT r = { x, 10, x + sz.cx + 24, 34 };
+    Tile(dc, r, bg, bg, 24);
+    Text(dc, s_fontCap, fg, r.left, r.top, r.right, r.bottom, DT_CENTER, s);
+    return r.right;
+}
+
 static void DrawStatus(HDC dc)
 {
-    RECT bar = { 0, 0, s_cw, kStatusH - 2 }, line = { 0, kStatusH - 2, s_cw, kStatusH };
-    Darken(dc, bar, 0);   // see-through: the map shows dimmed under it
-    HBRUSH l = CreateSolidBrush(kLine);
-    FillRect(dc, &line, l);
-    DeleteObject(l);
-
+    ShadeTop();
     wchar_t s[96];
     SYSTEMTIME t;
     GetLocalTime(&t);
     _snwprintf(s, 96, L"%02d:%02d", t.wHour, t.wMinute);
-    Text(dc, s_fontClock, kText, s_cw - 160, 0, s_cw - 14, kStatusH - 2, DT_RIGHT, s);
+    Text(dc, s_fontClock, kText, s_cw - 160, 0, s_cw - 16, kStatusH, DT_RIGHT, s);
 
-    COLORREF gc = kText;
+    const COLORREF okBg = RGB(20, 60, 34), okFg = RGB(140, 230, 160), errBg = RGB(70, 24, 24);
+    COLORREF fg = kTextDim, bg = kPanel2;
     if (!s_gpsRunning) {
         wcscpy(s, L"GPS выкл.");
-        gc = kTextDim;
     } else if (s_gps.status == GPS_SCANNING) {
-        wcscpy(s, L"GPS: поиск порта...");
+        wcscpy(s, L"GPS: поиск порта");
     } else if (s_gps.status == GPS_BUSY) {
         _snwprintf(s, 96, L"GPS: порт %s занят", s_gps.port);
-        gc = kTextErr;
+        fg = kTextErr;
+        bg = errBg;
     } else if (s_gps.status != GPS_OPEN) {
         _snwprintf(s, 96, L"GPS: нет порта %s", s_gps.port);
-        gc = kTextErr;
+        fg = kTextErr;
+        bg = errBg;
     } else if (!s_gps.lines) {
         wcscpy(s, L"GPS: нет данных");
-        gc = kTextErr;
+        fg = kTextErr;
+        bg = errBg;
     } else if (!s_gps.valid) {
-        _snwprintf(s, 96, L"GPS: поиск (%d спутн.)", s_gps.sats);
-        gc = kTextDim;
+        _snwprintf(s, 96, L"GPS: поиск · %d", s_gps.sats);
     } else {
-        _snwprintf(s, 96, L"GPS: %d спутн., %d км/ч", s_gps.sats, (int)(s_gps.speedKmh + 0.5));
+        _snwprintf(s, 96, L"GPS · %d", s_gps.sats);
+        fg = okFg;
+        bg = okBg;
     }
     s[95] = 0;
-    Text(dc, s_fontStatus, gc, 14, 0, 320, kStatusH - 2, DT_LEFT, s);
+    int x = Chip(dc, 16, s, fg, bg) + 8;
 
-    // network state, or the age of the traffic nearest to the car
-    COLORREF uc = kText;
+    // the network's state, or the traffic: its provider and age
+    fg = kTextDim;
+    bg = kPanel2;
     if (s_limitHit && g_cfg.traffic) {
         wcscpy(s, L"Лимит запросов!");
-        uc = kTextErr;
+        fg = kTextErr;
+        bg = errBg;
     } else if (s_lastErr && GetTickCount() - s_lastErrTick < 60000) {
         if (s_lastErr == NET_HTTP)
             _snwprintf(s, 96, L"Ошибка HTTP %d", s_lastHttp);
         else
             _snwprintf(s, 96, L"Ошибка: %s", NetErrorText(s_lastErr));
-        uc = kTextErr;
+        fg = kTextErr;
+        bg = errBg;
     } else if (s_inflight) {
-        wcscpy(s, L"Загрузка...");
+        wcscpy(s, L"Загрузка…");
     } else if (!g_cfg.traffic) {
         wcscpy(s, L"Пробки выкл.");
-        uc = kTextDim;
     } else {
         MapRequest keys[kMaxKeys];
         CacheEntry* e = NeededKeys(TrafficSource(), keys, kMaxKeys) ? CacheFind(keys[0], false) : NULL;
-        if (!e) {
-            wcscpy(s, L"Пробки: нет данных");
-            uc = kTextDim;
-        } else {
-            _snwprintf(s, 96, L"Пробки: %d мин назад", (int)((GetTickCount() - e->fetchTick) / 60000));
-            uc = IsFresh(e) ? kText : kTextDim;
-        }
+        if (!e)
+            _snwprintf(s, 96, L"Пробки · %s · нет данных", kTrafficTitle[g_cfg.trafficSrc]);
+        else
+            _snwprintf(s, 96, L"Пробки · %s · %d мин", kTrafficTitle[g_cfg.trafficSrc],
+                       (int)((GetTickCount() - e->fetchTick) / 60000));
     }
     s[95] = 0;
-    if (g_cfg.traffic && uc == kText && !s_inflight) {   // which provider, next to the age
-        wchar_t t2[96];
-        _snwprintf(t2, 96, L"%s · %s", kTrafficTitle[g_cfg.trafficSrc], s);
-        t2[95] = 0;
-        wcscpy(s, t2);
-    }
-    Text(dc, s_fontStatus, uc == kText ? kTextDim : uc, 330, 0, s_cw - 170, kStatusH - 2, DT_LEFT, s);
+    Chip(dc, x, s, fg, bg);
 }
 
 // The sign of a button in the middle of r (a missing picture: the button's name as text).
@@ -2821,13 +3118,11 @@ static void DrawButtons(HDC dc)
         if (!ButtonRect(i, &r))
             continue;
         int pressed = s_pressed == i && s_pressedInside ? 1 : 0;
-        if (i == B_GPS || i == B_MINUS || i == B_PLUS) {   // a see-through tile over the map
-            if (pressed) {
-                Tile(dc, r, kOrange, kOrange, 24);
-            } else {
-                Darken(dc, r, 12);
-                Outline(dc, r, kLine, 12);
-            }
+        if (i == B_GPS || i == B_MINUS || i == B_PLUS) {   // a dark round button over the map, no border
+            if (pressed)
+                Tile(dc, r, kOrange, kOrange, kRound);
+            else
+                Card(dc, r, kRound / 2);
             DrawSign(dc, i, r, pressed);
             continue;
         }
@@ -2872,6 +3167,7 @@ static void Paint(HDC hdc)
         DrawStatus(dc);
         if (s_pickSlot < 0)
             DrawGuide(dc);
+        DrawTrip(dc);
         DrawButtons(dc);
         DrawOverMap(dc);
     }
@@ -2880,6 +3176,26 @@ static void Paint(HDC hdc)
     SelectObject(dc, oldFont);
     SelectObject(dc, oldBmp);
     DeleteDC(dc);
+}
+
+// The face (design v3, 2026-10-26): VestaHome's Golos Text - Fonts\ next to the exe (SIL OFL, as VestaHome's), added at
+// the start without the registry (the unit resets it); not there - the unit's Tahoma.
+static const wchar_t* s_face = L"Tahoma";
+
+static void FontsLoad()
+{
+    static const wchar_t* files[2] = { L"GolosText-Regular.ttf", L"GolosText-Bold.ttf" };
+    int ok = 0;
+    for (int i = 0; i < 2; i++) {
+        wchar_t path[MAX_PATH], name[64];
+        _snwprintf(name, 64, L"Fonts\\%s", files[i]);
+        name[63] = 0;
+        PathInDir(path, name);
+        ok += AddFontResource(path) > 0;
+    }
+    if (ok == 2)
+        s_face = L"Golos Text";
+    Log("ui: fonts %S", s_face);
 }
 
 static HFONT MakeFont(int height, int weight)
@@ -2892,7 +3208,7 @@ static HFONT MakeFont(int height, int weight)
     // no smoothing: on the unit ANTIALIASED_QUALITY comes out as ClearType - coloured fringes in the 16-bit
     // frame (the user's report 2026-10-17; VestaHome found the same)
     lf.lfQuality = NONANTIALIASED_QUALITY;
-    wcscpy(lf.lfFaceName, L"Tahoma");
+    wcscpy(lf.lfFaceName, s_face);
     return CreateFontIndirect(&lf);
 }
 
@@ -2935,6 +3251,12 @@ static void OnCreate(HWND hwnd)
         ReleaseDC(hwnd, hdc);
     }
 
+    FontsLoad();
+    AccentFromIni();   // (VestaHome, when it runs, says its theme in "welcome")
+    s_fontHuge = MakeFont(46, FW_BOLD);
+    s_fontKm = MakeFont(21, FW_BOLD);
+    s_fontStreet = MakeFont(21, FW_BOLD);
+    s_fontSpeed = MakeFont(28, FW_BOLD);
     s_fontBig = MakeFont(22, FW_SEMIBOLD);
     s_fontSmall = MakeFont(15, FW_NORMAL);
     s_fontTiny = MakeFont(12, FW_NORMAL);
@@ -3046,11 +3368,34 @@ static void VhFree()
     s_vhShown = false;
 }
 
-static void VhReceive(const wchar_t* cmd)
+static int VhReceive(const wchar_t* cmd)   // 2 = a button taken (VestaHome leaves it), 1 otherwise
 {
     wchar_t v[64];
+    if (!wcsncmp(cmd, L"welcome", 7) || !wcsncmp(cmd, L"theme", 5)) {   // VestaHome's accent: ours (the rule 2026-10-26)
+        if (VhField(cmd, L"accent", v, 16) && v[0]) {
+            unsigned long c = wcstoul(v, NULL, 16);
+            AccentSet(RGB(c >> 16 & 0xFF, c >> 8 & 0xFF, c & 0xFF));
+        }
+    }
+    if (!wcsncmp(cmd, L"key", 3) && cmd[3] == L'\t') {
+        // The wheel's buttons (the user 2026-10-26): short presses stay VestaHome's (tracks, the phone); held "up" /
+        // "down" (0x12 / 0x14) - the zoom, while the map is in front (VestaHome asks only then).
+        int code = VhField(cmd, L"code", v, 8) ? _wtoi(v) : 0;
+        int st = VhField(cmd, L"st", v, 8) ? _wtoi(v) : 0;
+        int kind = VhField(cmd, L"kind", v, 8) ? _wtoi(v) : 0;
+        if ((code == 0x12 || code == 0x14) && kind >= 2) {
+            if (st == 0) {
+                Zoom(code == 0x12 ? 1 : -1);
+                UserChanged();
+                InvalidateRect(s_wnd, NULL, FALSE);
+            }
+            return 2;
+        }
+        return 1;
+    }
     if (!wcsncmp(cmd, L"welcome", 7)) {
         VhSend(L"widget\tid=map\ttitle=Карта OSM\ticon=map\tsize=2x2\timage=1");
+        VhSend(L"subscribe\twhat=keys");
     } else if (!wcsncmp(cmd, L"widget.size", 11)) {
         VhFree();
         VhField(cmd, L"w", v, 8);
@@ -3075,6 +3420,7 @@ static void VhReceive(const wchar_t* cmd)
         VhFree();
         s_vh = NULL;
     }
+    return 1;
 }
 
 // Each second: find VestaHome (again), and a frame for the widget while it is in sight.
@@ -3122,8 +3468,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         n = n > 255 ? 255 : n;
         memcpy(cmd, c->lpData, n * sizeof(wchar_t));
         cmd[n] = 0;
-        VhReceive(cmd);
-        return TRUE;
+        return VhReceive(cmd);
     }
     case WM_CREATE:
         OnCreate(hwnd);

@@ -890,6 +890,7 @@ void RouteGet(RouteInfo* o)
     if (s_state != ROUTE_ON || !s_np)
         return;
     o->off = s_off;
+    o->seg = s_seg;
     double total = s_cum[s_np - 1];
     o->leftM = (int)(total - s_along);
     o->leftS = total > 0 ? (int)(s_timeS * (total - s_along) / total) : 0;
@@ -900,6 +901,8 @@ void RouteGet(RouteInfo* o)
             o->nextM = (int)(s_cum[s_man[i].shape] - s_along);
             if (o->nextM < 0)
                 o->nextM = 0;
+            if (i + 1 < s_nm)
+                o->thenText = s_man[i + 1].text;
             break;
         }
     if (s_off)

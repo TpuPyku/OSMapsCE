@@ -153,6 +153,8 @@ struct RouteInfo {
                                 // 997 = a stop on the way
     int            leftM, leftS;   // to the destination
     bool           off;         // off the route, a new one is asked for
+    const wchar_t* thenText;    // the turn after the next one (NULL: none)
+    int            seg;         // the line's segment the car is on (the rest of the line: from it)
 };
 void SearchStart(const wchar_t* q, double lon, double lat);
 int  SearchState();
