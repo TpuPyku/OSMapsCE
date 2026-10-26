@@ -94,6 +94,12 @@ def sign(d, name, c, bg):
     elif name == 'vh_night':
         line(d, c, vh_arc(24, 24, 16, 8.6, 261.4), VH_W)
         line(d, c, vh_arc(32, 16, 13, 53, 217), VH_W)
+    elif name == 'vh_search':                # a magnifier, as VestaHome's search
+        line(d, c, vh_arc(21, 21, 12, 0, 360), VH_W)
+        line(d, c, [vh(30, 30), vh(41, 41)], VH_W)
+    elif name == 'vh_routeoff':              # the route off: a cross
+        line(d, c, [vh(12, 12), vh(36, 36)], VH_W)
+        line(d, c, [vh(36, 12), vh(12, 36)], VH_W)
     elif name == 'plus':
         bar(d, c, 15, 25, 35, 25)
         bar(d, c, 25, 15, 25, 35)
@@ -188,7 +194,8 @@ SIGNS = [('Bplus', 'plus', False), ('Bminus', 'minus', False), ('Bgps_on', 'gps_
          ('Bgps_off', 'gps_off', False), ('Bgps_none', 'gps_none', False)]           # the tiles over the map
 DOCK = [('Bhome', 'vh_home', False), ('Bset', 'vh_set', False), ('Bnight_on', 'vh_sun', False),
         ('Bnight_off', 'vh_night', False), ('Btrf_on', 'trf', True), ('Btrf_off', 'trf', False),
-        ('Btsrc_ya', 'tsrc_ya', False), ('Btsrc_2g', 'tsrc_2g', False)]   # the bottom bar: smaller, a caption under
+        ('Btsrc_ya', 'tsrc_ya', False), ('Btsrc_2g', 'tsrc_2g', False), ('Bsearch', 'vh_search', False),
+        ('Broff', 'vh_routeoff', False)]   # the bottom bar: smaller, a caption under
 SMALL = [('Sleft', 'left', False), ('Sright', 'right', False)]   # settings: back, the steppers' arrows
 SIGN_SIZE, DOCK_SIZE, SMALL_SIZE = 48, 44, 32   # the bar's signs as large as VestaHome's (30 px of 48 units)
 

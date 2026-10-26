@@ -12,6 +12,11 @@ static volatile bool    s_stop;
 static MapRequest       s_pending;
 static bool             s_hasPending;
 static DWORD            s_seq;
+// the search / route request: one waiting at most, before the tiles
+struct ApiJob { int kind; bool https; char host[64]; char path[1024]; };
+static ApiJob           s_api;
+static bool             s_hasApi;
+static DWORD            s_apiSeq;
 
 const wchar_t* NetErrorText(int err)
 {
@@ -260,6 +265,28 @@ static DWORD WINAPI NetThread(LPVOID)
             if (s_stop)
                 break;
             EnterCriticalSection(&s_cs);
+            bool api = s_hasApi;
+            ApiJob job;
+            DWORD apiSeq = s_apiSeq;
+            if (api)
+                job = s_api;
+            s_hasApi = false;
+            LeaveCriticalSection(&s_cs);
+            if (api) {
+                ApiResult* ar = (ApiResult*)calloc(1, sizeof(ApiResult));
+                if (!ar)
+                    break;
+                ar->kind = job.kind;
+                ar->seq = apiSeq;
+                DWORD t0 = GetTickCount();
+                ar->err = HttpGet(job.host, job.https, job.path, (unsigned char**)&ar->body, &ar->len, &ar->httpStatus);
+                Log("net: api %s%.120s -> %d (HTTP %d, %d bytes, %lu ms)", job.host, job.path, ar->err,
+                    ar->httpStatus, ar->len, GetTickCount() - t0);
+                if (s_stop || !PostMessage(s_notify, WM_APP_API, 0, (LPARAM)ar))
+                    ApiFree(ar);
+                continue;
+            }
+            EnterCriticalSection(&s_cs);
             bool have = s_hasPending;
             MapRequest r = s_pending;
             DWORD seq = s_seq;
@@ -303,6 +330,30 @@ DWORD NetRequest(const MapRequest& r)
     LeaveCriticalSection(&s_cs);
     SetEvent(s_wake);
     return seq;
+}
+
+DWORD NetApi(int kind, const char* host, bool https, const char* path)
+{
+    EnterCriticalSection(&s_cs);
+    s_api.kind = kind;
+    s_api.https = https;
+    strncpy(s_api.host, host, sizeof(s_api.host) - 1);
+    s_api.host[sizeof(s_api.host) - 1] = 0;
+    strncpy(s_api.path, path, sizeof(s_api.path) - 1);
+    s_api.path[sizeof(s_api.path) - 1] = 0;
+    s_hasApi = true;
+    DWORD seq = ++s_apiSeq;
+    LeaveCriticalSection(&s_cs);
+    SetEvent(s_wake);
+    return seq;
+}
+
+void ApiFree(ApiResult* r)
+{
+    if (r) {
+        free(r->body);
+        free(r);
+    }
 }
 
 void NetStop()

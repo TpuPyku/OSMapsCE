@@ -17,6 +17,7 @@
 
 #define WM_APP_MAP (WM_APP + 1)   // lParam = MapResult*, receiver frees it
 #define WM_APP_GPS (WM_APP + 2)   // GPS state changed
+#define WM_APP_API (WM_APP + 4)   // lParam = ApiResult*, receiver frees it (ApiFree)
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -45,6 +46,8 @@ struct Config {
     int     yandexCount;    // traffic requests made on reqDay
     int     twogisCount;
     int     osmCount;       // OSM tiles downloaded on reqDay (no limit, for the log)
+    int     apiLimit;       // search + route requests per day (public servers: fair use)
+    int     apiCount;       // made on reqDay
     int     gpsEnabled;
     wchar_t gpsPort[16];
     int     gpsBaud;
@@ -125,6 +128,43 @@ DWORD NetRequest(const MapRequest& r);   // returns sequence number
 void  NetStop();
 const wchar_t* NetErrorText(int err);
 void  CachePath(wchar_t* out, const MapRequest& r);
+// One search / route request besides the tiles (GET, the answer's body as text); a newer one replaces a
+// waiting one, it goes before the tiles.
+enum { API_SEARCH = 1, API_ROUTE };
+struct ApiResult {
+    int    kind;
+    DWORD  seq;
+    int    err, httpStatus;
+    char*  body;     // 0-terminated, may be NULL
+    int    len;
+};
+DWORD NetApi(int kind, const char* host, bool https, const char* path);   // returns sequence number
+void  ApiFree(ApiResult* r);
+
+// route.cpp - search (Photon) and the route (OSRM) with its guidance; OSM data, public servers
+struct SearchHit { wchar_t name[80], sub[96]; double lon, lat; };
+enum { SEARCH_IDLE, SEARCH_BUSY, SEARCH_DONE, SEARCH_FAIL };
+enum { ROUTE_NONE, ROUTE_BUSY, ROUTE_ON, ROUTE_FAIL, ROUTE_ARRIVED };
+struct RouteInfo {
+    int            state;       // ROUTE_*
+    const wchar_t* text;        // the next maneuver's instruction (or the state's text)
+    int            nextM;       // metres to it
+    int            turn;        // its turn, degrees (-180..180, + right), 999 = destination, 998 = roundabout
+    int            leftM, leftS;   // to the destination
+    bool           off;         // off the route, a new one is asked for
+};
+void SearchStart(const wchar_t* q, double lon, double lat);
+int  SearchState();
+int  SearchCount();
+const SearchHit* SearchGet(int i);
+void RouteTo(const SearchHit* to, double fromLon, double fromLat, double course);   // course < 0: unknown
+void RouteClear();
+void RouteGps(double lon, double lat, double kmh, double course);   // each fix: progress, off -> a new route
+void RouteGet(RouteInfo* out);
+int  RoutePoints(const double** lonLat);   // the line: lon, lat pairs
+bool RouteDest(double* lon, double* lat);
+DWORD RouteSig();                   // changes when what is drawn of the route changes
+bool OnApiResult(ApiResult* r);     // frees it; true = redraw
 
 // cache.cpp - decoded images in memory + OSM tiles on disk in <exe>\Cache
 struct CacheEntry {

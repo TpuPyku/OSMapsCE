@@ -12,7 +12,7 @@ static const wchar_t* const kRelease = L"1.03";   // raise by hand: minor - sign
 // pictures with alpha blended by hand (CE GDI has no usable alpha on a 16-bit screen). Pictures: make_images.py.
 
 enum { B_SETTINGS, B_NIGHT, B_EXIT, B_TRF, B_TSRC, B_GPS, B_LEFT, B_RIGHT, B_UP, B_DOWN, B_MINUS, B_PLUS,
-       B_HOME, B_COUNT };
+       B_HOME, B_SEARCH, B_ROUTEOFF, B_COUNT };
 
 enum { kTile = 72, kSign = 48, kStatusH = 44, kDockY = 404, kDockMs = 6000, kDockH = 76, kDockStep = 16,
        kDockAnimMs = 30 };   // the bar slides in / out by kDockStep px every kDockAnimMs
@@ -37,8 +37,10 @@ static Button s_btn[B_COUNT] = {
     { 712, 312, { L"Bminus" } },
     { 712, 232, { L"Bplus" } },
     { 0, 0, { L"Bhome" } },
+    { 0, 0, { L"Bsearch" } },   // search a place, a route to it (route.cpp)
+    { 0, 0, { L"Broff" } },     // the route off, only while there is one
 };
-static const int kDockOrder[] = { B_HOME, B_TRF, B_TSRC, B_NIGHT, B_SETTINGS };
+static const int kDockOrder[] = { B_HOME, B_TRF, B_TSRC, B_SEARCH, B_ROUTEOFF, B_NIGHT, B_SETTINGS };
 static const int kDockCount = sizeof(kDockOrder) / sizeof(kDockOrder[0]);
 static Overlay*  s_arrow[2][2];   // settings: back / stepper arrows ([left, right][pressed])
 
@@ -135,6 +137,20 @@ static bool       s_gpsRunning;
 
 // Settings screen (GPS port, cache size), drawn over the map
 static bool       s_settings;
+
+// Search screen (route.cpp does the requests): a top bar with "back" and the text, under it the keyboard or the
+// places found; a place tapped - the route to it from the car (no fix: from the map's center).
+static bool       s_search;
+static bool       s_showHits;       // the places found instead of the keyboard
+static wchar_t    s_query[64];
+static int        s_kbLang;         // 0 Russian, 1 Latin
+static int        s_kbPressed = -1;
+enum { K_LANG = 100, K_SPACE, K_BS, K_FIND, K_BACK, K_FIELD, K_HIT = 200 };
+static const wchar_t* kKeys[2][4] = {
+    { L"1234567890-", L"йцукенгшщзхъ", L"фывапролджэ", L"ячсмитьбю.," },
+    { L"1234567890-", L"qwertyuiop", L"asdfghjkl", L"zxcvbnm.," },
+};
+enum { kKbY = 66, kKbRowH = 81, kHitY = 62, kHitH = 58 };
 static int        s_setPort;        // 1..9 -> COMn:
 static int        s_setBaud;        // index in kSetBauds
 static int        s_setCache;       // index in kSetCacheMb
@@ -207,7 +223,7 @@ static DWORD FrameSig()
     int v[] = { (int)x, (int)y, (int)cx, (int)cy, g_cfg.z, (int)s_heading, s_gps.valid, s_gps.sats,
                 (int)(s_gps.speedKmh + 0.5), s_gps.status, s_gps.lines > 0, s_gpsRunning, s_limitHit,
                 s_lastErr && GetTickCount() - s_lastErrTick < 60000, s_inflight, (int)(GetTickCount() / 60000),
-                t.wMinute, g_cfg.night, s_settings };
+                t.wMinute, g_cfg.night, s_settings, (int)RouteSig(), s_search, SearchState() };
     DWORD h = 2166136261u;   // FNV-1a over them
     for (int i = 0; i < (int)(sizeof(v) / sizeof(v[0])); i++)
         h = (h ^ (DWORD)v[i]) * 16777619u;
@@ -293,7 +309,7 @@ static void CheckDay()
         Log("budget: new day %d (yesterday: yandex %d, 2gis %d, osm %d)",
             d, g_cfg.yandexCount, g_cfg.twogisCount, g_cfg.osmCount);
         g_cfg.reqDay = d;
-        g_cfg.yandexCount = g_cfg.twogisCount = g_cfg.osmCount = 0;
+        g_cfg.yandexCount = g_cfg.twogisCount = g_cfg.osmCount = g_cfg.apiCount = 0;
         ConfigSave();
     }
 }
@@ -652,6 +668,17 @@ static void OnButton(int b)
             SettingsLoad();
         InvalidateRect(s_wnd, NULL, FALSE);
         return;
+    case B_SEARCH:
+        s_search = true;
+        s_dockShown = false;
+        s_showHits = SearchState() == SEARCH_DONE && SearchCount() > 0;
+        InvalidateRect(s_wnd, NULL, FALSE);
+        return;
+    case B_ROUTEOFF:
+        RouteClear();
+        Log("ui: route off");
+        InvalidateRect(s_wnd, NULL, FALSE);
+        return;
     case B_NIGHT:
         NightSet(!g_cfg.night);
         NightShare(g_cfg.night != 0);   // VestaHome follows (VestaCore vnight)
@@ -683,7 +710,7 @@ static int ButtonState(int b)
 // bar's ones are there only while it is up, the traffic provider only while traffic is on).
 static bool ButtonRect(int b, RECT* r)
 {
-    if (s_settings)
+    if (s_settings || s_search)
         return false;
     if (b == B_GPS || b == B_MINUS || b == B_PLUS) {
         SetRect(r, s_btn[b].x, s_btn[b].y, s_btn[b].x + kTile, s_btn[b].y + kTile);
@@ -694,8 +721,12 @@ static bool ButtonRect(int b, RECT* r)
     // VestaHome's bottom bar has 7 places (x 8 + i * 112, 104 wide, 58 high at 8 px under the bar's top): each
     // button where its counterpart is - home = "Главная", traffic = "Радио", its source = "Медиа",
     // settings = "Настройки", night = "Ночь" (the user's wish 2026-10-18: the same places, not stretched)
-    int slot = b == B_HOME ? 0 : b == B_TRF ? 1 : b == B_TSRC ? 2 : b == B_SETTINGS ? 5 : b == B_NIGHT ? 6 : -1;
-    if (slot < 0 || (b == B_TSRC && !g_cfg.traffic))
+    // search and "route off" take the two middle places (VestaHome's phone and apps)
+    int slot = b == B_HOME ? 0 : b == B_TRF ? 1 : b == B_TSRC ? 2 : b == B_SEARCH ? 3 : b == B_ROUTEOFF ? 4
+             : b == B_SETTINGS ? 5 : b == B_NIGHT ? 6 : -1;
+    RouteInfo ri;
+    RouteGet(&ri);
+    if (slot < 0 || (b == B_TSRC && !g_cfg.traffic) || (b == B_ROUTEOFF && ri.state == ROUTE_NONE))
         return false;
     int top = kDockY + 12 + s_dockOff;
     SetRect(r, 8 + slot * 112, top, 8 + slot * 112 + 104, top + 58);
@@ -1280,6 +1311,138 @@ static void DrawAttribution(HDC dc, RECT mr)
          box.bottom, DT_RIGHT, s);
 }
 
+// ---- the route: a blue line with a dark edge, the destination as a ring. Segments are clipped to a box a little
+// larger than the screen (GDI coordinates stay small), points closer than 2 px to the last one are left out.
+static POINT* s_rpts;
+static int    s_rptCap;
+
+static bool ClipSeg(double* x0, double* y0, double* x1, double* y1, double l, double t, double r, double b)
+{
+    double dx = *x1 - *x0, dy = *y1 - *y0, u0 = 0, u1 = 1;
+    double pq[4][2] = { { -dx, *x0 - l }, { dx, r - *x0 }, { -dy, *y0 - t }, { dy, b - *y0 } };
+    for (int i = 0; i < 4; i++) {
+        double pp = pq[i][0], q = pq[i][1];
+        if (pp == 0) {
+            if (q < 0)
+                return false;
+            continue;
+        }
+        double u = q / pp;
+        if (pp < 0) {
+            if (u > u1)
+                return false;
+            if (u > u0)
+                u0 = u;
+        } else {
+            if (u < u0)
+                return false;
+            if (u < u1)
+                u1 = u;
+        }
+    }
+    double ax = *x0, ay = *y0;
+    *x0 = ax + u0 * dx;
+    *y0 = ay + u0 * dy;
+    *x1 = ax + u1 * dx;
+    *y1 = ay + u1 * dy;
+    return true;
+}
+
+static void RoutePass(HDC dc, const int* runs, int nr, int width, COLORREF c)
+{
+    HPEN pen = CreatePen(PS_SOLID, width, c);
+    HGDIOBJ op = SelectObject(dc, pen);
+    for (int i = 0; i < nr; i++)
+        Polyline(dc, s_rpts + runs[i * 2], runs[i * 2 + 1]);
+    SelectObject(dc, op);
+    DeleteObject(pen);
+}
+
+static void DrawRoute(HDC dc, double cx, double cy, double vx, double vy, double angle)
+{
+    double ra = angle * M_PI / 180.0, rc = cos(ra), rs = sin(ra);
+    double dlon, dlat;
+    bool dest = RouteDest(&dlon, &dlat);
+    const double* ll;
+    int np = RoutePoints(&ll);
+    if (np >= 2 && s_rptCap < np * 2) {
+        free(s_rpts);
+        s_rptCap = np * 2;
+        s_rpts = (POINT*)malloc(s_rptCap * sizeof(POINT));
+        if (!s_rpts)
+            s_rptCap = 0;
+    }
+    if (np >= 2 && s_rpts) {
+        double l = g_cfg.mapX - 50, t = g_cfg.mapY - 50, r = g_cfg.mapX + g_cfg.mapW + 50, b = g_cfg.mapY + g_cfg.mapH + 50;
+        static int runs[512];
+        int nr = 0, n = 0, runStart = 0;
+        bool open = false;
+        double px = 0, py = 0;
+        for (int i = 0; i < np; i++) {
+            double gx, gy;
+            GeoToWorld(ll[i * 2], ll[i * 2 + 1], g_cfg.z, &gx, &gy);
+            double dx = gx - vx, dy = gy - vy;
+            double x = cx + dx * rc + dy * rs, y = cy - dx * rs + dy * rc;
+            if (i > 0) {
+                double x0 = px, y0 = py, x1 = x, y1 = y;
+                bool in = ClipSeg(&x0, &y0, &x1, &y1, l, t, r, b);
+                if (in) {
+                    if (!open) {
+                        runStart = n;
+                        s_rpts[n].x = Round(x0);
+                        s_rpts[n].y = Round(y0);
+                        n++;
+                        open = true;
+                    }
+                    POINT q = { Round(x1), Round(y1) };
+                    const POINT& last = s_rpts[n - 1];
+                    bool cut = x1 != x || y1 != y;   // leaves the box here
+                    if (cut || abs(q.x - last.x) + abs(q.y - last.y) >= 2 || i == np - 1)
+                        s_rpts[n++] = q;
+                    if (cut) {
+                        if (nr < 256) {
+                            runs[nr * 2] = runStart;
+                            runs[nr * 2 + 1] = n - runStart;
+                            nr++;
+                        }
+                        open = false;
+                    }
+                } else if (open) {
+                    if (nr < 256) {
+                        runs[nr * 2] = runStart;
+                        runs[nr * 2 + 1] = n - runStart;
+                        nr++;
+                    }
+                    open = false;
+                }
+            }
+            px = x;
+            py = y;
+        }
+        if (open && nr < 256) {
+            runs[nr * 2] = runStart;
+            runs[nr * 2 + 1] = n - runStart;
+            nr++;
+        }
+        RoutePass(dc, runs, nr, 11, RGB(18, 52, 128));
+        RoutePass(dc, runs, nr, 7, RGB(66, 146, 255));
+    }
+    if (dest) {
+        double gx, gy;
+        GeoToWorld(dlon, dlat, g_cfg.z, &gx, &gy);
+        double dx = gx - vx, dy = gy - vy;
+        int x = Round(cx + dx * rc + dy * rs), y = Round(cy - dx * rs + dy * rc);
+        HPEN pen = CreatePen(PS_SOLID, 4, RGB(255, 255, 255));
+        HBRUSH br = CreateSolidBrush(RGB(18, 52, 128));
+        HGDIOBJ op = SelectObject(dc, pen), ob = SelectObject(dc, br);
+        Ellipse(dc, x - 11, y - 11, x + 11, y + 11);
+        SelectObject(dc, ob);
+        SelectObject(dc, op);
+        DeleteObject(br);
+        DeleteObject(pen);
+    }
+}
+
 static void DrawMap(HDC dc)
 {
     RECT mr = { g_cfg.mapX, g_cfg.mapY, g_cfg.mapX + g_cfg.mapW, g_cfg.mapY + g_cfg.mapH };
@@ -1323,6 +1486,7 @@ static void DrawMap(HDC dc)
              mr.bottom, DT_CENTER, s_lastErr ? NetErrorText(s_lastErr) : L"Загрузка карты...");
 
     DrawAttribution(dc, mr);
+    DrawRoute(dc, cx, cy, vx, vy, angle);
     DrawGpsMarker(dc, cx, cy, vx, vy, angle);
 
     SelectClipRgn(dc, NULL);
@@ -1492,12 +1656,292 @@ static void DrawSettings(HDC dc)
              L"Нет строк - не тот порт. Строки с ошибкой - не та скорость.");
     }
 
-    _snwprintf(s, 128, L"Запросов: Яндекс %d/%d, 2ГИС %d/%d, OSM %d",
-               *Counter(SRC_YANDEX), Limit(SRC_YANDEX), *Counter(SRC_2GIS), Limit(SRC_2GIS), g_cfg.osmCount);
+    _snwprintf(s, 128, L"Запросов: Яндекс %d/%d, 2ГИС %d/%d, OSM %d, поиск и маршрут %d/%d",
+               *Counter(SRC_YANDEX), Limit(SRC_YANDEX), *Counter(SRC_2GIS), Limit(SRC_2GIS), g_cfg.osmCount,
+               g_cfg.apiCount, g_cfg.apiLimit);
     s[127] = 0;
-    Text(dc, s_fontSmall, kTextDim, 36, 422, 580, 440, DT_LEFT, s);
+    Text(dc, s_fontSmall, kTextDim, 36, 422, s_cw - 36, 440, DT_LEFT, s);
     _snwprintf(s, 128, L"OSMapsCE %s", AppVersion(kRelease));   // VestaCore vversion.h
     Text(dc, s_fontSmall, kTextDim, 36, 440, 580, 458, DT_LEFT, s);
+}
+
+// Distance as the bar shows it: metres by 10 (by 50 above 100), km with a tenth up to 10 km.
+static void FmtDist(wchar_t* s, int cap, int m)
+{
+    if (m < 100)
+        _snwprintf(s, cap, L"%d м", m / 10 * 10);
+    else if (m < 1000)
+        _snwprintf(s, cap, L"%d м", m / 50 * 50);
+    else if (m < 10000)
+        _snwprintf(s, cap, L"%d,%d км", m / 1000, m % 1000 / 100);
+    else
+        _snwprintf(s, cap, L"%d км", (m + 500) / 1000);
+    s[cap - 1] = 0;
+}
+
+// The next turn's sign in r: a stem from below and the arrow the way of the turn; the destination - a ring with
+// a dot, a roundabout - a ring with the way out up.
+static void DrawTurn(HDC dc, const RECT& r, int turn)
+{
+    int cx = (r.left + r.right) / 2, cy = (r.top + r.bottom) / 2 + 4;
+    HPEN pen = CreatePen(PS_SOLID, 7, kText);
+    HBRUSH br = CreateSolidBrush(kText);
+    HGDIOBJ op = SelectObject(dc, pen), ob = SelectObject(dc, br);
+    if (turn == 999) {
+        SelectObject(dc, GetStockObject(NULL_BRUSH));
+        Ellipse(dc, cx - 20, cy - 24, cx + 20, cy + 16);
+        SelectObject(dc, br);
+        Ellipse(dc, cx - 6, cy - 10, cx + 6, cy + 2);
+    } else {
+        double a;
+        int hx, hy;
+        if (turn == 998) {
+            SelectObject(dc, GetStockObject(NULL_BRUSH));
+            Ellipse(dc, cx - 14, cy - 8, cx + 14, cy + 20);
+            POINT st[2] = { { cx, cy - 8 }, { cx, cy - 26 } };
+            Polyline(dc, st, 2);
+            SelectObject(dc, br);
+            a = 0;
+            hx = cx;
+            hy = cy - 26;
+        } else if (turn >= 170 || turn <= -170) {   // U-turn: up and back down on the turn's side
+            int k = turn > 0 ? 1 : -1;
+            POINT u[4] = { { cx - 12 * k, r.bottom - 10 }, { cx - 12 * k, r.top + 20 }, { cx + 12 * k, r.top + 20 },
+                           { cx + 12 * k, cy + 4 } };
+            Polyline(dc, u, 4);
+            a = M_PI;
+            hx = cx + 12 * k;
+            hy = cy + 4;
+        } else {
+            a = turn * M_PI / 180.0;
+            POINT st[3] = { { cx, r.bottom - 10 }, { cx, cy }, { cx + (int)(sin(a) * 22), cy - (int)(cos(a) * 22) } };
+            Polyline(dc, st, 3);
+            hx = st[2].x;
+            hy = st[2].y;
+        }
+        // the head: a triangle pointing along a
+        double c = cos(a), sn = sin(a);
+        POINT h[3] = { { hx + (int)(sn * 14), hy - (int)(c * 14) },
+                       { hx + (int)(c * 12 - sn * 4), hy + (int)(sn * 12 + c * 4) },
+                       { hx - (int)(c * 12 + sn * 4), hy - (int)(sn * 12 - c * 4) } };
+        HPEN thin = CreatePen(PS_SOLID, 1, kText);
+        SelectObject(dc, thin);
+        Polygon(dc, h, 3);
+        SelectObject(dc, pen);
+        DeleteObject(thin);
+    }
+    SelectObject(dc, ob);
+    SelectObject(dc, op);
+    DeleteObject(br);
+    DeleteObject(pen);
+}
+
+// The guidance panel at the top left, under the status bar: the next turn, the distance to it, the instruction,
+// what is left to the destination; or the route's state (being laid, not found, arrived).
+static void DrawGuide(HDC dc)
+{
+    RouteInfo ri;
+    RouteGet(&ri);
+    if (ri.state == ROUTE_NONE)
+        return;
+    bool on = ri.state == ROUTE_ON;
+    RECT p = { 8, kStatusH + 6, 408, kStatusH + 6 + (on ? 118 : 50) };
+    Darken(dc, p, 12);
+    Outline(dc, p, ri.off ? kTextErr : kLine, 12);
+    if (!on) {
+        Text(dc, s_fontLabel, ri.state == ROUTE_FAIL ? kTextErr : kText, p.left + 16, p.top, p.right - 12, p.bottom,
+             DT_LEFT, ri.text);
+        return;
+    }
+    RECT ic = { p.left + 6, p.top + 6, p.left + 82, p.top + 82 };
+    DrawTurn(dc, ic, ri.turn);
+    wchar_t s[96], d[32];
+    FmtDist(d, 32, ri.nextM);
+    Text(dc, s_fontClock, kText, p.left + 92, p.top + 4, p.right - 10, p.top + 40, DT_LEFT, d);
+    RECT tr = { p.left + 92, p.top + 42, p.right - 10, p.top + 82 };
+    SelectObject(dc, s_fontSmall);
+    SetTextColor(dc, ri.off ? kTextErr : kText);
+    DrawText(dc, ri.text, -1, &tr, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);
+    // left to the destination, and the time of arrival by the clock
+    SYSTEMTIME t;
+    GetLocalTime(&t);
+    int at = (t.wHour * 60 + t.wMinute + (ri.leftS + 59) / 60) % (24 * 60);
+    FmtDist(d, 32, ri.leftM);
+    if (ri.leftS >= 3600)
+        _snwprintf(s, 96, L"осталось %s · %d ч %02d мин · в %02d:%02d", d, ri.leftS / 3600, ri.leftS % 3600 / 60,
+                   at / 60, at % 60);
+    else
+        _snwprintf(s, 96, L"осталось %s · %d мин · в %02d:%02d", d, (ri.leftS + 59) / 60, at / 60, at % 60);
+    s[95] = 0;
+    Text(dc, s_fontSmall, kTextDim, p.left + 16, p.top + 86, p.right - 10, p.bottom - 6, DT_LEFT, s);
+}
+
+// ---- the search screen
+static int KbRowLen(int row)
+{
+    return row < 4 ? (int)wcslen(kKeys[s_kbLang][row]) : 4;
+}
+
+// Where control id of the search screen is; false if it is not there now.
+static bool SearchRect(int id, RECT* r)
+{
+    if (id == K_BACK) {
+        SetRect(r, 8, 4, 64, 52);
+        return true;
+    }
+    if (id == K_FIELD) {
+        SetRect(r, 76, 6, s_cw - 12, 50);
+        return true;
+    }
+    if (s_showHits) {
+        int i = id - K_HIT;
+        if (i < 0 || i >= SearchCount())
+            return false;
+        SetRect(r, 16, kHitY + i * kHitH, s_cw - 16, kHitY + (i + 1) * kHitH - 4);
+        return true;
+    }
+    int row, col;
+    if (id >= K_LANG && id <= K_FIND) {   // the bottom row: language, space, backspace, find
+        static const int x[5] = { 8, 156, 524, 656, 792 };
+        int k = id - K_LANG;
+        SetRect(r, x[k], kKbY + 4 * kKbRowH, x[k + 1] - 6, kKbY + 5 * kKbRowH - 6);
+        return true;
+    }
+    row = id / 16;
+    col = id % 16;
+    if (row > 3 || col >= KbRowLen(row))
+        return false;
+    int n = KbRowLen(row), w = (784 - (n - 1) * 6) / n, x0 = 8 + (784 - (n * w + (n - 1) * 6)) / 2;
+    SetRect(r, x0 + col * (w + 6), kKbY + row * kKbRowH, x0 + col * (w + 6) + w, kKbY + (row + 1) * kKbRowH - 6);
+    return true;
+}
+
+static int HitSearch(int x, int y)
+{
+    RECT r;
+    for (int id = 0; id < K_HIT + 8; id++)
+        if (SearchRect(id, &r) && x >= r.left && x < r.right && y >= r.top && y < r.bottom)
+            return id;
+    return -1;
+}
+
+// The point the search is near and the route starts at: the car, or the map's center without a fix.
+static void SearchFrom(double* lon, double* lat)
+{
+    *lon = s_gps.valid ? s_gps.lon : g_cfg.lon;
+    *lat = s_gps.valid ? s_gps.lat : g_cfg.lat;
+}
+
+static void OnSearchKey(int id)
+{
+    int n = (int)wcslen(s_query);
+    if (id == K_BACK) {
+        if (s_showHits)
+            s_showHits = false;
+        else
+            s_search = false;
+    } else if (id == K_FIELD) {
+        s_showHits = false;
+    } else if (id == K_LANG) {
+        s_kbLang = !s_kbLang;
+    } else if (id == K_SPACE) {
+        if (n && n < 62 && s_query[n - 1] != L' ')
+            wcscat(s_query, L" ");
+    } else if (id == K_BS) {
+        if (n)
+            s_query[n - 1] = 0;
+    } else if (id == K_FIND) {
+        double lon, lat;
+        SearchFrom(&lon, &lat);
+        if (n) {
+            SearchStart(s_query, lon, lat);
+            s_showHits = true;   // (the query is in the log as the request's URL)
+        }
+    } else if (id >= K_HIT) {
+        const SearchHit* h = SearchGet(id - K_HIT);
+        if (h) {
+            double lon, lat;
+            SearchFrom(&lon, &lat);
+            RouteTo(h, lon, lat, s_gps.valid && s_gps.speedKmh > 10 ? s_gps.course : -1);
+            s_search = false;
+            if (!s_gps.valid) {   // no car to follow: show where the route goes
+                g_cfg.follow = FOLLOW_OFF;
+                g_cfg.lon = h->lon;
+                g_cfg.lat = h->lat;
+                UserChanged();
+            }
+        }
+    } else if (id / 16 < 4 && n < 62) {
+        s_query[n] = kKeys[s_kbLang][id / 16][id % 16];
+        s_query[n + 1] = 0;
+    }
+    InvalidateRect(s_wnd, NULL, FALSE);
+}
+
+static void DrawSearch(HDC dc)
+{
+    RECT all = { 0, 0, s_cw, s_ch }, topLine = { 0, 54, s_cw, 56 };
+    HBRUSH ink = CreateSolidBrush(kInk), line = CreateSolidBrush(kLine);
+    FillRect(dc, &all, ink);
+    FillRect(dc, &topLine, line);
+    DeleteObject(ink);
+    DeleteObject(line);
+
+    RECT r;
+    SearchRect(K_BACK, &r);
+    bool down = s_kbPressed == K_BACK;
+    if (down)
+        Tile(dc, r, kOrange, kOrange, 24);
+    if (s_arrow[0][0])
+        BlendSign(dc, s_arrow[0][down ? 1 : 0], (r.left + r.right - s_arrow[0][0]->w) / 2,
+                  (r.top + r.bottom - s_arrow[0][0]->h) / 2);
+    SearchRect(K_FIELD, &r);
+    Tile(dc, r, kPanel2, s_showHits ? kLine : kOrange, 20);
+    wchar_t s[128];
+    _snwprintf(s, 128, s_showHits ? L"%s" : L"%s|", s_query);
+    s[127] = 0;
+    Text(dc, s_fontBig, s_query[0] ? kText : kTextDim, r.left + 16, r.top, r.right - 12, r.bottom, DT_LEFT,
+         s_query[0] || s_showHits ? s : L"Адрес или место|");
+
+    if (s_showHits) {
+        int st = SearchState(), n = SearchCount();
+        const wchar_t* msg = st == SEARCH_BUSY ? L"Поиск…" : st == SEARCH_FAIL ? L"Нет связи с сервером поиска"
+                           : !n ? L"Ничего не найдено" : NULL;
+        if (msg) {
+            Text(dc, s_fontLabel, st == SEARCH_FAIL ? kTextErr : kTextDim, 0, 120, s_cw, 200, DT_CENTER, msg);
+            return;
+        }
+        double lon, lat;
+        SearchFrom(&lon, &lat);
+        for (int i = 0; i < n; i++) {
+            const SearchHit* h = SearchGet(i);
+            SearchRect(K_HIT + i, &r);
+            Tile(dc, r, s_kbPressed == K_HIT + i ? kOrange : kPanel, kLine, 16);
+            COLORREF c = s_kbPressed == K_HIT + i ? kInk : kText;
+            Text(dc, s_fontLabel, c, r.left + 16, r.top + 4, r.right - 120, r.top + 28, DT_LEFT, h->name);
+            Text(dc, s_fontSmall, s_kbPressed == K_HIT + i ? kInk : kTextDim, r.left + 16, r.top + 28, r.right - 120,
+                 r.bottom - 4, DT_LEFT, h->sub);
+            double dx = (h->lon - lon) * 111320 * cos(lat * M_PI / 180), dy = (h->lat - lat) * 110540;
+            wchar_t d[32];
+            FmtDist(d, 32, (int)sqrt(dx * dx + dy * dy));
+            Text(dc, s_fontLabel, c, r.right - 120, r.top, r.right - 16, r.bottom, DT_RIGHT, d);
+        }
+        return;
+    }
+    static const wchar_t* kBottom[4] = { NULL, L"ПРОБЕЛ", L"СТЕРЕТЬ", L"НАЙТИ" };
+    for (int id = 0; id <= K_FIND; id++) {
+        if (!SearchRect(id, &r))
+            continue;
+        bool p = s_kbPressed == id;
+        wchar_t cap[8] = { 0 };
+        if (id < K_LANG)
+            cap[0] = kKeys[s_kbLang][id / 16][id % 16];
+        else
+            wcscpy(cap, id == K_LANG ? (s_kbLang ? L"РУС" : L"ENG") : kBottom[id - K_LANG]);
+        Tile(dc, r, p || (id == K_FIND && s_query[0]) ? kOrange : kPanel2, p ? kOrange : kLine, 16);
+        Text(dc, id < K_LANG ? s_fontBig : s_fontLabel, p || (id == K_FIND && s_query[0]) ? kInk : kText, r.left,
+             r.top, r.right, r.bottom, DT_CENTER, cap);
+    }
 }
 
 // The status bar over the map: GPS on the left, the traffic / network state, a big clock on the right
@@ -1596,6 +2040,8 @@ static const wchar_t* DockCaption(int b)
     case B_TSRC:     return g_cfg.trafficSrc == TRF_2GIS ? L"2ГИС" : L"ЯНДЕКС";
     case B_NIGHT:    return g_cfg.night ? L"ДЕНЬ" : L"НОЧЬ";   // as VestaHome: what a tap turns on
     case B_SETTINGS: return L"НАСТРОЙКИ";
+    case B_SEARCH:   return L"ПОИСК";
+    case B_ROUTEOFF: return L"СБРОС";
     }
     return L"";
 }
@@ -1603,7 +2049,7 @@ static const wchar_t* DockCaption(int b)
 static void DrawButtons(HDC dc)
 {
     RECT r;
-    if (s_dockShown && !s_settings) {
+    if (s_dockShown && !s_settings && !s_search) {
         int y = kDockY + s_dockOff;   // sliding in / out
         RECT bar = { 0, y, s_cw, s_ch }, line = { 0, y, s_cw, y + 2 };
         // the orange part of the line shrinks to the moment the bar goes down
@@ -1663,8 +2109,11 @@ static void Paint(HDC hdc)
     DrawMap(dc);
     if (s_settings) {
         DrawSettings(dc);
+    } else if (s_search) {
+        DrawSearch(dc);
     } else {
         DrawStatus(dc);
+        DrawGuide(dc);
         DrawButtons(dc);
     }
 
@@ -1986,6 +2435,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         HttpSetGpsDate(s_gps.date);   // a reliable date for HTTPS certificate checks
         if (wp == 1)
             OnGpsScanDone();
+        if (s_gps.valid)
+            RouteGps(s_gps.lon, s_gps.lat, s_gps.speedKmh, s_gps.course);
         if (!s_dragging) {
             FollowGps();
             Ensure(REQ_AUTO);
@@ -1998,6 +2449,27 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         OnMapResult((MapResult*)lp);
         return 0;
 
+    case WM_APP_API:   // search / route answers (route.cpp)
+        if (OnApiResult((ApiResult*)lp))
+            InvalidateRect(hwnd, NULL, FALSE);
+        return 0;
+
+    case WM_CHAR:   // the PC's keyboard types into the search
+        if (s_search) {
+            if (wp == 8)
+                OnSearchKey(K_BS);
+            else if (wp == 13)
+                OnSearchKey(K_FIND);
+            else if (wp >= 32 && wcslen(s_query) < 62) {
+                size_t n = wcslen(s_query);
+                s_query[n] = (wchar_t)wp;
+                s_query[n + 1] = 0;
+                s_showHits = false;
+                InvalidateRect(hwnd, NULL, FALSE);
+            }
+        }
+        return 0;
+
     case WM_LBUTTONDOWN: {
         int x = (short)LOWORD(lp), y = (short)HIWORD(lp);
         SetCapture(hwnd);
@@ -2006,6 +2478,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             s_pressedInside = true;
         } else if (s_settings) {
             s_setPressed = HitSettings(x, y);
+        } else if (s_search) {
+            s_kbPressed = HitSearch(x, y);
         } else if (InMap(x, y)) {
             s_dragging = true;
             s_dragMoved = false;
@@ -2052,6 +2526,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             s_setPressed = -1;
             if (HitSettings(x, y) == c)
                 OnSettingsCtl(c);
+        } else if (s_kbPressed >= 0) {
+            int c = s_kbPressed;
+            s_kbPressed = -1;
+            if (HitSearch(x, y) == c)
+                OnSearchKey(c);
         } else if (s_dragging) {
             s_dragging = false;
             if (s_dragMoved) {
@@ -2068,7 +2547,13 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     }
 
     case WM_KEYDOWN:
+        if (s_search) {   // letters go to WM_CHAR
+            if (wp == VK_ESCAPE)
+                OnSearchKey(K_BACK);
+            return 0;
+        }
         switch (wp) {
+        case VK_F3:       OnButton(B_SEARCH); break;   // (a letter would also type itself into the search)
         case VK_LEFT:     OnButton(B_LEFT); break;
         case VK_RIGHT:    OnButton(B_RIGHT); break;
         case VK_UP:       OnButton(B_UP); break;

@@ -114,6 +114,7 @@ void ConfigDefaults()
     g_cfg.yandexLimit = 900;    // keyless Static API: about 1000 a day per address
     g_cfg.twogisLimit = 2000;
     g_cfg.autoReserve = 100;
+    g_cfg.apiLimit = 300;       // public Photon / OSRM servers: fair use
     g_cfg.cacheMb = 500;
     g_cfg.cacheKb = -1;
     g_cfg.cacheDays = 7;
@@ -161,6 +162,8 @@ static void ConfigSet(const char* key, const char* val)
     else if (!strcmp(key, "req_day"))      g_cfg.reqDay = atoi(val);
     else if (!strcmp(key, "yandex_count")) g_cfg.yandexCount = atoi(val);
     else if (!strcmp(key, "osm_count"))    g_cfg.osmCount = atoi(val);
+    else if (!strcmp(key, "api_limit"))    g_cfg.apiLimit = Clamp(atoi(val), 0, 100000);
+    else if (!strcmp(key, "api_count"))    g_cfg.apiCount = atoi(val);
     else if (!strcmp(key, "gps"))          g_cfg.gpsEnabled = atoi(val) != 0;
     else if (!strcmp(key, "gps_baud"))     g_cfg.gpsBaud = atoi(val);
     else if (!strcmp(key, "hide_taskbar")) g_cfg.hideTaskbar = atoi(val) != 0;
@@ -249,6 +252,9 @@ void ConfigSave()
         "yandex_count=%d\r\n"
         "2gis_count=%d\r\n"
         "osm_count=%d\r\n"
+        "; search (Photon) and route (OSRM) requests per day, and made today\r\n"
+        "api_limit=%d\r\n"
+        "api_count=%d\r\n"
         "gps=%d\r\n"
         "gps_port=%s\r\n"
         "gps_baud=%d\r\n"
@@ -262,7 +268,7 @@ void ConfigSave()
         g_cfg.lon, g_cfg.lat, g_cfg.z, g_cfg.traffic, kTrafficNames[g_cfg.trafficSrc],
         g_cfg.follow, g_cfg.night, g_cfg.trafficTtlMin, g_cfg.yandexLimit, g_cfg.twogisLimit,
         g_cfg.autoReserve, g_cfg.cacheMb, g_cfg.cacheKb, g_cfg.cacheDays, g_cfg.reqDay,
-        g_cfg.yandexCount, g_cfg.twogisCount, g_cfg.osmCount,
+        g_cfg.yandexCount, g_cfg.twogisCount, g_cfg.osmCount, g_cfg.apiLimit, g_cfg.apiCount,
         g_cfg.gpsEnabled, port, g_cfg.gpsBaud, kill, g_cfg.hideTaskbar,
         g_cfg.mapX, g_cfg.mapY, g_cfg.mapW, g_cfg.mapH);
     if (n < 0)
