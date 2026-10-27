@@ -23,6 +23,8 @@ import sys
 import osmium
 
 VERSION = 1
+HEADER = '<4s8I3iI6I'
+kCell = 5000   # the houses' grid cell, 1e-6 degrees
 kPlaceRank = {'city': 0, 'town': 1, 'village': 2, 'hamlet': 3, 'isolated_dwelling': 3, 'suburb': 4, 'quarter': 4,
               'neighbourhood': 4, 'locality': 3}
 kReachM = {0: 25000, 1: 8000, 2: 3000, 3: 1500}   # how far a settlement's streets go
@@ -68,7 +70,7 @@ class Reader(osmium.SimpleHandler):
     def __init__(self):
         super().__init__()
         self.places = []    # (lat, lon, name, rank)
-        self.streets = {}   # name -> [(lat, lon, length, wayid)]
+        self.streets = {}   # name -> [(lat, lon, length)] of its ways' middles
         self.addrs = []     # (lat, lon, street, number, city)
         self.pois = []      # (lat, lon, name, what, street, number)
 
@@ -83,12 +85,9 @@ class Reader(osmium.SimpleHandler):
         st = tags.get('addr:street') or tags.get('addr:place')
         if hn and st:
             self.addrs.append((lat, lon, st, hn, tags.get('addr:city', '')))
-        nm = tags.get('name')
-        if nm:
-            for (k, v), what in kPoi.items():
-                if tags.get(k) == v:
-                    self.pois.append((lat, lon, nm, what, st or '', hn or ''))
-                    break
+        what = poi_kind(tags)
+        if what:
+            self.pois.append((lat, lon, tags['name'], what, st or '', hn or ''))
 
     def node(self, n):
         if not n.tags:
@@ -97,18 +96,19 @@ class Reader(osmium.SimpleHandler):
         self.place(n.tags, lat, lon)
         self.common(n.tags, lat, lon)
 
+    def street(self, w, name):
+        c = center(w)
+        if c:
+            pts = c[1]
+            length = sum(math.hypot(pts[i + 1][0] - pts[i][0], pts[i + 1][1] - pts[i][1]) for i in range(len(pts) - 1))
+            mid = pts[len(pts) // 2]
+            self.streets.setdefault(name, []).append((mid[0], mid[1], length))
+
     def way(self, w):
         t = w.tags
-        nm = t.get('name')
-        if t.get('highway') and nm and t.get('area') != 'yes':
-            c = center(w)
-            if c:
-                (la, lo), pts = c
-                length = sum(math.hypot(pts[i + 1][0] - pts[i][0], pts[i + 1][1] - pts[i][1]) for i in range(len(pts) - 1))
-                mid = pts[len(pts) // 2]
-                self.streets.setdefault(nm, []).append((mid[0], mid[1], length))
-            return
-        if 'addr:housenumber' in t or (nm and any(t.get(k) == v for k, v in kPoi)) or 'place' in t:
+        if t.get('highway') and t.get('name') and t.get('area') != 'yes':
+            self.street(w, t['name'])
+        elif 'addr:housenumber' in t or poi_kind(t) or 'place' in t:
             c = center(w)
             if c:
                 (la, lo), _ = c
@@ -116,53 +116,61 @@ class Reader(osmium.SimpleHandler):
                 self.common(t, la, lo)
 
 
+def poi_kind(tags):
+    """A named place to go: its kind (Russian), else None."""
+    if not tags.get('name'):
+        return None
+    return next((what for (k, v), what in kPoi.items() if tags.get(k) == v), None)
+
+
 def dist_m(a, b, c, d):
     return math.hypot((c - a) * 111195, (d - b) * 111195 * math.cos(math.radians(a)))
 
 
-def main():
-    src, out = sys.argv[1], sys.argv[2]
-    r = Reader()
-    r.apply_file(src, locations=True)
-    print('places', len(r.places), 'street names', len(r.streets), 'addresses', len(r.addrs), 'pois', len(r.pois))
-    settle = [p for p in r.places if p[3] <= 3]
-    # a grid of the settlements for the nearest one (0.1 degree cells)
-    sgrid = {}
-    for i, p in enumerate(settle):
-        sgrid.setdefault((int(p[0] * 10), int(p[1] * 10)), []).append(i)
+class Settlements:
+    """The settlement a point belongs to: of those whose reach holds it, the one holding it best (0.1 degree grid)."""
+    def __init__(self, places):
+        self.settle = [p for p in places if p[3] <= 3]
+        self.grid = {}
+        for i, p in enumerate(self.settle):
+            self.grid.setdefault((int(p[0] * 10), int(p[1] * 10)), []).append(i)
 
-    def city_of(lat, lon):
-        best, bd = '', 1e18
+    def near(self, lat, lon):
         cx, cy = int(lat * 10), int(lon * 10)
         for dx in range(-3, 4):
             for dy in range(-5, 6):
-                for i in sgrid.get((cx + dx, cy + dy), ()):
-                    p = settle[i]
-                    d = dist_m(lat, lon, p[0], p[1])
-                    reach = kReachM[p[3]]
-                    if d <= reach and d / reach < bd:   # the one whose reach holds it best
-                        bd, best = d / reach, p[2]
+                for i in self.grid.get((cx + dx, cy + dy), ()):
+                    yield self.settle[i]
+
+    def city_of(self, lat, lon):
+        best, bd = '', 1e18
+        for p in self.near(lat, lon):
+            share = dist_m(lat, lon, p[0], p[1]) / kReachM[p[3]]
+            if share <= 1 and share < bd:
+                bd, best = share, p[2]
         return best
 
-    S = Strings()
-    # streets: one per (name, settlement): its parts' longest one's middle
+
+def street_table(parts_by_name, city_of):
+    """(name, settlement) -> (lat, lon, length) of its longest part's middle."""
     streets = {}
-    for nm, parts in r.streets.items():
+    for nm, parts in parts_by_name.items():
         for la, lo, length in parts:
             key = (nm, city_of(la, lo))
             cur = streets.get(key)
             if cur is None or length > cur[2]:
                 streets[key] = (la, lo, length)
-    # the houses: onto their street (by name and settlement; a street of an address only - made)
-    houses = {}
-    by_name = {}
+    return streets
+
+
+def attach_houses(addrs, streets, city_of):
+    """The houses onto their street (by name and settlement; else the nearest of that name; else a street made)."""
+    houses, by_name = {}, {}
     for k in streets:
         by_name.setdefault(k[0], []).append(k)
-    for la, lo, st, hn, city in r.addrs:
-        c = city or city_of(la, lo)
-        key = (st, c)
+    for la, lo, st, hn, city in addrs:
+        key = (st, city or city_of(la, lo))
         if key not in streets:
-            # the same name in the nearest settlement's spelling may differ (addr:city): the street of that name nearest
             cands = by_name.get(st)
             if cands:
                 key = min(cands, key=lambda k: dist_m(la, lo, streets[k][0], streets[k][1]))
@@ -170,62 +178,79 @@ def main():
                 streets[key] = (la, lo, 0)
                 by_name[st] = [key]
         houses.setdefault(key, []).append((la, lo, hn))
+    return houses
+
+
+def street_rows(streets, houses, S):
+    """The streets sorted by their searched name, each with its houses' run (numbers in order)."""
     skeys = sorted(streets, key=lambda k: (norm(k[0]), k[1]))
     sidx = {k: i for i, k in enumerate(skeys)}
-    street_rows, house_rows = [], []
+    srows, hrows = [], []
     for k in skeys:
         la, lo, _ = streets[k]
         hs = sorted(houses.get(k, []), key=lambda h: (len(re.match(r'\d*', h[2]).group()), h[2]))
-        street_rows.append((int(la * 1e6), int(lo * 1e6), S.add(k[0]), S.add(norm(k[0])), S.add(k[1]),
-                            len(house_rows), len(hs)))
-        for hla, hlo, hn in hs:
-            house_rows.append((int(hla * 1e6), int(hlo * 1e6), sidx[k], S.add(hn)))
-    place_rows = [(int(p[0] * 1e6), int(p[1] * 1e6), S.add(p[2]), S.add(norm(p[2])), p[3]) for p in r.places]
-    poi_rows = []
-    for la, lo, nm, what, st, hn in r.pois:
+        srows.append((int(la * 1e6), int(lo * 1e6), S.add(k[0]), S.add(norm(k[0])), S.add(k[1]), len(hrows), len(hs)))
+        hrows += [(int(hla * 1e6), int(hlo * 1e6), sidx[k], S.add(hn)) for hla, hlo, hn in hs]
+    return srows, hrows, sidx
+
+
+def poi_rows(pois, sidx, city_of, S):
+    rows = []
+    for la, lo, nm, what, st, hn in pois:
         c = city_of(la, lo)
         s = sidx.get((st, c), 0xFFFFFFFF) if st else 0xFFFFFFFF
-        poi_rows.append((int(la * 1e6), int(lo * 1e6), S.add(nm), S.add(norm(nm)), S.add(c), S.add(what), s,
-                         S.add(hn)))
-    # the houses' grid (0.005 degrees)
-    cell = 5000
-    lats = [h[0] for h in house_rows] or [0]
-    lons = [h[1] for h in house_rows] or [0]
-    minLat, minLon = min(lats), min(lons)
-    gw = (max(lons) - minLon) // cell + 1
-    gh = (max(lats) - minLat) // cell + 1
+        rows.append((int(la * 1e6), int(lo * 1e6), S.add(nm), S.add(norm(nm)), S.add(c), S.add(what), s, S.add(hn)))
+    return rows
+
+
+def house_grid(hrows):
+    """(minLat, minLon, gw, gh, cellStart, items) of the houses (0.005 degree cells)."""
+    lats = [h[0] for h in hrows] or [0]
+    lons = [h[1] for h in hrows] or [0]
+    min_lat, min_lon = min(lats), min(lons)
+    gw, gh = (max(lons) - min_lon) // kCell + 1, (max(lats) - min_lat) // kCell + 1
     cells = {}
-    for i, h in enumerate(house_rows):
-        cells.setdefault(((h[0] - minLat) // cell) * gw + (h[1] - minLon) // cell, []).append(i)
+    for i, h in enumerate(hrows):
+        cells.setdefault(((h[0] - min_lat) // kCell) * gw + (h[1] - min_lon) // kCell, []).append(i)
     cstart, items = [], []
     for c in range(gw * gh):
         cstart.append(len(items))
         items += cells.get(c, [])
     cstart.append(len(items))
+    return min_lat, min_lon, gw, gh, cstart, items
 
-    hdr = '<4s8I3iI6I'
-    hl = struct.calcsize(hdr)
+
+def write(out, S, prows, srows, hrows, orows, grid):
+    min_lat, min_lon, gw, gh, cstart, items = grid
     sd = bytes(S.data) + b'\x00' * ((4 - len(S.data) % 4) % 4)
-    o_str = hl
-    o_pl = o_str + len(sd)
-    o_st = o_pl + len(place_rows) * 20
-    o_ho = o_st + len(street_rows) * 28
-    o_po = o_ho + len(house_rows) * 16
-    o_gr = o_po + len(poi_rows) * 32
+    off = [struct.calcsize(HEADER)]
+    for size in (len(sd), len(prows) * 20, len(srows) * 28, len(hrows) * 16, len(orows) * 32):
+        off.append(off[-1] + size)
     with open(out, 'wb') as f:
-        f.write(struct.pack(hdr, b'OSMS', VERSION, len(place_rows), len(street_rows), len(house_rows), len(poi_rows),
-                            len(S.data), gw, gh, cell, minLat, minLon, len(items), o_str, o_pl, o_st, o_ho, o_po, o_gr))
+        f.write(struct.pack(HEADER, b'OSMS', VERSION, len(prows), len(srows), len(hrows), len(orows), len(S.data),
+                            gw, gh, kCell, min_lat, min_lon, len(items), *off))
         f.write(sd)
-        f.write(b''.join(struct.pack('<iiIII', *p) for p in place_rows))
-        f.write(b''.join(struct.pack('<iiIIIII', *s) for s in street_rows))
-        f.write(b''.join(struct.pack('<iiII', *h) for h in house_rows))
-        f.write(b''.join(struct.pack('<iiIIIIII', *p) for p in poi_rows))
+        for fmt, rows in (('<iiIII', prows), ('<iiIIIII', srows), ('<iiII', hrows), ('<iiIIIIII', orows)):
+            f.write(b''.join(struct.pack(fmt, *r) for r in rows))
         f.write(struct.pack('<%dI' % len(cstart), *cstart))
         f.write(struct.pack('<%dI' % len(items), *items))
-    size = o_gr + (len(cstart) + len(items)) * 4
+    return off[-1] + (len(cstart) + len(items)) * 4
+
+
+def build(src, out):
+    r = Reader()
+    r.apply_file(src, locations=True)
+    city_of = Settlements(r.places).city_of
+    streets = street_table(r.streets, city_of)
+    houses = attach_houses(r.addrs, streets, city_of)
+    S = Strings()
+    srows, hrows, sidx = street_rows(streets, houses, S)
+    prows = [(int(p[0] * 1e6), int(p[1] * 1e6), S.add(p[2]), S.add(norm(p[2])), p[3]) for p in r.places]
+    orows = poi_rows(r.pois, sidx, city_of, S)
+    size = write(out, S, prows, srows, hrows, orows, house_grid(hrows))
     print('places %d, streets %d, houses %d, pois %d, strings %.1f MB; file %.1f MB' % (
-        len(place_rows), len(street_rows), len(house_rows), len(poi_rows), len(S.data) / 1e6, size / 1e6))
+        len(prows), len(srows), len(hrows), len(orows), len(S.data) / 1e6, size / 1e6))
 
 
 if __name__ == '__main__':
-    main()
+    build(sys.argv[1], sys.argv[2])

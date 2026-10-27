@@ -14,10 +14,7 @@ call .\test_offline.bat >nul || (echo === the tests fail & exit /b 1)
 set COVER=
 "%OCC%" --quiet --sources "%CD%" --excluded_sources "%CD%\test_offline.cpp" ^
   --export_type cobertura:obj\test\cov.xml -- obj\test\test_offline.exe >nul
-set MAP=obj\test\cov_map
-if not exist %MAP% mkdir %MAP%
-python -m coverage run --data-file=obj\test\pydata ..\offline\make_graph.py ..\offline\test\tiny.osm %MAP%\route.grf >nul
-python -m coverage run -a --data-file=obj\test\pydata ..\offline\make_search.py ..\offline\test\tiny.osm %MAP%\search.idx >nul
+python -m coverage run --data-file=obj\test\pydata -m unittest discover -s ..\offline\test >obj\test\pytest.log 2>&1 || (type obj\test\pytest.log & echo === the region tools' tests fail & exit /b 1)
 python -m coverage json --data-file=obj\test\pydata -o obj\test\pyreport.json >nul
 echo === crapper
 python %TOOLS%\crapper.py --cobertura obj\test\cov.xml --pycov obj\test\pyreport.json %CPP% %PY%
