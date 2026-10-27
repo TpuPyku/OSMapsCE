@@ -39,11 +39,20 @@ def bbox(keys):
             int(lat_of(z, min(ys)) * 1e6), int(((max(xs) + 1) / n * 360 - 180) * 1e6))
 
 
+def key(z, x, y):
+    return z << 28 | x << 14 | y
+
+
 def build(src, out):
     db = sqlite3.connect(src)
     rows = db.execute('select zoom_level, tile_column, tile_row, tile_data from tiles').fetchall()
     db.close()
-    tiles = sorted(((z << 28 | x << 14 | ((1 << z) - 1 - row)), plain(data)) for z, x, row, data in rows)
+    write_pack(out, ((key(z, x, (1 << z) - 1 - row), plain(data)) for z, x, row, data in rows))
+
+
+def write_pack(out, items):
+    """tiles.vtp from (key, MVT bytes) pairs (any order)."""
+    tiles = sorted(items)
     head = struct.calcsize(HEADER)
     offset = head + len(tiles) * 12
     with open(out, 'wb') as f:

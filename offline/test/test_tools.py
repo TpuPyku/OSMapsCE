@@ -16,6 +16,7 @@ import make_graph    # noqa: E402
 import make_region   # noqa: E402
 import make_search   # noqa: E402
 import make_tiles    # noqa: E402
+import pmextract     # noqa: E402
 
 TINY = os.path.join(HERE, 'tiny.osm')
 
@@ -102,6 +103,36 @@ class Tools(unittest.TestCase):
         self.assertEqual(magic, b'OSMT')
         self.assertEqual(keys, sorted(keys))          # the unit finds a tile by binary search
         self.assertEqual(got, tiles)                  # XYZ rows (not TMS), data ungzipped
+
+    def test_pmtiles_extract_by_bbox(self):
+        import gzip
+        from pmtiles.tile import zxy_to_tileid, TileType, Compression
+        from pmtiles.writer import Writer
+        src = os.path.join(self.tmp, 'planet.pmtiles')
+        inside = {(0, 0, 0): b'world', (5, 20, 10): b'samara', (5, 21, 10): b'east'}
+        same = {(5, 20, 11): b'sea', (5, 21, 11): b'sea'}            # identical neighbours: one entry, a run
+        outside = {(5, 2, 2): b'far'}
+        filler = {(12, x, y): b'%d,%d' % (x, y) for x in range(100, 170) for y in range(100, 175)}   # leaf dirs
+        tiles = {**inside, **same, **outside, **filler}
+        with open(src, 'wb') as f:
+            w = Writer(f)
+            for key in sorted(tiles, key=lambda t: zxy_to_tileid(*t)):
+                w.write_tile(zxy_to_tileid(*key), gzip.compress(tiles[key]))
+            w.finalize({'tile_type': TileType.MVT, 'tile_compression': Compression.GZIP, 'min_lon_e7': -1800000000,
+                        'min_lat_e7': -850000000, 'max_lon_e7': 1800000000, 'max_lat_e7': 850000000,
+                        'center_zoom': 0, 'center_lon_e7': 0, 'center_lat_e7': 0}, {})
+        data = read(src)
+        asked = []
+
+        def get_bytes(offset, length):                              # as over HTTP: ranges, counted
+            asked.append(length)
+            return data[offset:offset + length]
+        out = os.path.join(self.tmp, 'tiles.vtp')
+        # inside z5 tiles x 20..21, y 10..11 (lon 45..67.5, lat 41.0..55.8), zooms 0..5
+        pmextract.extract(get_bytes, (45.1, 41.1, 67.4, 55.7), 5, out)
+        _, _, got = pack_tiles(out)
+        self.assertEqual(got, {**inside, **same})                 # ungzipped, the run's tiles both, nothing else
+        self.assertLess(len(asked), 12)                             # header, directories, a few merged data ranges
 
     def test_search_index(self):
         out = os.path.join(self.tmp, 'search.idx')
