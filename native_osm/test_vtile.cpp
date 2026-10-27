@@ -183,6 +183,7 @@ static int MakeCity(unsigned char* out, bool village)
     Begin(l, "landcover", "name");
     Add(l, "wood", NULL, 3, g, Box(g, 192, 32, 256, 64));
     Add(l, "grass", NULL, 3, g, Box(g, 128, 96, 192, 128));
+    Add(l, "farmland", NULL, 3, g, Box(g, 64, 32, 128, 64));   // not drawn (the fields of small zooms)
     End(tile, l);
     Begin(l, "landuse", "name");
     Add(l, "residential", NULL, 3, g, Box(g, 0, 96, 64, 128));
@@ -225,14 +226,18 @@ static int MakeCity(unsigned char* out, bool village)
     return tile.n;
 }
 
-// A small-scale tile's places along the middle row (x 30, 80, 130, 180, 230): a country's capital (rank 1,
-// capital 2), a region's centre (rank 5, capital 4), a big city (rank 7), a middle one (rank 9), a town (rank 8) -
-// OpenMapTiles' place attributes, rank and capital as numbers.
+// A small-scale tile's places: five along the middle row, one below
+enum { kPlaces = 6 };
+static const int kPlaceXY[kPlaces][2] = { { 30, 128 }, { 80, 128 }, { 130, 128 }, { 180, 128 }, { 230, 128 },
+                                          { 130, 200 } };
+
+// OpenMapTiles' places (rank and capital as numbers): a country's capital (rank 1, capital 2), a region's centre
+// (rank 10, capital 3), a big city (rank 7), a middle one (rank 8), a town (rank 8), a big city of rank 1
 static int MakeCountry(unsigned char* out)
 {
-    static const char* kName[5] = { "Cap", "Reg", "Big", "Mid", "Twn" };
-    static const char* kClass[5] = { "city", "city", "city", "city", "town" };
-    static const unsigned int kRank[5] = { 1, 5, 7, 9, 8 }, kCapital[5] = { 2, 4, 0, 0, 0 };
+    static const char* kName[kPlaces] = { "Cap", "Reg", "Big", "Mid", "Twn", "One" };
+    static const char* kClass[kPlaces] = { "city", "city", "city", "city", "town", "city" };
+    static const unsigned int kRank[kPlaces] = { 1, 10, 7, 8, 8, 1 }, kCapital[kPlaces] = { 2, 3, 0, 0, 0, 0 };
     Pbw tile = { { 0 }, 0 }, l = { { 0 }, 0 };
     Str(l, 1, "place");
     Str(l, 3, "class");
@@ -240,7 +245,7 @@ static int MakeCountry(unsigned char* out)
     Str(l, 3, "rank");
     Str(l, 3, "capital");
     int nv = 0;
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < kPlaces; i++) {
         Value(l, kClass[i]);
         Value(l, kName[i]);
         Pbw v = { { 0 }, 0 };   // the rank: a uint value (field 5)
@@ -258,10 +263,146 @@ static int MakeCountry(unsigned char* out)
         }
         nv += nt / 2;
         unsigned int g[3];
-        Point(g, 30 + i * 50, 128);
+        Point(g, kPlaceXY[i][0], kPlaceXY[i][1]);
         Feature(l, tags, nt, 1, g, 3);
     }
     Bytes(tile, 3, l.b, l.n);
+    memcpy(out, tile.b, tile.n);
+    return tile.n;
+}
+
+// ---- a layer with any keys; each feature brings its own values: a string, "#n" a number, NULL no such tag
+struct Keyed { Pbw w; int nk, nv; };
+
+static void BeginKeys(Keyed& l, const char* name, const char* const* keys, int nk)
+{
+    l.w.n = 0;
+    l.nk = nk;
+    l.nv = 0;
+    Str(l.w, 1, name);
+    for (int i = 0; i < nk; i++)
+        Str(l.w, 3, keys[i]);
+}
+
+static void AddVals(Keyed& l, const char* const* vals, int type, const unsigned int* geom, int ngeom)
+{
+    unsigned int tags[16];
+    int nt = 0;
+    for (int i = 0; i < l.nk; i++) {
+        if (!vals[i])
+            continue;
+        Pbw v = { { 0 }, 0 };
+        if (vals[i][0] == '#') {   // a uint value (field 5)
+            Var(v, 5 << 3);
+            Var(v, (unsigned int)atoi(vals[i] + 1));
+        } else
+            Str(v, 1, vals[i]);
+        Bytes(l.w, 4, v.b, v.n);
+        tags[nt++] = i;
+        tags[nt++] = l.nv++;
+    }
+    Feature(l.w, tags, nt, type, geom, ngeom);
+}
+
+// The same town in OpenMapTiles' schema (OpenFreeMap, planetiler) and in Protomaps' (their planet build, cut into a
+// region's pack): a row's feature in each, a named road in Protomaps also its street's name (OpenMapTiles: a
+// transportation_name feature). Shapes in the z14 tile's pixels: 'b' box a,b - c,d; 'h' line a - b at height c;
+// 'p' point a,b.
+struct Twin { const char *omt, *cls, *pm, *kind, *detail, *name; char shape; short a, b, c, d; };
+static const Twin kTwins[] = {
+    { "building", NULL, "buildings", "building", NULL, NULL, 'b', 32, 32, 64, 64 },
+    { "water", NULL, "water", "water", NULL, NULL, 'b', 64, 32, 128, 64 },
+    { "park", "park", "landuse", "park", NULL, NULL, 'b', 128, 32, 192, 64 },
+    { "landcover", "wood", "landuse", "wood", NULL, NULL, 'b', 192, 32, 256, 64 },
+    { "landcover", "grass", "landuse", "grass", NULL, NULL, 'b', 128, 96, 192, 128 },
+    { "landuse", "residential", "landuse", "residential", NULL, NULL, 'b', 0, 96, 64, 128 },
+    { "landuse", "retail", "landuse", "retail", NULL, NULL, 'b', 64, 96, 128, 128 },
+    { "transportation", "motorway", "roads", "highway", "motorway", "M5", 'h', 0, 256, 136 },
+    { "transportation", "trunk", "roads", "major_road", "trunk_link", NULL, 'h', 0, 256, 146 },
+    { "transportation", "primary", "roads", "major_road", "primary", "Main St", 'h', 0, 256, 158 },
+    { "transportation", "secondary", "roads", "major_road", "secondary_link", NULL, 'h', 0, 256, 170 },
+    { "transportation", "tertiary", "roads", "major_road", "tertiary", "Side St", 'h', 0, 256, 182 },
+    { "transportation", "minor", "roads", "minor_road", "residential", "Lane", 'h', 0, 256, 194 },
+    { "transportation", "service", "roads", "minor_road", "service", "Yard", 'h', 0, 256, 206 },   // (no name drawn)
+    { "transportation", "path", "roads", "path", "footway", NULL, 'h', 0, 256, 214 },
+    { "transportation", "rail", "roads", "rail", "tram", NULL, 'h', 0, 256, 222 },
+    { "transportation", "ferry", "roads", "ferry", NULL, NULL, 'h', 0, 256, 244 },
+    { "waterway", "river", "water", "river", NULL, NULL, 'h', 0, 256, 232 },
+    { "poi", "fuel", "pois", "fuel", NULL, "Fuel", 'p', 64, 80 },
+    { "place", "city", "places", "locality", "city", "City", 'p', 128, 64 },
+    { "place", "village", "places", "locality", "village", "Vil", 'p', 200, 80 },
+    { "place", "suburb", "places", "neighbourhood", "suburb", "Sub", 'p', 40, 80 },
+};
+static const int kNTwins = sizeof(kTwins) / sizeof(kTwins[0]);
+
+static int TwinShape(const Twin& t, unsigned int* g, int& type)
+{
+    type = t.shape == 'b' ? 3 : t.shape == 'h' ? 2 : 1;
+    return t.shape == 'b' ? Box(g, t.a, t.b, t.c, t.d) : t.shape == 'h' ? HLine(g, t.a, t.b, t.c) : Point(g, t.a, t.b);
+}
+
+static const char* TwinLayer(const Twin& t, bool pm, bool names)
+{
+    return names ? (t.name && !strcmp(t.omt, "transportation") ? "transportation_name" : NULL) : pm ? t.pm : t.omt;
+}
+
+// The rows of one layer (the first row naming it, and the rest), the OpenMapTiles' street names a layer of their own
+static void TwinLayerOut(Pbw& tile, bool pm, bool names, const char* layer)
+{
+    static const char* kOmt[] = { "class", "name" };
+    static const char* kPm[] = { "kind", "kind_detail", "name" };   // (a name taken from a key not there: wrong)
+    Keyed l;
+    BeginKeys(l, layer, pm ? kPm : kOmt, pm ? 3 : 2);
+    for (int j = 0; j < kNTwins; j++) {
+        const Twin& t = kTwins[j];
+        const char* lj = TwinLayer(t, pm, names);
+        if (!lj || strcmp(lj, layer))
+            continue;
+        const char* nm = names || pm || strcmp(t.omt, "transportation") ? t.name : NULL;
+        const char* vals[3] = { pm ? t.kind : t.cls, pm ? t.detail : nm, nm };
+        unsigned int g[16];
+        int type, ng = TwinShape(t, g, type);
+        AddVals(l, vals, type, g, ng);
+    }
+    Bytes(tile, 3, l.w.b, l.w.n);
+}
+
+static int MakeTwin(unsigned char* out, bool pm)
+{
+    Pbw tile = { { 0 }, 0 };
+    for (int i = 0; i < kNTwins; i++) {
+        bool first = true;
+        for (int k = 0; k < i; k++)
+            first = first && strcmp(TwinLayer(kTwins[k], pm, false), TwinLayer(kTwins[i], pm, false)) != 0;
+        if (first)
+            TwinLayerOut(tile, pm, false, TwinLayer(kTwins[i], pm, false));
+    }
+    if (!pm)
+        TwinLayerOut(tile, false, true, "transportation_name");
+    memcpy(out, tile.b, tile.n);
+    return tile.n;
+}
+
+// Protomaps' places as MakeCountry's: the country's capital "yes", a region's centre "4" (both strings), a city of
+// 240 000 people, a city of 150 000, a town, a city of a million
+static int MakePmCountry(unsigned char* out)
+{
+    static const char* kKeys[] = { "kind", "name", "kind_detail", "capital", "population" };
+    static const char* kRows[kPlaces][5] = { { "locality", "Cap", "city", "yes", "#9000000" },
+                                             { "locality", "Reg", "city", "4", "#200000" },
+                                             { "locality", "Big", "city", NULL, "#240000" },
+                                             { "locality", "Mid", "city", NULL, "#150000" },
+                                             { "locality", "Twn", "town", NULL, "#50000" },
+                                             { "locality", "One", "city", NULL, "#1000000" } };
+    Pbw tile = { { 0 }, 0 };
+    Keyed l;
+    BeginKeys(l, "places", kKeys, 5);
+    for (int i = 0; i < kPlaces; i++) {
+        unsigned int g[3];
+        Point(g, kPlaceXY[i][0], kPlaceXY[i][1]);
+        AddVals(l, kRows[i], 1, g, 3);
+    }
+    Bytes(tile, 3, l.w.b, l.w.n);
     memcpy(out, tile.b, tile.n);
     return tile.n;
 }
@@ -314,6 +455,80 @@ static unsigned short Px(const Image& im, int x, int y)   // the DIB's rows are 
     DIBSECTION ds;
     GetObject(im.bmp, sizeof(ds), &ds);
     return ((unsigned short*)ds.dsBm.bmBits)[(im.h - 1 - y) * im.w + x];
+}
+
+// The places' names by zoom (the user 2026-10-27): capitals from z3, regions' centres and big cities from z7, every
+// city and town from z10 - a tile of MakeCountry's places, schema's in the checks' names
+static void PlacesByZoom(const unsigned char* tile, int len, int col, const char* schema)
+{
+    static const int kZoom[3] = { 3, 7, 10 };
+    static const bool kShown[3][kPlaces] = { { true, false, false, false, false, false },
+                                             { true, true, true, false, false, true },
+                                             { true, true, true, true, true, true } };
+    static const char* kWhat[3] = { "z3: the capital only", "z7: the capital, the region's centre, the big city",
+                                    "z10: every city and town" };
+    const unsigned short white = RGB565(255, 255, 255);
+    Frame h;
+    Open(h);
+    RECT whole = { 0, 0, 800, 480 };
+    for (int k = 0; k < 3; k++) {
+        int n = (1 << (kZoom[k] - 1)) + col;   // a tile in the middle of the world (another column per schema)
+        MapRequest q = { SRC_OSM, kZoom[k], n, n - col };
+        Image ti = { 0 };
+        bool ok = VTileRender(q, tile, len, &ti);
+        ImageFree(&ti);
+        memset(h.bits, 0, 800 * 480 * 2);
+        VLabelsDraw(h.dc, whole, 400, 240, n * 256.0 + 128, (n - col) * 256.0 + 128, 0, kZoom[k], NULL, 0);
+        GdiFlush();
+        for (int i = 0; i < kPlaces; i++) {
+            int sx = 272 + kPlaceXY[i][0], sy = 112 + kPlaceXY[i][1];
+            ok = ok && (kShown[k][i] ? Count(h, sx - 20, sy - 12, sx + 20, sy + 12, white) > 10
+                                     : Lit(h, sx - 12, sy - 12, sx + 12, sy + 12) == 0);
+        }
+        char what[128];
+        sprintf(what, "%s %s", schema, kWhat[k]);
+        Check(ok, what);
+    }
+    Close(h);
+}
+
+static bool SameImage(const Image& a, const Image& b)
+{
+    DIBSECTION da, db;
+    GetObject(a.bmp, sizeof(da), &da);
+    GetObject(b.bmp, sizeof(db), &db);
+    return a.w == b.w && a.h == b.h && !memcmp(da.dsBm.bmBits, db.dsBm.bmBits, a.w * a.h * 2);
+}
+
+// The same town in both schemas (kTwins): the same tiles at z14 and z15, the same names at z14 and z16
+static void Twins()
+{
+    static unsigned char omt[4096], pmt[4096];
+    int no = MakeTwin(omt, false), np = MakeTwin(pmt, true);
+    static const int kQuarter[3][3] = { { 14, 0, 0 }, { 15, 0, 1 }, { 15, 1, 0 } };   // z, then the z15 quarter
+    for (int i = 0; i < 3; i++) {
+        int s = kQuarter[i][0] - 14;
+        MapRequest a = { SRC_OSM, kQuarter[i][0], (9300 << s) + kQuarter[i][1], (5000 << s) + kQuarter[i][2] };
+        MapRequest b = { SRC_OSM, kQuarter[i][0], (9400 << s) + kQuarter[i][1], (5000 << s) + kQuarter[i][2] };
+        Image ia = { 0 }, ib = { 0 };
+        bool ok = VTileRender(a, omt, no, &ia) && VTileRender(b, pmt, np, &ib) && SameImage(ia, ib);
+        Check(ok, i ? "Protomaps: the town's z15 quarter as OpenMapTiles'" : "Protomaps: the town's z14 tile as OpenMapTiles'");
+        ImageFree(&ia);
+        ImageFree(&ib);
+    }
+    Frame f, g;
+    Open(f);
+    Open(g);
+    RECT mr = { 0, 0, 800, 480 };
+    static const int kAt[2] = { 14, 16 };
+    for (int i = 0; i < 2; i++) {
+        Labels(f, 9300, 5000, 128, 160, kAt[i], 0, mr, NULL, 0);
+        Labels(g, 9400, 5000, 128, 160, kAt[i], 0, mr, NULL, 0);
+        Check(Lit(f, 0, 0, 800, 480) > 500 && !memcmp(f.bits, g.bits, 800 * 480 * 2),
+              i ? "Protomaps: the town's z16 names as OpenMapTiles'" : "Protomaps: the town's z14 names as OpenMapTiles'");
+    }
+    Close(f);
+    Close(g);
 }
 
 int main()
@@ -382,6 +597,7 @@ int main()
     Check(Px(im, 96, 112) == RGB565(234, 228, 232), "z14: the shops' area");
     Check(Px(im, 160, 112) == RGB565(216, 234, 202), "z14: the grass");
     Check(Px(im, 224, 112) == land, "z14: farmland not drawn");
+    Check(Px(im, 96, 48) == land, "z14: farmland's landcover not drawn");
     Check(Px(im, 128, 144) == RGB565(255, 206, 150), "z14: the trunk road");
     Check(Px(im, 128, 164) == RGB565(255, 247, 214), "z14: the tertiary road");
     Check(Px(im, 128, 184) == RGB565(255, 255, 255), "z14: the minor road");
@@ -435,33 +651,12 @@ int main()
     Close(f);
     Close(g);
 
-    // the places' names by zoom (the user 2026-10-27): capitals from z3, regions' centres and big cities from z7,
-    // every city and town from z10
-    unsigned char country[4096];
-    int nc = MakeCountry(country);
-    static const int kZoom[3] = { 3, 7, 10 };
-    static const bool kShown[3][5] = { { true, false, false, false, false }, { true, true, true, false, false },
-                                       { true, true, true, true, true } };
-    static const char* kWhat[3] = { "z3: the capital only", "z7: the capital, the region's centre, the big city",
-                                    "z10: every city and town" };
-    Frame h;
-    Open(h);
+    unsigned char country[4096], pmCountry[4096];
+    int nc = MakeCountry(country), npc = MakePmCountry(pmCountry);
+    PlacesByZoom(country, nc, 0, "OpenMapTiles");
+    PlacesByZoom(pmCountry, npc, 3, "Protomaps");
+    Twins();
     RECT whole = { 0, 0, 800, 480 };
-    for (int k = 0; k < 3; k++) {
-        int n = 1 << (kZoom[k] - 1);   // a tile in the middle of the world
-        MapRequest q = { SRC_OSM, kZoom[k], n, n };
-        Image ti = { 0 };
-        bool ok = VTileRender(q, country, nc, &ti);
-        ImageFree(&ti);
-        memset(h.bits, 0, 800 * 480 * 2);
-        VLabelsDraw(h.dc, whole, 400, 240, n * 256.0 + 128, n * 256.0 + 128, 0, kZoom[k], NULL, 0);
-        GdiFlush();
-        for (int i = 0; i < 5; i++) {
-            int sx = 302 + i * 50;
-            ok = ok && (kShown[k][i] ? Count(h, sx - 20, 228, sx + 20, 252, white) > 10 : Lit(h, sx - 12, 228, sx + 12, 252) == 0);
-        }
-        Check(ok, kWhat[k]);
-    }
     // the Russian name when the tile has one (name:ru), else the local one: a frame named so equals one whose tile
     // holds that text as its plain name
     Frame r1, r2;
@@ -499,7 +694,6 @@ int main()
     Check(Count(r1, 360, 228, 440, 252, white) > 10 && same, "the place's Russian name when it has one");
     Close(r1);
     Close(r2);
-    Close(h);
 
     printf("%d checks, %d failed\n", s_checks, s_failed);
     return s_failed;

@@ -150,8 +150,25 @@ template <class T> static bool Push(T*& a, int& n, int& cap, const T& v)
 
 // What a feature is drawn as, by its layer, class (NULL: any) and geometry type (1 point, 2 line, 3 area), and its
 // name's rank (0 the biggest: a city, a main road .. 2); the first row that matches wins, none or kind -1: not drawn.
-struct KindRow { const char* layer; const char* cls; unsigned char type; signed char kind, rank; };
+// Two schemas: OpenMapTiles' (OpenFreeMap, planetiler) and Protomaps' v4 (their planet build cut into a region's
+// pack): its class is "kind" or the finer "kind_detail" (a row's class matches either), its roads carry their names
+// (street: the street name's rank + 1, 0 none - OpenMapTiles has them in transportation_name).
+struct KindRow { const char* layer; const char* cls; unsigned char type; signed char kind, rank; unsigned char street; };
 static const KindRow kKinds[] = {
+    { "buildings", NULL, 3, K_BUILDING, 2 },
+    { "landuse", "park", 3, K_PARK, 2 }, { "landuse", "wood", 3, K_WOOD, 2 }, { "landuse", "forest", 3, K_WOOD, 2 },
+    { "landuse", "grass", 3, K_GRASS, 2 }, { "landcover", "forest", 3, K_WOOD, 2 },
+    { "landcover", "urban_area", 3, K_RESID, 2 }, { "landcover", "farmland", 3, -1, 2 },   // (fields: not drawn)
+    { "water", NULL, 2, K_WATERWAY, 2 },
+    { "roads", "highway", 2, K_MAJOR, 2, 1 }, { "roads", "trunk", 2, K_MAJOR, 2, 1 },
+    { "roads", "trunk_link", 2, K_MAJOR, 2, 1 }, { "roads", "primary", 2, K_PRIMARY, 2, 1 },
+    { "roads", "primary_link", 2, K_PRIMARY, 2, 1 }, { "roads", "secondary", 2, K_SECONDARY, 2, 2 },
+    { "roads", "secondary_link", 2, K_SECONDARY, 2, 2 }, { "roads", "tertiary", 2, K_SECONDARY, 2, 2 },
+    { "roads", "tertiary_link", 2, K_SECONDARY, 2, 2 }, { "roads", "service", 2, K_SERVICE, 2 },
+    { "roads", "minor_road", 2, K_MINOR, 2, 3 }, { "roads", "path", 2, K_PATH, 2 }, { "roads", "rail", 2, K_RAIL, 2 },
+    { "places", "city", 1, K_PLACE, 0 }, { "places", "town", 1, K_PLACE, 0 }, { "places", "village", 1, K_PLACE, 1 },
+    { "places", "suburb", 1, K_PLACE, 1 }, { "places", "quarter", 1, K_PLACE, 1 }, { "places", NULL, 1, K_PLACE, 2 },
+    { "pois", "fuel", 1, K_FUEL, 0 },
     { "water", NULL, 3, K_WATER, 2 }, { "building", NULL, 3, K_BUILDING, 2 }, { "park", NULL, 3, K_PARK, 2 },
     { "landcover", "wood", 3, K_WOOD, 2 }, { "landcover", NULL, 3, K_GRASS, 2 },
     { "landuse", "residential", 3, K_RESID, 2 }, { "landuse", "suburb", 3, K_RESID, 2 },
@@ -177,21 +194,26 @@ static const KindRow kKinds[] = {
     { "poi", "fuel", 1, K_FUEL, 0 }, { "poi", "parking", 1, K_PARKING, 1 },   // for the driver: filling stations, car parks
 };
 
-static int Kind(const Pb& layer, const Pb& cls, int geomType, int& rank)
+static const KindRow* Row(const Pb& layer, const Pb& cls, const Pb& detail, int geomType)
 {
     for (int i = 0; i < (int)(sizeof(kKinds) / sizeof(kKinds[0])); i++) {
         const KindRow& k = kKinds[i];
-        if (k.type == geomType && StrEq(layer, k.layer) && (!k.cls || StrEq(cls, k.cls))) {
-            rank = k.rank;
-            return k.kind;
-        }
+        if (k.type == geomType && StrEq(layer, k.layer) && (!k.cls || StrEq(cls, k.cls) || StrEq(detail, k.cls)))
+            return k.kind < 0 ? NULL : &k;
     }
-    return -1;
+    return NULL;
 }
 
-// A layer's name and the indexes of its keys "class", the name, "rank" and "capital" (places); its values in s_vals
-// (the strings) and s_nums (the numbers: OpenMapTiles' place rank and capital level)
-struct LayerHead { Pb name; int nv, kClass, kName, kNameRu, kRank, kCapital; };
+// The tags read: a feature's class (Protomaps: "kind", its finer "kind_detail"), its name and the Russian one (when
+// there is one: "Киев", not "Київ") - strings; a place's rank, capital level and population - numbers (0: none)
+enum { T_CLASS, T_DETAIL, T_NAME, T_NAMERU, T_STRINGS, T_RANK = T_STRINGS, T_CAPITAL, T_POPULATION, T_COUNT };
+static const char* const kTagKeys[T_COUNT][2] = { { "class", "kind" }, { "kind_detail" },
+                                                   { "name", "housenumber" },   // (a house number's: its own key)
+                                                   { "name:ru" }, { "rank" }, { "capital" }, { "population" } };
+
+// A layer's name and the indexes of its keys of the tags read (-1 none); its values in s_vals (the strings) and
+// s_nums (as numbers)
+struct LayerHead { Pb name; int nv, key[T_COUNT]; };
 static Pb s_keys[512], s_vals[2048];   // (not on the stack: CE threads have little; s_cs held)
 static int s_nums[2048];
 
@@ -210,12 +232,25 @@ static Pb StringValue(Pb v)
     return sv;
 }
 
-static int NumberValue(Pb v)   // int (field 4), uint (5), sint (6); else 0
+// Protomaps' capital, a string: a level's one digit ("4" a region's centre), "yes" 2 (a country's: OSM's admin
+// level 2); other strings: not a level 2..4
+static int StringNumber(const Pb& s)
+{
+    if (StrEq(s, "yes"))
+        return 2;
+    return s.end - s.p == 1 ? *s.p - '0' : 0;
+}
+
+static int NumberValue(Pb v)   // int (field 4), uint (5), sint (6), a string (1: StringNumber); else 0
 {
     int n = 0;
     while (v.p < v.end) {
         unsigned int tag = Varint(v);
         int field = tag >> 3;
+        if (tag == (1 << 3 | 2)) {   // (field 1, length-delimited)
+            n = StringNumber(Sub(v));
+            continue;
+        }
         if ((tag & 7) != 0) {
             Skip(v, tag & 7);
             continue;
@@ -229,21 +264,19 @@ static int NumberValue(Pb v)   // int (field 4), uint (5), sint (6); else 0
     return n;
 }
 
-static void KeyIndexes(LayerHead& h, int nk)   // of the keys "class" and the name (a house number's own)
+static bool IsKey(const Pb& key, int tag)
 {
-    const char* nameKey = StrEq(h.name, "housenumber") ? "housenumber" : "name";
-    h.kClass = h.kName = h.kNameRu = h.kRank = h.kCapital = -1;
-    for (int i = 0; i < nk; i++) {
-        if (StrEq(s_keys[i], "class"))
-            h.kClass = i;
-        else if (StrEq(s_keys[i], nameKey))
-            h.kName = i;
-        else if (StrEq(s_keys[i], "name:ru"))   // (the Russian name, when there is one: "Киев", not "Київ")
-            h.kNameRu = i;
-        else if (StrEq(s_keys[i], "rank"))
-            h.kRank = i;
-        else if (StrEq(s_keys[i], "capital"))
-            h.kCapital = i;
+    const char* const* k = kTagKeys[tag];
+    return StrEq(key, k[0]) || (k[1] && StrEq(key, k[1]));
+}
+
+static void KeyIndexes(LayerHead& h, int nk)
+{
+    for (int tag = 0; tag < T_COUNT; tag++) {
+        h.key[tag] = -1;
+        for (int i = 0; i < nk; i++)
+            if (IsKey(s_keys[i], tag))
+                h.key[tag] = i;
     }
 }
 
@@ -290,38 +323,38 @@ static void ReadFeature(Pb f, Pb& tags, int& type, Pb& geom)
     }
 }
 
-// A feature's class and name (the Russian one when it has one); a place's rank and capital level (0: none)
-struct Tags { Pb cls, nm, nmRu; int rank, capital; };
+// A feature's tags (T_*): the strings, the numbers; the name the Russian one when it has one
+struct Tags { Pb s[T_STRINGS]; int n[T_COUNT - T_STRINGS]; };
 
 static void ReadTags(Pb tags, const LayerHead& h, Tags& t)
 {
     while (tags.p < tags.end) {
         unsigned int k = Varint(tags), v = Varint(tags);
-        if (v >= (unsigned)h.nv)
-            continue;
-        if ((int)k == h.kClass)
-            t.cls = s_vals[v];
-        else if ((int)k == h.kName)
-            t.nm = s_vals[v];
-        else if ((int)k == h.kNameRu)
-            t.nmRu = s_vals[v];
-        else if ((int)k == h.kRank)
-            t.rank = s_nums[v];
-        else if ((int)k == h.kCapital)
-            t.capital = s_nums[v];
+        for (int tag = 0; tag < T_COUNT && v < (unsigned)h.nv; tag++)
+            if ((int)k == h.key[tag] && tag < T_STRINGS)
+                t.s[tag] = s_vals[v];
+            else if ((int)k == h.key[tag])
+                t.n[tag - T_STRINGS] = s_nums[v];
     }
-    if (t.nmRu.p)
-        t.nm = t.nmRu;
+    if (t.s[T_NAMERU].p)
+        t.s[T_NAME] = t.s[T_NAMERU];
 }
 
-// The zoom a place's name shows from (the user 2026-10-27; OpenMapTiles has no population, its rank and capital stand
-// for it): a country's capital from z3, a region's centre or a city of rank 7 or bigger (~240 000 people and up) from
-// z7, other cities, towns, villages, suburbs from z10, the rest from z14.
+// A region's centre or a city of ~240 000 people and up (OpenMapTiles has no population: its rank 7 or bigger)
+static bool BigCity(const Tags& t)
+{
+    int rank = t.n[T_RANK - T_STRINGS], capital = t.n[T_CAPITAL - T_STRINGS];
+    bool city = StrEq(t.s[T_CLASS], "city") || StrEq(t.s[T_DETAIL], "city");
+    return t.n[T_POPULATION - T_STRINGS] >= 240000 || (city && ((rank > 0 && rank <= 7) || capital == 3 || capital == 4));
+}
+
+// The zoom a place's name shows from (the user 2026-10-27): a country's capital from z3, a big city (BigCity) from z7,
+// other cities, towns, villages, suburbs from z10, the rest from z14.
 static int PlaceMinZoom(const Tags& t, int nameRank)
 {
-    if (t.capital == 2)
+    if (t.n[T_CAPITAL - T_STRINGS] == 2)
         return 3;
-    if (StrEq(t.cls, "city") && ((t.rank > 0 && t.rank <= 7) || t.capital == 3 || t.capital == 4))
+    if (BigCity(t))
         return 7;
     return nameRank < 2 ? 10 : 14;
 }
@@ -410,31 +443,43 @@ static bool Named(VTile& t, Feat& ft, int kind, const Pb& nm)
     return ft.name >= 0 || (kind != K_ROADNAME && kind != K_HOUSENUM);
 }
 
+// A Protomaps road's street name: a feature of its own on the road's geometry (OpenMapTiles' transportation_name)
+static bool StreetName(VTile& t, const Feat& road, const KindRow& row, const Pb& nm)
+{
+    if (!row.street)   // (no name: Named drops it)
+        return true;
+    Feat s = road;
+    s.kind = K_ROADNAME;
+    s.rank = (unsigned char)(row.street - 1);
+    return !Named(t, s, K_ROADNAME, nm) || Push(t.f, t.nf, t.fcap, s);
+}
+
 // One feature into the tile (or skipped); false = out of memory
 static bool DecodeFeature(Pb f, const LayerHead& h, VTile& t)
 {
     Pb tags = { 0, 0 }, geom = { 0, 0 };
-    Tags tg = { { 0, 0 }, { 0, 0 }, { 0, 0 }, 0, 0 };
+    Tags tg;
+    memset(&tg, 0, sizeof(tg));
     int type = 0;
     ReadFeature(f, tags, type, geom);
     ReadTags(tags, h, tg);
-    int rank = 2, kind = Kind(h.name, tg.cls, type, rank);
-    if (kind < 0)
+    const KindRow* row = Row(h.name, tg.s[T_CLASS], tg.s[T_DETAIL], type);
+    if (!row)
         return true;
     Feat ft;
-    ft.kind = (unsigned char)kind;
+    ft.kind = (unsigned char)row->kind;
     ft.nparts = 0;
     ft.part0 = t.nparts / 2;
     ft.x0 = ft.y0 = 32767;
     ft.x1 = ft.y1 = -32768;
     ft.name = -1;
-    ft.rank = (unsigned char)rank;
-    ft.minz = (unsigned char)(kind == K_PLACE ? PlaceMinZoom(tg, rank) : 0);
+    ft.rank = (unsigned char)row->rank;
+    ft.minz = (unsigned char)(row->kind == K_PLACE ? PlaceMinZoom(tg, row->rank) : 0);
     if (!DecodeGeometry(geom, t, ft))
         return false;
-    if (!ft.nparts || !Named(t, ft, kind, tg.nm))
+    if (!ft.nparts || !Named(t, ft, row->kind, tg.s[T_NAME]))
         return true;
-    return Push(t.f, t.nf, t.fcap, ft);
+    return Push(t.f, t.nf, t.fcap, ft) && StreetName(t, ft, *row, tg.s[T_NAME]);
 }
 
 static bool DecodeLayer(Pb b, VTile& t)
