@@ -276,129 +276,180 @@ static bool ReadHouse(DWORD i, SHouse* hs)
     return ReadAt(s_x.h.off[3] + i * sizeof(SHouse), hs, sizeof(SHouse));
 }
 
-static bool Search(const char* q8, int lat, int lon, char** body, int* len)
+static bool Answer(const Hit* hits, int n, char** body, int* len)   // Photon's GeoJSON of the hits
 {
-    Query q;
-    ParseQuery(q8, &q);
-    if (!q.nt)
-        return false;
-    static Hit hits[32];
-    int n = 0;
-    const SHead& h = s_x.h;
-    // places: an exact name first (by size), then the words' matches
-    for (DWORD i = 0; i < h.places; i++) {
+    JBuf o = { NULL, 0, 0 };
+    PutHits(o, hits, n);
+    *body = o.p;
+    *len = o.n;
+    return o.p != NULL;
+}
+
+enum { kHits = 32 };
+
+// Places: an exact name first (by size), then the words' matches; none when a house is asked.
+static void FindPlaces(const Query& q, int lat, int lon, Hit* hits, int* n)
+{
+    if (q.house[0])
+        return;
+    for (DWORD i = 0; i < s_x.h.places; i++) {
         const SPlace& p = s_x.places[i];
         if (!Match(S(p.norm), q))
             continue;
         Hit x = { H_PLACE, p.lat, p.lon, p.name, 0xFFFFFFFF, 0, 0, 0, 0 };
         bool exact = !strcmp(S(p.norm), q.all);
         x.score = (exact ? -500 : 50) + (int)p.rank * 20 + Km(lat, lon, p.lat, p.lon) / 10;
-        if (!q.house[0])
-            AddHit(hits, &n, 32, x);
+        AddHit(hits, n, kHits, x);
     }
-    // streets, and their house when one is asked
-    for (DWORD i = 0; i < h.streets; i++) {
+}
+
+// The asked house on street i (its first 4000): x = it; false = not there.
+static bool FindHouse(const Query& q, DWORD i, double km, Hit* x)
+{
+    const SStreet& s = s_x.streets[i];
+    for (DWORD k = 0; k < s.count && k < 4000; k++) {
+        SHouse hs;
+        char num[48];
+        if (!ReadHouse(s.first + k, &hs))
+            return false;
+        NormUtf8(S(hs.number), num, sizeof(num));
+        if (!strcmp(num, q.house)) {
+            Hit h = { H_HOUSE, hs.lat, hs.lon, 0, i, hs.number, s.city, 0, -1000 + km };
+            *x = h;
+            return true;
+        }
+    }
+    return false;
+}
+
+static void FindStreets(const Query& q, int lat, int lon, Hit* hits, int* n)   // the streets, or their house asked
+{
+    for (DWORD i = 0; i < s_x.h.streets; i++) {
         const SStreet& s = s_x.streets[i];
         if (!Match(S(s.norm), q))
             continue;
         double km = Km(lat, lon, s.lat, s.lon);
-        bool houseFound = false;
-        if (q.house[0] && s.count) {
-            for (DWORD k = 0; k < s.count && k < 4000; k++) {
-                SHouse hs;
-                char num[48];
-                if (!ReadHouse(s.first + k, &hs))
-                    break;
-                NormUtf8(S(hs.number), num, sizeof(num));
-                if (!strcmp(num, q.house)) {
-                    Hit x = { H_HOUSE, hs.lat, hs.lon, 0, i, hs.number, s.city, 0, -1000 + km };
-                    AddHit(hits, &n, 32, x);
-                    houseFound = true;
-                    break;
-                }
-            }
-        }
-        if (!houseFound) {
-            Hit x = { H_STREET, s.lat, s.lon, s.name, 0xFFFFFFFF, 0, s.city, 0, 100 + km };
-            AddHit(hits, &n, 32, x);
-        }
+        Hit x = { H_STREET, s.lat, s.lon, s.name, 0xFFFFFFFF, 0, s.city, 0, 100 + km };
+        if (q.house[0])
+            FindHouse(q, i, km, &x);   // found: the house instead of its street
+        AddHit(hits, n, kHits, x);
     }
-    // places to go: by their name or their kind ("азс")
-    for (DWORD i = 0; i < h.pois; i++) {
+}
+
+static void FindPois(const Query& q, int lat, int lon, Hit* hits, int* n)   // places to go: by name or kind ("азс")
+{
+    for (DWORD i = 0; i < s_x.h.pois; i++) {
         const SPoi& p = s_x.pois[i];
         char what[64];
         NormUtf8(S(p.what), what, sizeof(what));
         if (!Match(S(p.norm), q) && !Match(what, q))
             continue;
         Hit x = { H_POI, p.lat, p.lon, p.name, p.street, p.number, p.city, p.what, 150 + Km(lat, lon, p.lat, p.lon) };
-        AddHit(hits, &n, 32, x);
+        AddHit(hits, n, kHits, x);
     }
+}
+
+static bool Search(const char* q8, int lat, int lon, char** body, int* len)
+{
+    Query q;
+    ParseQuery(q8, &q);
+    if (!q.nt)
+        return false;
+    static Hit hits[kHits];
+    int n = 0;
+    FindPlaces(q, lat, lon, hits, &n);
+    FindStreets(q, lat, lon, hits, &n);
+    FindPois(q, lat, lon, hits, &n);
     if (!n)
         return false;
     qsort(hits, n, sizeof(Hit), CmpHit);
-    JBuf o = { NULL, 0, 0 };
-    PutHits(o, hits, n < 7 ? n : 7);
-    *body = o.p;
-    *len = o.n;
-    return o.p != NULL;
+    return Answer(hits, n < 7 ? n : 7, body, len);
+}
+
+// The house cells' run of a grid row y around column cx (3 cells, cut at the grid's edges): its items from .. to.
+static bool HouseRow(int y, int cx, DWORD* from, DWORD* to)
+{
+    const SHead& h = s_x.h;
+    if (y < 0 || y >= (int)h.gh)
+        return false;
+    int x0 = cx - 1 < 0 ? 0 : cx - 1, x1 = cx + 1 >= (int)h.gw ? h.gw - 1 : cx + 1;
+    if (x0 > x1)
+        return false;
+    DWORD cs[4];
+    if (!ReadAt(h.off[5] + (y * h.gw + x0) * 4, cs, (x1 - x0 + 2) * 4))
+        return false;
+    *from = cs[0];
+    *to = cs[x1 - x0 + 1];
+    return true;
+}
+
+static void HousesIn(DWORD from, DWORD to, int lat, int lon, Hit* best)   // the grid's items: the nearest within 80 m
+{
+    const SHead& h = s_x.h;
+    for (DWORD k = from; k < to && k < from + 2000; k++) {
+        DWORD hi;
+        SHouse hs;
+        if (!ReadAt(h.off[5] + (h.gw * h.gh + 1 + k) * 4, &hi, 4) || !ReadHouse(hi, &hs))
+            break;
+        double km = Km(lat, lon, hs.lat, hs.lon);
+        if (km < 0.08 && km < best->score) {
+            Hit x = { H_HOUSE, hs.lat, hs.lon, 0, hs.street, hs.number, s_x.streets[hs.street].city, 0, km };
+            *best = x;
+        }
+    }
+}
+
+static void HouseNear(int lat, int lon, Hit* best)   // the nearest house within 80 m (the 3 x 3 cells around)
+{
+    const SHead& h = s_x.h;
+    int cy = (lat - h.minLat) / h.cell, cx = (lon - h.minLon) / h.cell;
+    for (int y = cy - 1; y <= cy + 1; y++) {
+        DWORD from, to;
+        if (HouseRow(y, cx, &from, &to))
+            HousesIn(from, to, lat, lon, best);
+    }
+}
+
+// The road under the point (the graph's, as a route's): of the streets of its name the nearest one - its settlement.
+static void RoadNear(int lat, int lon, Hit* best)
+{
+    char road[200];
+    if (!OfflineRoadAt(lat, lon, 400, road, sizeof(road)))
+        return;
+    for (DWORD i = 0; i < s_x.h.streets; i++) {
+        const SStreet& s = s_x.streets[i];
+        double km = Km(lat, lon, s.lat, s.lon);
+        if (!strcmp(S(s.name), road) && km < best->score) {
+            Hit x = { H_STREET, lat, lon, s.name, 0xFFFFFFFF, 0, s.city, 0, km };
+            *best = x;
+        }
+    }
+}
+
+static void PlaceNear(int lat, int lon, Hit* best)   // the nearest settlement (not a suburb) within 5 km
+{
+    for (DWORD i = 0; i < s_x.h.places; i++) {
+        const SPlace& p = s_x.places[i];
+        double km = Km(lat, lon, p.lat, p.lon);
+        if (p.rank <= 3 && km < 5 && km < best->score) {
+            Hit x = { H_PLACE, lat, lon, p.name, 0xFFFFFFFF, 0, 0, 0, km };
+            *best = x;
+        }
+    }
 }
 
 // The address of a point: the nearest house within 80 m, else the nearest street (its middle) within 400 m, else
 // the settlement.
 static bool Reverse(int lat, int lon, char** body, int* len)
 {
-    const SHead& h = s_x.h;
     Hit best = { -1 };
     best.score = 1e18;
-    int cy = (lat - h.minLat) / h.cell, cx = (lon - h.minLon) / h.cell;
-    for (int y = cy - 1; y <= cy + 1; y++) {
-        if (y < 0 || y >= (int)h.gh)
-            continue;
-        int x0 = cx - 1 < 0 ? 0 : cx - 1, x1 = cx + 1 >= (int)h.gw ? h.gw - 1 : cx + 1;
-        if (x0 > x1)
-            continue;
-        DWORD cs[4];
-        if (!ReadAt(h.off[5] + (y * h.gw + x0) * 4, cs, (x1 - x0 + 2) * 4))
-            continue;
-        DWORD from = cs[0], to = cs[x1 - x0 + 1];
-        for (DWORD k = from; k < to && k < from + 2000; k++) {
-            DWORD hi;
-            SHouse hs;
-            if (!ReadAt(h.off[5] + (h.gw * h.gh + 1 + k) * 4, &hi, 4) || !ReadHouse(hi, &hs))
-                break;
-            double km = Km(lat, lon, hs.lat, hs.lon);
-            if (km < 0.08 && km < best.score) {
-                Hit x = { H_HOUSE, hs.lat, hs.lon, 0, hs.street, hs.number, s_x.streets[hs.street].city, 0, km };
-                best = x;
-            }
-        }
-    }
-    char road[200];   // no house: the road under the point (the graph's, as a route's), its settlement from here
-    if (best.kind < 0 && OfflineRoadAt(lat, lon, 400, road, sizeof(road)))
-        for (DWORD i = 0; i < h.streets; i++) {
-            const SStreet& s = s_x.streets[i];
-            double km = Km(lat, lon, s.lat, s.lon);
-            if (!strcmp(S(s.name), road) && km < best.score) {   // of that name, the nearest one
-                Hit x = { H_STREET, lat, lon, s.name, 0xFFFFFFFF, 0, s.city, 0, km };
-                best = x;
-            }
-        }
+    HouseNear(lat, lon, &best);
     if (best.kind < 0)
-        for (DWORD i = 0; i < h.places; i++) {
-            const SPlace& p = s_x.places[i];
-            double km = Km(lat, lon, p.lat, p.lon);
-            if (p.rank <= 3 && km < 5 && km < best.score) {
-                Hit x = { H_PLACE, lat, lon, p.name, 0xFFFFFFFF, 0, 0, 0, km };
-                best = x;
-            }
-        }
+        RoadNear(lat, lon, &best);
     if (best.kind < 0)
-        return false;
-    JBuf o = { NULL, 0, 0 };
-    PutHits(o, &best, 1);
-    *body = o.p;
-    *len = o.n;
-    return o.p != NULL;
+        PlaceNear(lat, lon, &best);
+    return best.kind >= 0 && Answer(&best, 1, body, len);
 }
 
 // ---------------------------------------------------------------- Photon's requests
