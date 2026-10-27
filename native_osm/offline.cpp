@@ -91,11 +91,17 @@ static bool Inside(const GHead& h, int lat, int lon)
     return lat >= h.minLat && lat <= h.maxLat && lon >= h.minLon && lon <= h.maxLon;
 }
 
-// The folder of the region whose graph holds all the points (lat, lon pairs, 1e-6 degrees): dir = its folder, with
-// route.grf (the graph), search.idx (offsearch.cpp); false = none.
-bool OfflineDir(const int* pts, int n, wchar_t* dir)
+static bool HoldsAll(const GHead& h, const int* pts, int n)
 {
-    wchar_t dirs[4][MAX_PATH];
+    int i = 0;
+    while (i < n && Inside(h, pts[i * 2], pts[i * 2 + 1]))
+        i++;
+    return i == n;
+}
+
+// The folders the regions' folders may be in; returns their count.
+static int DataDirs(wchar_t dirs[][MAX_PATH])
+{
     int nd = 0;
     for (int i = 0; i < 2; i++)
         wcscpy(dirs[nd++], kDataDirs[i]);
@@ -103,47 +109,58 @@ bool OfflineDir(const int* pts, int n, wchar_t* dir)
 #ifndef UNDER_CE
     PathInDir(dirs[nd++], L"..\\OSMapsData");   // the PC: the tool's output beside the program's folder
 #endif
-    for (int d = 0; d < nd; d++) {
-        wchar_t mask[MAX_PATH];
-        _snwprintf(mask, MAX_PATH, L"%s\\*", dirs[d]);
-        WIN32_FIND_DATA fd;
-        HANDLE ff = FindFirstFile(mask, &fd);
-        if (ff == INVALID_HANDLE_VALUE)
-            continue;
-        do {
-            if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || fd.cFileName[0] == L'.')
-                continue;
-            wchar_t path[MAX_PATH];
-            _snwprintf(path, MAX_PATH, L"%s\\%s\\route.grf", dirs[d], fd.cFileName);
-            path[MAX_PATH - 1] = 0;
-            GHead h;
-            if (!ReadHead(path, &h))
-                continue;
-            int i = 0;
-            while (i < n && Inside(h, pts[i * 2], pts[i * 2 + 1]))
-                i++;
-            if (i == n) {
-                FindClose(ff);
-                _snwprintf(dir, MAX_PATH, L"%s\\%s", dirs[d], fd.cFileName);
-                dir[MAX_PATH - 1] = 0;
-                return true;
-            }
-        } while (FindNextFile(ff, &fd));
-        FindClose(ff);
-    }
+    return nd;
+}
+
+// A found entry of a data folder: a region's folder whose graph holds the points (dir = it)?
+static bool Holds(const wchar_t* data, const WIN32_FIND_DATA& fd, const int* pts, int n, wchar_t* dir)
+{
+    if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || fd.cFileName[0] == L'.')
+        return false;
+    wchar_t path[MAX_PATH];
+    _snwprintf(path, MAX_PATH, L"%s\\%s\\route.grf", data, fd.cFileName);
+    path[MAX_PATH - 1] = 0;
+    GHead h;
+    if (!ReadHead(path, &h) || !HoldsAll(h, pts, n))
+        return false;
+    _snwprintf(dir, MAX_PATH, L"%s\\%s", data, fd.cFileName);
+    dir[MAX_PATH - 1] = 0;
+    return true;
+}
+
+// The region in one data folder whose graph holds the points: dir = its folder; false = none there.
+static bool RegionIn(const wchar_t* data, const int* pts, int n, wchar_t* dir)
+{
+    wchar_t mask[MAX_PATH];
+    _snwprintf(mask, MAX_PATH, L"%s\\*", data);
+    WIN32_FIND_DATA fd;
+    HANDLE ff = FindFirstFile(mask, &fd);
+    if (ff == INVALID_HANDLE_VALUE)
+        return false;
+    bool found = Holds(data, fd, pts, n, dir);
+    while (!found && FindNextFile(ff, &fd))
+        found = Holds(data, fd, pts, n, dir);
+    FindClose(ff);
+    return found;
+}
+
+// The folder of the region whose graph holds all the points (lat, lon pairs, 1e-6 degrees): dir = its folder, with
+// route.grf (the graph), search.idx (offsearch.cpp); false = none.
+bool OfflineDir(const int* pts, int n, wchar_t* dir)
+{
+    wchar_t dirs[4][MAX_PATH];
+    int nd = DataDirs(dirs);
+    for (int d = 0; d < nd; d++)
+        if (RegionIn(dirs[d], pts, n, dir))
+            return true;
     return false;
 }
 
 // The region whose graph holds all the points: loaded; false = none.
 static bool Region(const int* pts, int n)
 {
-    if (s_g.nodes) {
-        int i = 0;
-        while (i < n && Inside(s_g.h, pts[i * 2], pts[i * 2 + 1]))
-            i++;
-        if (i == n)
-            return true;
-    }
+    if (s_g.nodes && HoldsAll(s_g.h, pts, n))
+        return true;
     wchar_t dir[MAX_PATH], path[MAX_PATH];
     if (!OfflineDir(pts, n, dir))
         return false;
