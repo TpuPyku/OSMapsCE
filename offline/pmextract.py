@@ -72,17 +72,20 @@ def merged(spans):
     return groups
 
 
-def fetch(archive, located):
-    """{span: tile bytes} for the located tiles' spans, a fetch per merged group."""
+def fetch(archive, located, progress=None):
+    """{span: tile bytes} for the located tiles' spans, a fetch per merged group; progress(done part 0..1) after each."""
     data = {}
-    for start, end, spans in merged(located.values()):
+    groups = merged(located.values())
+    for i, (start, end, spans) in enumerate(groups):
         chunk = archive.get_bytes(start, end - start)
         for off, n in spans:
             data[(off, n)] = chunk[off - start:off - start + n]
+        if progress:
+            progress((i + 1) / len(groups))
     return data
 
 
-def extract(get_bytes, bbox, maxzoom, out):
+def extract(get_bytes, bbox, maxzoom, out, progress=None):
     archive = Archive(get_bytes)
     located = {}
     for z in range(0, maxzoom + 1):
@@ -92,7 +95,7 @@ def extract(get_bytes, bbox, maxzoom, out):
                 span = archive.locate(zxy_to_tileid(z, x, y))
                 if span:
                     located[(z, x, y)] = span
-    data = fetch(archive, located)
+    data = fetch(archive, located, progress)
     unzip = archive.h['tile_compression'] == Compression.GZIP
     make_tiles.write_pack(out, ((make_tiles.key(*t), gzip.decompress(data[s]) if unzip else data[s])
                                 for t, s in located.items()))
@@ -107,10 +110,14 @@ def http_bytes(url):
     return get
 
 
-def latest_build():
+def http_get(url):
+    with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=120) as r:
+        return r.read()
+
+
+def latest_build(get=http_get):
     """The URL of Protomaps' newest daily build."""
-    with urllib.request.urlopen(urllib.request.Request(BUILDS, headers=UA), timeout=60) as r:
-        return SERVER + json.load(r)[-1]['key']
+    return SERVER + json.loads(get(BUILDS))[-1]['key']
 
 
 if __name__ == '__main__':

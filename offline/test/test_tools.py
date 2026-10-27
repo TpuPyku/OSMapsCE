@@ -66,6 +66,20 @@ def make_mbtiles(path, tiles):
     db.close()
 
 
+def make_pmtiles(path, tiles):
+    """A PMTiles archive as Protomaps' build is: tiles gzipped, in tile id order (identical neighbours: a run)."""
+    import gzip
+    from pmtiles.tile import zxy_to_tileid, TileType, Compression
+    from pmtiles.writer import Writer
+    with open(path, 'wb') as f:
+        w = Writer(f)
+        for key in sorted(tiles, key=lambda t: zxy_to_tileid(*t)):
+            w.write_tile(zxy_to_tileid(*key), gzip.compress(tiles[key]))
+        w.finalize({'tile_type': TileType.MVT, 'tile_compression': Compression.GZIP, 'min_lon_e7': -1800000000,
+                    'min_lat_e7': -850000000, 'max_lon_e7': 1800000000, 'max_lat_e7': 850000000,
+                    'center_zoom': 0, 'center_lon_e7': 0, 'center_lat_e7': 0}, {})
+
+
 class Tools(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
@@ -106,22 +120,12 @@ class Tools(unittest.TestCase):
         self.assertEqual(got, tiles)                  # XYZ rows (not TMS), data ungzipped
 
     def test_pmtiles_extract_by_bbox(self):
-        import gzip
-        from pmtiles.tile import zxy_to_tileid, TileType, Compression
-        from pmtiles.writer import Writer
         src = os.path.join(self.tmp, 'planet.pmtiles')
         inside = {(0, 0, 0): b'world', (5, 20, 10): b'samara', (5, 21, 10): b'east'}
         same = {(5, 20, 11): b'sea', (5, 21, 11): b'sea'}            # identical neighbours: one entry, a run
         outside = {(5, 2, 2): b'far'}
         filler = {(12, x, y): b'%d,%d' % (x, y) for x in range(100, 170) for y in range(100, 175)}   # leaf dirs
-        tiles = {**inside, **same, **outside, **filler}
-        with open(src, 'wb') as f:
-            w = Writer(f)
-            for key in sorted(tiles, key=lambda t: zxy_to_tileid(*t)):
-                w.write_tile(zxy_to_tileid(*key), gzip.compress(tiles[key]))
-            w.finalize({'tile_type': TileType.MVT, 'tile_compression': Compression.GZIP, 'min_lon_e7': -1800000000,
-                        'min_lat_e7': -850000000, 'max_lon_e7': 1800000000, 'max_lat_e7': 850000000,
-                        'center_zoom': 0, 'center_lon_e7': 0, 'center_lat_e7': 0}, {})
+        make_pmtiles(src, {**inside, **same, **outside, **filler})
         data = read(src)
         asked = []
 
