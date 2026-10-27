@@ -422,17 +422,21 @@ static DWORD Part(const GEdge& g, double share)
     return (DWORD)(g.timeDs * share + 0.5);
 }
 
-// The fastest way between two snaps; starts: the start's directions allowed (1 its own, 2 the other road side).
-static bool Search(const Snap& sa, const Snap& sb, bool anyStart, Way* w)
+struct Fastest {          // one search: its ends (each road side allowed), the best so far
+    Snap  starts[2], ends[2];
+    int   ns, ne;
+    DWORD best;          // tenths of a second
+    int   bestEnd;       // ends[] reached through the graph; -2 the start's own edge, -1 none yet
+};
+
+static int Sides(const Snap& s, bool both, Snap* out)   // the snap, and its other road side when allowed
 {
-    Snap starts[2], ends[2];
-    int ns = 0, ne = 0;
-    starts[ns++] = sa;
-    if (anyStart && Flip(sa, &starts[ns]))
-        ns++;
-    ends[ne++] = sb;
-    if (Flip(sb, &ends[ne]))
-        ne++;
+    out[0] = s;
+    return both && Flip(s, &out[1]) ? 2 : 1;
+}
+
+static bool Prepare(const Snap& target)   // the search's arrays (made once: one region at a time), the estimate's target
+{
     DWORD N = s_g.h.nodes;
     if (!s_dist) {
         s_dist = (DWORD*)malloc(N * 4);
@@ -442,79 +446,99 @@ static bool Search(const Snap& sa, const Snap& sb, bool anyStart, Way* w)
         return false;
     memset(s_dist, 0xFF, N * 4);
     s_heapN0 = 0;
-    s_tLat = sb.lat;
-    s_tLon = sb.lon;
+    s_tLat = target.lat;
+    s_tLon = target.lon;
     s_kxInt = (int)(s_kx * 1000);
-    DWORD best = 0xFFFFFFFF;
-    int bestEnd = -1;
-    memset(w, 0, sizeof(*w));
-    for (int i = 0; i < ns; i++) {
-        const GEdge& g = s_g.edges[starts[i].e];
-        for (int j = 0; j < ne; j++)   // the same edge, the end ahead: no search
-            if (ends[j].e == starts[i].e && ends[j].t >= starts[i].t) {
-                DWORD c = Part(g, ends[j].t - starts[i].t);
-                if (c < best) {
-                    best = c;
-                    w->a = starts[i];
-                    w->b = ends[j];
-                    w->same = true;
-                    bestEnd = -2;
-                }
-            }
-        DWORD c = Part(g, 1 - starts[i].t);
-        if (c < s_dist[g.to]) {
-            s_dist[g.to] = c;
-            s_prevE[g.to] = 0x80000000 | i;   // reached from start i
-            Push(c + Est(g.to), g.to);
+    return true;
+}
+
+// Start i: an end ahead on its own edge (no search needed), and the edge's end node into the heap.
+static void Seed(Fastest& f, int i, Way* w)
+{
+    const Snap& s = f.starts[i];
+    const GEdge& g = s_g.edges[s.e];
+    for (int j = 0; j < f.ne; j++) {
+        if (f.ends[j].e != s.e || f.ends[j].t < s.t)
+            continue;
+        DWORD c = Part(g, f.ends[j].t - s.t);
+        if (c < f.best) {
+            f.best = c;
+            w->a = s;
+            w->b = f.ends[j];
+            w->same = true;
+            f.bestEnd = -2;
         }
     }
+    DWORD c = Part(g, 1 - s.t);
+    if (c < s_dist[g.to]) {
+        s_dist[g.to] = c;
+        s_prevE[g.to] = 0x80000000 | i;   // reached from start i
+        Push(c + Est(g.to), g.to);
+    }
+}
+
+static void ReachEnds(Fastest& f, DWORD n, DWORD d, Way* w)   // node n settled at d: an end's edge leaves it?
+{
+    for (int j = 0; j < f.ne; j++) {
+        if (f.ends[j].from != n)
+            continue;
+        DWORD c = d + Part(s_g.edges[f.ends[j].e], f.ends[j].t);
+        if (c < f.best) {
+            f.best = c;
+            f.bestEnd = j;
+            w->same = false;
+        }
+    }
+}
+
+static bool Relax(DWORD n, DWORD d)   // node n's edges; false = no memory
+{
+    for (DWORD e = s_g.first[n]; e < s_g.first[n + 1]; e++) {
+        const GEdge& g = s_g.edges[e];
+        DWORD c = d + g.timeDs;
+        if (c < s_dist[g.to]) {
+            s_dist[g.to] = c;
+            s_prevE[g.to] = e;
+            if (!Push(c + Est(g.to), g.to))
+                return false;
+        }
+    }
+    return true;
+}
+
+static bool Settle(Fastest& f, Way* w)   // A* until nothing in the heap can beat the best; false = no memory
+{
     DWORD pops = 0;
     while (s_heapN0) {
         DWORD k, n;
         Pop(&k, &n);
-        if (k >= best)
+        if (k >= f.best)
             break;
         DWORD d = s_dist[n];
         if (k != d + Est(n))
             continue;   // a stale entry
         pops++;
-        for (int j = 0; j < ne; j++)
-            if (ends[j].from == n) {
-                DWORD c = d + Part(s_g.edges[ends[j].e], ends[j].t);
-                if (c < best) {
-                    best = c;
-                    bestEnd = j;
-                    w->same = false;
-                }
-            }
-        for (DWORD e = s_g.first[n]; e < s_g.first[n + 1]; e++) {
-            const GEdge& g = s_g.edges[e];
-            DWORD c = d + g.timeDs;
-            if (c < s_dist[g.to]) {
-                s_dist[g.to] = c;
-                s_prevE[g.to] = e;
-                if (!Push(c + Est(g.to), g.to))
-                    return false;
-            }
-        }
+        ReachEnds(f, n, d, w);
+        if (!Relax(n, d))
+            return false;
     }
-    Log("offline: search: %lu nodes settled, %lu.%lu s", pops, best / 10, best % 10);
-    if (bestEnd == -1)
-        return false;
-    w->timeDs = best;
-    if (bestEnd == -2)
-        return true;
-    w->b = ends[bestEnd];
-    // back from the end's node to a start
+    Log("offline: search: %lu nodes settled, %lu.%lu s", pops, f.best / 10, f.best % 10);
+    return true;
+}
+
+static bool Reconstruct(const Fastest& f, Way* w)   // back from the end's node to a start: the whole edges between
+{
+    w->b = f.ends[f.bestEnd];
     int cnt = 0;
     DWORD n = w->b.from;
     while (!(s_prevE[n] & 0x80000000)) {
         n = FromNode(s_prevE[n]);
         cnt++;
     }
-    w->a = starts[s_prevE[n] & 0x7FFFFFFF];
-    w->e = (DWORD*)malloc((cnt ? cnt : 1) * 4);
-    w->from = (DWORD*)malloc((cnt ? cnt : 1) * 4);
+    w->a = f.starts[s_prevE[n] & 0x7FFFFFFF];
+    int cap = cnt ? cnt : 1;
+    w->e = (DWORD*)malloc(cap * 4);
+    w->from = (DWORD*)malloc(cap * 4);
     if (!w->e || !w->from)
         return false;
     w->n = cnt;
@@ -526,6 +550,25 @@ static bool Search(const Snap& sa, const Snap& sb, bool anyStart, Way* w)
         n = w->from[i];
     }
     return true;
+}
+
+// The fastest way between two snaps; anyStart: the start's other road side allowed too.
+static bool Search(const Snap& sa, const Snap& sb, bool anyStart, Way* w)
+{
+    Fastest f;
+    f.ns = Sides(sa, anyStart, f.starts);
+    f.ne = Sides(sb, true, f.ends);
+    if (!Prepare(sb))
+        return false;
+    f.best = 0xFFFFFFFF;
+    f.bestEnd = -1;
+    memset(w, 0, sizeof(*w));
+    for (int i = 0; i < f.ns; i++)
+        Seed(f, i, w);
+    if (!Settle(f, w) || f.bestEnd == -1)
+        return false;
+    w->timeDs = f.best;
+    return f.bestEnd == -2 || Reconstruct(f, w);
 }
 
 // ---------------------------------------------------------------- the answer (OSRM's JSON)
