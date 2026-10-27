@@ -691,102 +691,183 @@ static DWORD EdgeAt(const Way& w, int i)   // the way's i-th edge (0: the start'
     return i - 1 < w.n ? w.e[i - 1] : w.b.e;
 }
 
+struct Piece {           // the way's edge with its start node, cut at the start's snap (a) / the end's (z) if it holds them
+    DWORD       e, from;
+    const Snap* a;
+    const Snap* z;
+};
+
+static Piece PieceAt(const Way& w, int i, int cnt)
+{
+    Piece pc = { EdgeAt(w, i), 0, i == 0 ? &w.a : NULL, i == cnt - 1 ? &w.b : NULL };
+    pc.from = pc.a ? w.a.from : pc.z ? w.b.from : w.from[i - 1];
+    return pc;
+}
+
+struct Prev { DWORD e, from; double after; };   // the edge the way came by: its start node, its last bearing
+
+static bool Named(const GEdge& g)
+{
+    return strcmp(s_g.names + g.name, "\t") != 0;
+}
+
+static bool BackWay(const GEdge& o, const Prev& prev)   // o: the edge we came by, the other way
+{
+    const GEdge& p = s_g.edges[prev.e];
+    return o.to == prev.from && o.geom == p.geom && o.ngeom == p.ngeom;
+}
+
+struct Turn {            // a node between two of the way's edges
+    const GEdge* p;      // the edge before
+    const GEdge* g;      // the edge after
+    double turn;         // degrees, right = positive
+    int    alts;         // the other ways out (not back the way we came)
+    int    rivals;       // of them: not of a lower class than ours
+    double rivalMin;     // the straightest rival's turn (its size)
+    double rivalTurn;
+};
+
+// The other ways out of the node (from, the way going on by e) and the rivals among them.
+static void Rivals(DWORD from, DWORD e, const Prev& prev, Turn* t)
+{
+    t->alts = t->rivals = 0;
+    t->rivalMin = 1e9;
+    t->rivalTurn = 0;
+    for (DWORD k = s_g.first[from]; k < s_g.first[from + 1]; k++) {
+        const GEdge& o = s_g.edges[k];
+        if (k == e || BackWay(o, prev))
+            continue;
+        t->alts++;
+        if (Level(o.cls) > Level(t->g->cls))
+            continue;
+        double ot = TurnOf(prev.after, FirstBearing(from, k));
+        t->rivals++;
+        if (fabs(ot) < t->rivalMin) {
+            t->rivalMin = fabs(ot);
+            t->rivalTurn = ot;
+        }
+    }
+}
+
+static bool HasWayOff(DWORD node)   // a roundabout's node with a road off it
+{
+    for (DWORD k = s_g.first[node]; k < s_g.first[node + 1]; k++)
+        if (!(s_g.edges[k].flags & 2))
+            return true;
+    return false;
+}
+
+// Onto a roundabout by the way's edge i: the exit's number (its nodes with a way off it, up to ours); name = the road
+// off it (kept when the way ends on the roundabout).
+static int RoundaboutExit(const Way& w, int i, int cnt, DWORD* name)
+{
+    int exitNo = 0;
+    for (int j = i; j < cnt; j++) {
+        const GEdge& g = s_g.edges[EdgeAt(w, j)];
+        if (!(g.flags & 2)) {   // off it: this road names the step
+            *name = g.name;
+            break;
+        }
+        if (j == cnt - 1)
+            break;   // the way ends on the roundabout
+        exitNo += HasWayOff(g.to);
+    }
+    return exitNo;
+}
+
+static const char* RampKind(const Turn& t, const char** mod)   // onto a link: off a big road, else onto one
+{
+    if (!(t.g->flags & 4) || (t.p->flags & 4))
+        return NULL;
+    *mod = Modifier(t.turn);
+    return t.p->cls <= C_TRUNK ? "off ramp" : "on ramp";
+}
+
+static const char* MergeKind(const Turn& t, const char** mod)   // off a link onto a big road, nearly straight
+{
+    if ((t.g->flags & 4) || !(t.p->flags & 4) || t.g->cls > C_TRUNK || fabs(t.turn) >= 45)
+        return NULL;
+    *mod = t.turn > 0 ? "slight right" : "slight left";
+    return "merge";
+}
+
+// The road just goes on: no other way, or ours the obvious one (the straightest of the rivals and ours, 10 degrees'
+// slack) and the same road or nearly straight.
+static bool GoesOn(const Turn& t)
+{
+    bool sameRoad = t.g->name == t.p->name && Named(*t.g);
+    bool obvious = fabs(t.turn) <= t.rivalMin + 10;
+    return !t.alts || (obvious && (sameRoad || fabs(t.turn) < 35));
+}
+
+static const char* PlainKind(const Turn& t, const char** mod)   // not at a link's end
+{
+    if (GoesOn(t)) {   // told only when its name changes
+        *mod = "straight";
+        return t.alts && t.g->name != t.p->name && Named(*t.g) ? "new name" : NULL;
+    }
+    if (fabs(t.turn) < 35 && t.rivals) {   // two ways ahead: keep to our side of the other
+        *mod = t.turn >= t.rivalTurn ? "slight right" : "slight left";
+        return "fork";
+    }
+    *mod = Modifier(t.turn);
+    return "turn";
+}
+
+// The maneuver at a node (not onto a roundabout): its type and modifier; NULL = nothing to tell.
+static const char* Kind(const Turn& t, const char** mod)
+{
+    if (t.p->flags & 2)
+        return NULL;   // on the roundabout, or off it: told at the entry
+    const char* k = RampKind(t, mod);
+    if (!k)
+        k = MergeKind(t, mod);
+    return k ? k : PlainKind(t, mod);
+}
+
+// The step at the node where the way's edge i (pc) begins, coming by prev; b0: the edge's first bearing.
+static void Maneuver(JBuf& b, bool& first, const Way& w, int i, int cnt, const Piece& pc, const Prev& prev, double b0)
+{
+    Turn t;
+    t.p = &s_g.edges[prev.e];
+    t.g = &s_g.edges[pc.e];
+    t.turn = TurnOf(prev.after, b0);
+    Rivals(pc.from, pc.e, prev, &t);
+    int la = s_g.nodes[pc.from * 2], lo = s_g.nodes[pc.from * 2 + 1];
+    if ((t.g->flags & 2) && !(t.p->flags & 2)) {   // onto a roundabout
+        DWORD name = t.g->name;
+        int exitNo = RoundaboutExit(w, i, cnt, &name);
+        Step(b, first, "roundabout", "right", prev.after, b0, la, lo, name, exitNo);
+        return;
+    }
+    const char* mod;
+    const char* type = Kind(t, &mod);
+    if (type)
+        Step(b, first, type, mod, prev.after, b0, la, lo, t.g->name, 0);
+}
+
 // One leg's steps: depart, the maneuvers at the nodes between its edges, arrive. The line grows.
 static void Steps(JBuf& b, Line& line, const Way& w)
 {
     bool first = true;
-    // the way as a list of (from, edge, start snap?, end snap?)
     int cnt = w.same ? 1 : w.n + 2;
-    double prevAfter = 0, b0, b1;
-    DWORD prevE = 0, prevFrom = 0;
-    int i;
-    for (i = 0; i < cnt; i++) {
-        DWORD e, from;
-        const Snap* a = NULL;
-        const Snap* z = NULL;
-        if (w.same) {
-            e = w.a.e; from = w.a.from; a = &w.a; z = &w.b;
-        } else if (i == 0) {
-            e = w.a.e; from = w.a.from; a = &w.a;
-        } else if (i == cnt - 1) {
-            e = w.b.e; from = w.b.from; z = &w.b;
-        } else {
-            e = w.e[i - 1]; from = w.from[i - 1];
-        }
+    double b0, b1;
+    Prev prev = { 0, 0, 0 };
+    for (int i = 0; i < cnt; i++) {
+        Piece pc = PieceAt(w, i, cnt);
         int before = line.n;
-        AddEdge(line, from, e, a, z, &b0, &b1);
-        const GEdge& g = s_g.edges[e];
-        if (i == 0) {
-            int la = line.p[before * 2], lo = line.p[before * 2 + 1];
-            Step(b, first, "depart", "straight", 0, b0, la, lo, g.name, 0);
-        } else {
-            const GEdge& p = s_g.edges[prevE];
-            int la = s_g.nodes[from * 2], lo = s_g.nodes[from * 2 + 1];
-            double turn = TurnOf(prevAfter, b0);
-            // the other ways out of this node (not back the way we came); "rivals": not of a lower class than ours
-            int alts = 0, rivals = 0;
-            double rivalMin = 1e9, rivalTurn = 0;   // the straightest rival's turn
-            for (DWORD k = s_g.first[from]; k < s_g.first[from + 1]; k++) {
-                const GEdge& o = s_g.edges[k];
-                if (k == e || (o.to == prevFrom && o.geom == p.geom && o.ngeom == p.ngeom))
-                    continue;
-                alts++;
-                if (Level(o.cls) > Level(g.cls))
-                    continue;
-                double ot = TurnOf(prevAfter, FirstBearing(from, k));
-                rivals++;
-                if (fabs(ot) < rivalMin) {
-                    rivalMin = fabs(ot);
-                    rivalTurn = ot;
-                }
-            }
-            // the obvious way on: the straightest of the rivals and ours (10 degrees' slack)
-            bool obvious = fabs(turn) <= rivalMin + 10;
-            bool sameRoad = g.name == p.name && strcmp(s_g.names + g.name, "\t");
-            bool rbIn = (g.flags & 2) && !(p.flags & 2), rbOn = (g.flags & 2) && (p.flags & 2);
-            if (rbIn) {   // onto a roundabout: the exit's number (its nodes with a way off it, up to ours)
-                int exitNo = 0;
-                DWORD outName = g.name;
-                for (int j = i; j < cnt; j++) {
-                    DWORD ej = EdgeAt(w, j);
-                    if (!(s_g.edges[ej].flags & 2)) {   // off it: this road names the step
-                        outName = s_g.edges[ej].name;
-                        break;
-                    }
-                    if (j == cnt - 1)
-                        break;   // the way ends on the roundabout
-                    DWORD node = s_g.edges[ej].to;
-                    for (DWORD k = s_g.first[node]; k < s_g.first[node + 1]; k++)
-                        if (!(s_g.edges[k].flags & 2)) {
-                            exitNo++;
-                            break;
-                        }
-                }
-                Step(b, first, "roundabout", "right", prevAfter, b0, la, lo, outName, exitNo);
-            } else if (rbOn || (p.flags & 2)) {
-                // on it, or off it: told at the entry
-            } else if ((g.flags & 4) && !(p.flags & 4)) {
-                Step(b, first, p.cls <= C_TRUNK ? "off ramp" : "on ramp", Modifier(turn), prevAfter, b0, la, lo,
-                     g.name, 0);
-            } else if (!(g.flags & 4) && (p.flags & 4) && g.cls <= C_TRUNK && fabs(turn) < 45) {
-                Step(b, first, "merge", turn > 0 ? "slight right" : "slight left", prevAfter, b0, la, lo, g.name, 0);
-            } else if (!alts || (obvious && (sameRoad || fabs(turn) < 35))) {
-                // the road just goes on: told only when its name changes
-                if (alts && !sameRoad && g.name != p.name && strcmp(s_g.names + g.name, "\t"))
-                    Step(b, first, "new name", "straight", prevAfter, b0, la, lo, g.name, 0);
-            } else if (fabs(turn) < 35 && rivals) {   // two ways ahead: keep to our side of the other
-                Step(b, first, "fork", turn >= rivalTurn ? "slight right" : "slight left", prevAfter, b0, la, lo,
-                     g.name, 0);
-            } else {
-                Step(b, first, "turn", Modifier(turn), prevAfter, b0, la, lo, g.name, 0);
-            }
-        }
-        prevAfter = b1;
-        prevE = e;
-        prevFrom = from;
+        AddEdge(line, pc.from, pc.e, pc.a, pc.z, &b0, &b1);
+        if (i == 0)
+            Step(b, first, "depart", "straight", 0, b0, line.p[before * 2], line.p[before * 2 + 1],
+                 s_g.edges[pc.e].name, 0);
+        else
+            Maneuver(b, first, w, i, cnt, pc, prev, b0);
+        prev.e = pc.e;
+        prev.from = pc.from;
+        prev.after = b1;
     }
-    Step(b, first, "arrive", "straight", prevAfter, 0, line.p[(line.n - 1) * 2], line.p[(line.n - 1) * 2 + 1],
-         s_g.edges[prevE].name, 0);
+    Step(b, first, "arrive", "straight", prev.after, 0, line.p[(line.n - 1) * 2], line.p[(line.n - 1) * 2 + 1],
+         s_g.edges[prev.e].name, 0);
 }
 
 static void FreeWay(Way& w)
