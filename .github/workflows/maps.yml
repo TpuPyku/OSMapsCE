@@ -1,0 +1,74 @@
+# The regions' offline data for OSMapsCE (the road graph, the search): built from openstreetmap.fr's extracts by
+# offline/release_regions.py, put into the release "maps" (a pre-release - never the program's latest; its assets
+# replaced on each run). The PC app (offline/maps_app.py) reads its catalog.json; the tiles are not here: the app cuts
+# them out of Protomaps' build.
+name: maps
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 3 * * 1'   # Mondays, 03:00 UTC
+
+permissions:
+  contents: write
+
+jobs:
+  list:
+    runs-on: ubuntu-latest
+    outputs:
+      regions: ${{ steps.list.outputs.regions }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install osmium   # (release_regions imports the builders)
+      - id: list
+        run: echo "regions=$(python offline/release_regions.py list)" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: list
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false   # a region failing leaves the others (and its previous data in the catalog)
+      max-parallel: 8
+      matrix:
+        region: ${{ fromJSON(needs.list.outputs.regions) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install osmium
+      - run: python offline/release_regions.py build ${{ matrix.region }} dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.region }}
+          path: dist/
+          retention-days: 3
+
+  publish:
+    needs: build
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - run: pip install osmium
+      - name: The release (once)
+        run: |
+          gh release view maps >/dev/null 2>&1 || gh release create maps --prerelease --title "Карты OSMapsCE" \
+            --notes "Граф дорог и поиск областей для OSMapsCE без интернета. Записывает на флешку приложение «Карты OSMapsCE»; плитки оно вырезает из сборки Protomaps. Данные © участники OpenStreetMap, ODbL."
+      - name: The catalog (the regions not rebuilt this time kept from the previous one)
+        run: |
+          gh release download maps -p catalog.json -O previous.json || echo '{"regions": []}' > previous.json
+          python offline/release_regions.py catalog dist previous.json
+      - run: gh release upload maps dist/*.zip dist/catalog.json --clobber
