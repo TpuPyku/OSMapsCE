@@ -72,3 +72,9 @@ jobs:
           gh release download maps -p catalog.json -O previous.json || echo '{"regions": []}' > previous.json
           python offline/release_regions.py catalog dist previous.json
       - run: gh release upload maps dist/*.zip dist/catalog.json --clobber
+      - name: The zips no longer in the catalog (regions merged or gone) removed
+        run: |
+          keep=" catalog.json $(python -c "import json; print(' '.join(r['zip'] for r in json.load(open('dist/catalog.json'))['regions']))") "
+          for a in $(gh release view maps --json assets --jq '.assets[].name'); do
+            case "$keep" in *" $a "*) ;; *) gh release delete-asset maps "$a" -y ;; esac
+          done
