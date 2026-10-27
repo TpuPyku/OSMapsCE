@@ -55,15 +55,16 @@ def build_region(name, url, dist, work):
     return entry
 
 
-def catalog(dist, previous=None):
-    """catalog.json of the entries in dist and the previous catalog's others, by name."""
+def catalog(dist, previous=None, known=()):
+    """catalog.json of the entries in dist and the previous catalog's others still among the regions (known), by
+    name."""
     entries = []
     for f in sorted(os.listdir(dist)):
         if f.endswith('.json') and f != 'catalog.json':
             with open(os.path.join(dist, f), encoding='utf-8') as e:
                 entries.append(json.load(e))
     built = {e['name'] for e in entries}
-    entries += [e for e in (previous or {'regions': []})['regions'] if e['name'] not in built]
+    entries += [e for e in (previous or {'regions': []})['regions'] if e['name'] not in built and e['name'] in known]
     cat = {'version': 1, 'made': time.strftime('%Y-%m-%d', time.gmtime()),
            'regions': sorted(entries, key=lambda e: e['name'])}
     with open(os.path.join(dist, 'catalog.json'), 'w', encoding='utf-8') as f:
@@ -77,7 +78,7 @@ def main(argv):
     elif argv[0] == 'build':
         print(build_region(argv[1], make_region.regions()[argv[1]], argv[2], make_region.WORK))
     else:
-        catalog(argv[1], json.load(open(argv[2], encoding='utf-8')) if len(argv) > 2 else None)
+        catalog(argv[1], json.load(open(argv[2], encoding='utf-8')) if len(argv) > 2 else None, make_region.regions())
 
 
 if __name__ == '__main__':

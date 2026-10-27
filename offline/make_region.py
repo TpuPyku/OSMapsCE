@@ -28,9 +28,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 WORK = os.path.join(HERE, 'work')
 DATA = os.path.join(HERE, '..', 'OSMapsData')
 BASE = 'http://download.openstreetmap.fr/extracts/russia/'
-# russia/'s copies of these two are nearly empty (their bounds in OSM: 258 KB, 94 KB, 2026-10-27); the same land whole:
-FULL = {name: 'http://download.openstreetmap.fr/extracts/europe/ukraine/%s-latest.osm.pbf' % f
-        for name, f in (('crimea_republic', 'crimea'), ('sevastopol', 'sevastopol'))}
+# The disputed lands (the user 2026-10-27: apart, so no one is offended): neutral names, openstreetmap.fr's whole
+# extracts (russia/'s crimea_republic, sevastopol are nearly empty, 258 KB and 94 KB; no Donetsk, Luhansk there).
+APART = {name: 'http://download.openstreetmap.fr/extracts/europe/ukraine/%s-latest.osm.pbf' % f
+         for name, f in (('crimea', 'crimea'), ('sevastopol', 'sevastopol'), ('donetsk', 'donetsk_oblast'),
+                         ('luhansk', 'luhansk_oblast'))}
 UA = {'User-Agent': 'OSMapsCE-make_region (+https://github.com/TpuPyku/OSMapsCE)'}
 
 
@@ -48,11 +50,13 @@ def region_links(html, base):
 
 
 def regions(get=get):
-    """{name: url} of Russia's regions (the federal districts' folders)."""
+    """{name: url} of Russia's regions (the federal districts' folders) and the disputed lands (APART)."""
     out = {}
     for d in district_links(get(BASE)):
         out.update(region_links(get(BASE + d + '/'), BASE + d + '/'))
-    return {n: FULL.get(n, u) for n, u in out.items()}
+    out.pop('crimea_republic', None)
+    out.update(APART)
+    return out
 
 
 def fetch(url, path):

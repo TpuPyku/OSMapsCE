@@ -53,7 +53,7 @@ class Maps(unittest.TestCase):
                 json.dump({'name': name}, f)
         previous = {'regions': [{'name': 'c_old'}, {'name': 'a_krai', 'date': 'last week'}]}
         for _ in range(2):                                     # again: the catalog itself not an entry
-            cat = release_regions.catalog(self.dist, previous)
+            cat = release_regions.catalog(self.dist, previous, {'a_krai', 'b_oblast', 'c_old'})
         self.assertEqual(cat['version'], 1)
         self.assertEqual(cat['regions'], [{'name': 'a_krai'}, {'name': 'b_oblast'}, {'name': 'c_old'}])   # (kept)
         self.assertEqual(json.loads(read(os.path.join(self.dist, 'catalog.json'))), cat)
@@ -61,8 +61,8 @@ class Maps(unittest.TestCase):
     def test_release_command_line(self):
         known = {'tiny': pathlib.Path(TINY).as_uri(), 'other': ''}
         prev = os.path.join(self.tmp, 'previous.json')
-        with open(prev, 'w') as f:
-            json.dump({'regions': [{'name': 'old'}]}, f)
+        with open(prev, 'w') as f:                                     # 'gone': no longer a region of the list
+            json.dump({'regions': [{'name': 'other'}, {'name': 'gone'}]}, f)
         out = io.StringIO()
         with unittest.mock.patch.object(release_regions.make_region, 'regions', lambda: known), \
                 unittest.mock.patch.object(release_regions.make_region, 'WORK', os.path.join(self.tmp, 'w')), \
@@ -74,7 +74,7 @@ class Maps(unittest.TestCase):
             release_regions.main(['catalog', self.dist, prev])
         self.assertEqual(json.loads(out.getvalue().splitlines()[0]), ['other', 'tiny'])   # the workflow's matrix
         cat = json.loads(read(os.path.join(self.dist, 'catalog.json')))
-        self.assertEqual([r['name'] for r in cat['regions']], ['old', 'tiny'])
+        self.assertEqual([r['name'] for r in cat['regions']], ['other', 'tiny'])
 
     def test_region_info(self):
         path = os.path.join(self.tmp, 'region.txt')
