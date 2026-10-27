@@ -55,6 +55,7 @@ struct Feat {
     int name;                   // K_PLACE, K_ROADNAME, K_HOUSENUM: into VTile::names, -1 none
     unsigned char rank;         // the names: 0 the biggest (a city, a main road) .. 2
     unsigned char minz;         // the name shown from this zoom (places: by their size, PlaceMinZoom)
+    signed char level;          // -1 a tunnel, 0 the ground, 1 a bridge (Level)
 };
 
 struct VTile {
@@ -206,12 +207,13 @@ static const KindRow* Row(const Pb& layer, const Pb& cls, const Pb& detail, int 
 }
 
 // The tags read: a feature's class (Protomaps: "kind", its finer "kind_detail"), its name and the Russian one (when
-// there is one: "Киев", not "Київ"), a house number (its own key) - strings; a place's rank, capital level and
-// population - numbers (0: none)
-enum { T_CLASS, T_DETAIL, T_NAME, T_NAMERU, T_HOUSE, T_STRINGS, T_RANK = T_STRINGS, T_CAPITAL, T_POPULATION, T_COUNT };
+// there is one: "Киев", not "Київ"), a house number (its own key), a bridge or tunnel (OpenMapTiles' "brunnel") -
+// strings; a place's rank, capital level and population, Protomaps' is_bridge, is_tunnel - numbers (0: none)
+enum { T_CLASS, T_DETAIL, T_NAME, T_NAMERU, T_HOUSE, T_BRUNNEL, T_STRINGS, T_RANK = T_STRINGS, T_CAPITAL, T_POPULATION,
+       T_BRIDGE, T_TUNNEL, T_COUNT };
 static const char* const kTagKeys[T_COUNT][2] = { { "class", "kind" }, { "kind_detail" }, { "name" }, { "name:ru" },
-                                                   { "housenumber", "addr_housenumber" }, { "rank" }, { "capital" },
-                                                   { "population" } };
+                                                   { "housenumber", "addr_housenumber" }, { "brunnel" }, { "rank" },
+                                                   { "capital" }, { "population" }, { "is_bridge" }, { "is_tunnel" } };
 
 // A layer's name and the indexes of its keys of the tags read (-1 none); its values in s_vals (the strings) and
 // s_nums (as numbers)
@@ -243,7 +245,7 @@ static int StringNumber(const Pb& s)
     return s.end - s.p == 1 ? *s.p - '0' : 0;
 }
 
-static int NumberValue(Pb v)   // int (field 4), uint (5), sint (6), a string (1: StringNumber); else 0
+static int NumberValue(Pb v)   // int (field 4), uint (5), sint (6), bool (7), a string (1: StringNumber); else 0
 {
     int n = 0;
     while (v.p < v.end) {
@@ -258,7 +260,7 @@ static int NumberValue(Pb v)   // int (field 4), uint (5), sint (6), a string (1
             continue;
         }
         unsigned int x = Varint(v);
-        if (field == 4 || field == 5)
+        if (field == 4 || field == 5 || field == 7)
             n = (int)x;
         else if (field == 6)
             n = (int)((x >> 1) ^ (0 - (x & 1)));
@@ -359,6 +361,13 @@ static int PlaceMinZoom(const Tags& t, int nameRank)
     if (BigCity(t))
         return 7;
     return nameRank < 2 ? 10 : 14;
+}
+
+static int Level(const Tags& t)   // -1 a tunnel, 0 the ground, 1 a bridge
+{
+    if (StrEq(t.s[T_BRUNNEL], "bridge") || t.n[T_BRIDGE - T_STRINGS])
+        return 1;
+    return StrEq(t.s[T_BRUNNEL], "tunnel") || t.n[T_TUNNEL - T_STRINGS] ? -1 : 0;
 }
 
 // ---- geometry: MoveTo starts a part, LineTo adds points; false = out of memory
@@ -477,6 +486,7 @@ static bool DecodeFeature(Pb f, const LayerHead& h, VTile& t)
     ft.name = -1;
     ft.rank = (unsigned char)row->rank;
     ft.minz = (unsigned char)(row->kind == K_PLACE ? PlaceMinZoom(tg, row->rank) : 0);
+    ft.level = (signed char)Level(tg);
     if (!DecodeGeometry(geom, t, ft))
         return false;
     if (!ft.nparts || !Named(t, ft, row->kind, tg.s[row->kind == K_HOUSENUM ? T_HOUSE : T_NAME]))
@@ -870,29 +880,39 @@ static void StrokePart(HDC dc, const VTile& t, const Xf& xf, const Feat& f, int 
         Polyline(dc, s_line, m);
 }
 
-// The lines of kind k with a pen w px wide
-static void StrokeKind(HDC dc, const VTile& t, const Xf& xf, int k, int w, COLORREF color)
+// The lines of kind k and of a level with a pen w px wide
+static void StrokeKind(HDC dc, const VTile& t, const Xf& xf, int k, int level, int w, COLORREF color)
 {
     HPEN pen = CreatePen(PS_SOLID, w, color);
     HGDIOBJ op = SelectObject(dc, pen);
     for (int fi = NextShown(t, xf, k, w, 0); fi < t.nf; fi = NextShown(t, xf, k, w, fi + 1))
-        for (int pi = 0; pi < t.f[fi].nparts; pi++)
+        for (int pi = 0; pi < t.f[fi].nparts && t.f[fi].level == level; pi++)
             StrokePart(dc, t, xf, t.f[fi], pi);
     SelectObject(dc, op);
     DeleteObject(pen);
 }
 
-// All the lines, kind by kind: the casings (2 px wider, of the cased kinds), or the lines themselves
-static void StrokeLines(HDC dc, const VTile& t, const Xf& xf, int z, const Style* pal, bool casing)
+// A line's colour: a casing's (a bridge's without one: the background's - the gap over what it crosses), a tunnel's
+// half the background
+static COLORREF LineColor(const Style& s, const unsigned char* bg, bool casing, int level)
+{
+    if (casing)
+        return s.cased ? RGB(s.cr, s.cg, s.cb) : RGB(bg[0], bg[1], bg[2]);
+    if (level < 0)
+        return RGB((s.r + bg[0]) / 2, (s.g + bg[1]) / 2, (s.b + bg[2]) / 2);
+    return RGB(s.r, s.g, s.b);
+}
+
+// The lines of a level, kind by kind: the casings (2 px wider, of the cased kinds and every bridge; none under the
+// ground), or the lines themselves
+static void StrokeLines(HDC dc, const VTile& t, const Xf& xf, int z, const Style* pal, const unsigned char* bg,
+                        int level, bool casing)
 {
     for (int k = kFirstLine; k < K_PLACE; k++) {
         const Style& sty = pal[k];
-        if ((casing && !sty.cased) || z < MinZoom(k))
+        if ((casing && !(level > 0 || (sty.cased && level == 0))) || z < MinZoom(k))
             continue;
-        if (casing)
-            StrokeKind(dc, t, xf, k, LineWidth(sty.width, z) + 2, RGB(sty.cr, sty.cg, sty.cb));
-        else
-            StrokeKind(dc, t, xf, k, LineWidth(sty.width, z), RGB(sty.r, sty.g, sty.b));
+        StrokeKind(dc, t, xf, k, level, LineWidth(sty.width, z) + (casing ? 2 : 0), LineColor(sty, bg, casing, level));
     }
 }
 
@@ -903,13 +923,16 @@ static void Draw(const VTile& t, const Xf& xf, int z, bool night, HDC dc, unsign
     unsigned short bg = RGB565(bc[0], bc[1], bc[2]);
     for (int i = 0; i < TILE * TILE; i++)
         bits[i] = bg;
-    // areas, kind by kind, then the lines with their casings (the labels: over the frame, VLabelsDraw)
+    // areas, kind by kind, then the lines with their casings level by level: the tunnels, the ground, the bridges (the
+    // labels: over the frame, VLabelsDraw)
     FillAreas(t, xf, z, pal, bits);
 #ifndef UNDER_CE
     GdiFlush();   // the desktop's GDI may batch: our pixels before its lines (CE draws at once)
 #endif
-    StrokeLines(dc, t, xf, z, pal, true);
-    StrokeLines(dc, t, xf, z, pal, false);
+    for (int level = -1; level <= 1; level++) {
+        StrokeLines(dc, t, xf, z, pal, bc, level, true);
+        StrokeLines(dc, t, xf, z, pal, bc, level, false);
+    }
 #ifndef UNDER_CE
     GdiFlush();
 #endif

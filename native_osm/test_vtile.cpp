@@ -271,7 +271,8 @@ static int MakeCountry(unsigned char* out)
     return tile.n;
 }
 
-// ---- a layer with any keys; each feature brings its own values: a string, "#n" a number, NULL no such tag
+// ---- a layer with any keys; each feature brings its own values: a string, "%n" an int, "#n" a uint, "?n" a bool,
+// NULL no such tag
 struct Keyed { Pbw w; int nk, nv; };
 
 static void BeginKeys(Keyed& l, const char* name, const char* const* keys, int nk)
@@ -292,8 +293,10 @@ static void AddVals(Keyed& l, const char* const* vals, int type, const unsigned 
         if (!vals[i])
             continue;
         Pbw v = { { 0 }, 0 };
-        if (vals[i][0] == '#') {   // a uint value (field 5)
-            Var(v, 5 << 3);
+        const char* kNumbers = "%#?";   // an int value (field 4), a uint (5), a bool (7)
+        const char* num = vals[i][0] ? strchr(kNumbers, vals[i][0]) : NULL;
+        if (num) {
+            Var(v, (num == kNumbers ? 4 : num == kNumbers + 1 ? 5 : 7) << 3);
             Var(v, (unsigned int)atoi(vals[i] + 1));
         } else
             Str(v, 1, vals[i]);
@@ -390,7 +393,7 @@ static int MakePmCountry(unsigned char* out)
     static const char* kKeys[] = { "kind", "name", "kind_detail", "capital", "population" };
     static const char* kRows[kPlaces][5] = { { "locality", "Cap", "city", "yes", "#9000000" },
                                              { "locality", "Reg", "city", "4", "#200000" },
-                                             { "locality", "Big", "city", NULL, "#240000" },
+                                             { "locality", "Big", "city", NULL, "%240000" },   // (an int)
                                              { "locality", "Mid", "city", NULL, "#150000" },
                                              { "locality", "Twn", "town", NULL, "#50000" },
                                              { "locality", "One", "city", NULL, "#1000000" } };
@@ -617,6 +620,72 @@ static void Deep()
     Close(f);
 }
 
+// Roads by their level (the user 2026-10-27, the first step of the 3D view): a road on the ground across the z14 tile
+// at y 128, over it a bridge at x 128, under it a tunnel at x 64 (in the tile: the bridge first, the tunnel last) -
+// OpenMapTiles' "brunnel", Protomaps' is_bridge / is_tunnel (bools)
+static int MakeLevels(unsigned char* out, bool pm)
+{
+    static const char* kOmt[] = { "class", "brunnel" };
+    static const char* kPm[] = { "kind", "kind_detail", "is_bridge", "is_tunnel" };
+    static const char* kRows[2][3][4] = { { { "primary", "bridge" }, { "primary", NULL }, { "primary", "tunnel" } },
+                                          { { "major_road", "primary", "?1", NULL }, { "major_road", "primary", NULL, NULL },
+                                            { "major_road", "primary", NULL, "?1" } } };
+    Pbw tile = { { 0 }, 0 };
+    Keyed l;
+    BeginKeys(l, pm ? "roads" : "transportation", pm ? kPm : kOmt, pm ? 4 : 2);
+    for (int i = 0; i < 3; i++) {
+        unsigned int g[6] = { 9, Zz(128 * 16), 0, 2 | 1 << 3, 0, Zz(256 * 16) };   // (the bridge: down at x 128)
+        if (i == 1)
+            HLine(g, 0, 256, 128);
+        else if (i == 2)
+            g[1] = Zz(64 * 16);
+        AddVals(l, kRows[pm][i], 2, g, 6);
+    }
+    Bytes(tile, 3, l.w.b, l.w.n);
+    memcpy(out, tile.b, tile.n);
+    return tile.n;
+}
+
+static int Column(const Image& im, int x, int y0, int y1, unsigned short c)
+{
+    int n = 0;
+    for (int y = y0; y < y1; y++)
+        n += Px(im, x, y) == c;
+    return n;
+}
+
+static int Row(const Image& im, int y, int x0, int x1, unsigned short c)
+{
+    int n = 0;
+    for (int x = x0; x < x1; x++)
+        n += Px(im, x, y) == c;
+    return n;
+}
+
+static void Levels()
+{
+    static unsigned char omt[4096], pmt[4096];
+    int no = MakeLevels(omt, false), np = MakeLevels(pmt, true);
+    const unsigned short casing = RGB565(224, 182, 120);
+    MapRequest a = { SRC_OSM, 14, 9600, 5000 }, b = { SRC_OSM, 14, 9700, 5000 }, n = { SRC_OSM, 14, 9800, 5000 };
+    Image ia = { 0 }, ib = { 0 };
+    g_cfg.night = 0;
+    Check(VTileRender(a, omt, no, &ia) && Row(ia, 128, 118, 138, casing) == 2,
+          "the bridge's casing over the road it crosses: 1 px each side");
+    Check(Column(ia, 64, 116, 140, casing) >= 2, "the road's casing over the tunnel under it");
+    Check(Px(ia, 64, 40) == RGB565(249, 234, 205), "the tunnel paler: half the background");
+    Check(Row(ia, 40, 54, 74, casing) == 0, "the tunnel without a casing");
+    Check(VTileRender(b, pmt, np, &ib) && SameImage(ia, ib), "Protomaps' bridge and tunnel as OpenMapTiles'");
+    ImageFree(&ib);
+    g_cfg.night = 1;   // (no casings at night: the bridge's own, of the background)
+    Check(VTileRender(n, omt, no, &ib) && Row(ib, 128, 118, 138, RGB565(17, 19, 23)) >= 2,
+          "night: the bridge parted from the road it crosses");
+    Check(Column(ib, 64, 118, 138, RGB565(17, 19, 23)) == 0, "night: no casing of the ground road over the tunnel");
+    g_cfg.night = 0;
+    ImageFree(&ia);
+    ImageFree(&ib);
+}
+
 int main()
 {
     VTileInit();
@@ -747,6 +816,7 @@ int main()
     PlacesByZoom(pmCountry, npc, 3, "Protomaps");
     Twins();
     Deep();
+    Levels();
     RECT whole = { 0, 0, 800, 480 };
     // the Russian name when the tile has one (name:ru), else the local one: a frame named so equals one whose tile
     // holds that text as its plain name
