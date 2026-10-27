@@ -17,6 +17,7 @@ import make_region   # noqa: E402
 import make_search   # noqa: E402
 import make_tiles    # noqa: E402
 import pmextract     # noqa: E402
+import release_regions   # noqa: E402
 
 TINY = os.path.join(HERE, 'tiny.osm')
 
@@ -185,6 +186,24 @@ class Tools(unittest.TestCase):
         with self.assertRaises(SystemExit):
             make_region.update(['nowhere'], known)
 
+    def test_region_of_two_extracts(self):
+        """A region made of two extracts (Moscow inside its oblast's hole): one graph and index of both; what both
+        extracts have (the border's objects) once."""
+        east = os.path.join(self.tmp, 'east.osm')
+        with open(east, 'w', encoding='utf-8') as f:     # node 1: tiny's own (the shared border), a road to the east
+            f.write('<?xml version="1.0" encoding="UTF-8"?><osm version="0.6">'
+                    '<node id="1" lat="53.000" lon="50.000" version="1"/>'
+                    '<node id="901" lat="53.000" lon="50.100" version="1"/>'
+                    '<way id="901" version="1"><nd ref="1"/><nd ref="901"/><tag k="highway" v="primary"/></way></osm>')
+        urls = [pathlib.Path(TINY).as_uri(), pathlib.Path(east).as_uri()]
+        folder = make_region.build('two', urls, self.tmp, os.path.join(self.tmp, 'data'))
+        lon0, _, lon1, _ = release_regions.graph_bbox(os.path.join(folder, 'route.grf'))
+        self.assertTrue(lon0 < 50.001 and lon1 > 50.099, (lon0, lon1))     # both extracts' roads
+        info = release_regions.region_info(os.path.join(folder, 'region.txt'))
+        self.assertEqual(info['source'], ' '.join(urls))
+        self.assertEqual(make_region.source_file('w', 'n', 'http://h/st.petersburg-latest.osm.pbf'),   # (its suffix only)
+                         os.path.join('w', 'n.osm.pbf'))
+
     def test_region_tiles_with_planetiler(self):
         work, data = os.path.join(self.tmp, 'work'), os.path.join(self.tmp, 'data')
         os.makedirs(os.path.join(work, 'data', 'sources'))
@@ -211,12 +230,19 @@ class Tools(unittest.TestCase):
         self.assertEqual(make_region.region_links(page, 'B/'), {'samara_oblast': 'B/samara_oblast-latest.osm.pbf'})
         pages = {make_region.BASE: top, make_region.BASE + 'volga_federal_district/': page,
                  make_region.BASE + 'ural_federal_district/': ''}
-        self.assertEqual(sorted(make_region.regions(get=pages.get)), sorted(['samara_oblast'] + list(make_region.APART)))
+        self.assertEqual(sorted(make_region.regions(get=pages.get)), ['crimea', 'donetsk', 'luhansk', 'samara_oblast'])
         pages[make_region.BASE + 'ural_federal_district/'] = '<a href="crimea_republic-latest.osm.pbf">c</a>'
         got = make_region.regions(get=pages.get)            # the disputed lands apart, by neutral names, whole
-        self.assertEqual(sorted(got), ['crimea', 'donetsk', 'luhansk', 'samara_oblast', 'sevastopol'])
+        self.assertEqual(sorted(got), ['crimea', 'donetsk', 'luhansk', 'samara_oblast'])
         self.assertEqual(got['donetsk'], make_region.APART['donetsk'])
-        self.assertTrue(got['crimea'].endswith('/crimea-latest.osm.pbf'), got['crimea'])
+        self.assertEqual([u.rsplit('/', 1)[1] for u in got['crimea']],      # Sevastopol in Crimea, one region
+                         ['crimea-latest.osm.pbf', 'sevastopol-latest.osm.pbf'])
+        pages[make_region.BASE + 'ural_federal_district/'] = ('<a href="moscow-latest.osm.pbf">m</a>'
+                                                              '<a href="moscow_oblast-latest.osm.pbf">o</a>')
+        got = make_region.regions(get=pages.get)            # Moscow: inside its oblast (the oblast's extract: holes)
+        self.assertNotIn('moscow', got)
+        self.assertEqual(got['moscow_oblast'], [make_region.BASE + 'ural_federal_district/moscow_oblast-latest.osm.pbf',
+                                                make_region.BASE + 'ural_federal_district/moscow-latest.osm.pbf'])
 
 
 if __name__ == '__main__':

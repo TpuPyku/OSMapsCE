@@ -20,6 +20,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+import osmium
+
 import make_graph
 import make_search
 import make_tiles
@@ -30,9 +32,13 @@ DATA = os.path.join(HERE, '..', 'OSMapsData')
 BASE = 'http://download.openstreetmap.fr/extracts/russia/'
 # The disputed lands (the user 2026-10-27: apart, so no one is offended): neutral names, openstreetmap.fr's whole
 # extracts (russia/'s crimea_republic, sevastopol are nearly empty, 258 KB and 94 KB; no Donetsk, Luhansk there).
-APART = {name: 'http://download.openstreetmap.fr/extracts/europe/ukraine/%s-latest.osm.pbf' % f
-         for name, f in (('crimea', 'crimea'), ('sevastopol', 'sevastopol'), ('donetsk', 'donetsk_oblast'),
-                         ('luhansk', 'luhansk_oblast'))}
+# Sevastopol in Crimea: one region, as a city in its oblast (INSIDE).
+UKRAINE = 'http://download.openstreetmap.fr/extracts/europe/ukraine/%s-latest.osm.pbf'
+APART = {'crimea': [UKRAINE % 'crimea', UKRAINE % 'sevastopol'], 'donetsk': UKRAINE % 'donetsk_oblast',
+         'luhansk': UKRAINE % 'luhansk_oblast'}
+# A city in its oblast's hole (moscow_oblast's extract has holes where Moscow is; the unit routes within one
+# region): built with the oblast, no region of its own (the user 2026-10-27: the card's room is short)
+INSIDE = {'moscow': 'moscow_oblast'}
 UA = {'User-Agent': 'OSMapsCE-make_region (+https://github.com/TpuPyku/OSMapsCE)'}
 
 
@@ -50,11 +56,16 @@ def region_links(html, base):
 
 
 def regions(get=get):
-    """{name: url} of Russia's regions (the federal districts' folders) and the disputed lands (APART)."""
+    """{name: url or [urls] (a region of several extracts)} of Russia's regions (the federal districts' folders)
+    and the disputed lands (APART)."""
     out = {}
     for d in district_links(get(BASE)):
         out.update(region_links(get(BASE + d + '/'), BASE + d + '/'))
-    out.pop('crimea_republic', None)
+    for gone in ('crimea_republic', 'sevastopol'):
+        out.pop(gone, None)
+    for city, region in INSIDE.items():
+        if city in out:
+            out[region] = [out[region], out.pop(city)]
     out.update(APART)
     return out
 
@@ -113,15 +124,40 @@ def tile_builder(work, run=subprocess.check_call):
     return build_tiles
 
 
+def source_file(work, name, url):
+    # (the extract's own suffix: .osm.pbf, or .osm for a plain XML one - pyosmium reads by it)
+    return os.path.join(work, name + ''.join(pathlib.PurePosixPath(urllib.parse.urlparse(url).path).suffixes[-2:]))
+
+
+def merge(parts, out, new):
+    """One extract of several (what they share, the border's objects, once); made again when a part is new."""
+    if new or not os.path.exists(out):
+        part = out[:-len('.osm.pbf')] + '.part.osm.pbf'
+        reader = osmium.MergeInputReader()
+        for p in parts:
+            reader.add_file(p)
+        with osmium.SimpleWriter(part, overwrite=True) as w:
+            reader.apply(w)
+        os.replace(part, out)
+    return out
+
+
+def extract(name, urls, work):
+    """The region's extract up to date: (its file - the parts merged when several, the parts, a part new)."""
+    parts = [source_file(work, name + ('.%d' % i if i else ''), u) for i, u in enumerate(urls)]
+    new = any([fetch(u, p) for u, p in zip(urls, parts)])   # (a list: every part fetched)
+    pbf = parts[0] if len(parts) == 1 else merge(parts, os.path.join(work, name + '.merged.osm.pbf'), new)
+    return pbf, parts, new
+
+
 def build(name, url, work=WORK, data=DATA, run=subprocess.check_call):
-    """The region's folder up to date: its extract, graph, index, tiles (with planetiler) and region.txt. Returns
-    the folder."""
+    """The region's folder up to date: its extract (or extracts: url a list, merged), graph, index, tiles (with
+    planetiler) and region.txt. Returns the folder."""
     os.makedirs(work, exist_ok=True)
     out = os.path.join(data, name)
     os.makedirs(out, exist_ok=True)
-    # (the extract's own suffix: .osm.pbf, or .osm for a plain XML one - pyosmium reads by it)
-    pbf = os.path.join(work, name + ''.join(pathlib.PurePosixPath(urllib.parse.urlparse(url).path).suffixes[-2:]))
-    new = fetch(url, pbf)
+    urls = [url] if isinstance(url, str) else url
+    pbf, parts, new = extract(name, urls, work)
     steps = [(make_graph.build, 'route.grf'), (make_search.build, 'search.idx')]
     tiles = tile_builder(work, run)
     if tiles:
@@ -131,9 +167,9 @@ def build(name, url, work=WORK, data=DATA, run=subprocess.check_call):
         if new or not os.path.exists(target):
             step(pbf, target + '.part')   # (a half-built file never takes the place of a good one)
             os.replace(target + '.part', target)
-    day = time.strftime('%Y-%m-%d', time.gmtime(os.path.getmtime(pbf)))
+    day = time.strftime('%Y-%m-%d', time.gmtime(min(os.path.getmtime(p) for p in parts)))   # (the oldest part's)
     with open(os.path.join(out, 'region.txt'), 'w', encoding='utf-8') as f:
-        f.write('name=%s\ndate=%s\nsource=%s\n' % (name, day, url))
+        f.write('name=%s\ndate=%s\nsource=%s\n' % (name, day, ' '.join(urls)))
     return out
 
 
