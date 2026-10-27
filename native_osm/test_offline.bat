@@ -1,6 +1,8 @@
 @echo off
-rem Builds and runs test_offline.exe (desktop x86): the offline router (offline.cpp) on ..\OSMapsData's region.
-rem Arguments go to it: "lon,lat;lon,lat" [course] [/v]
+rem The offline router and search tests (desktop x86): builds the test map (..\offline\test\tiny.osm) with the
+rem region tools into obj\test\OSMapsData\tiny, builds test_offline.exe with offline.cpp + offsearch.cpp, runs it.
+rem Exit code: the failed checks.  "test_offline.bat build": only the program (the map kept) - mutator.py's build.
+rem COVER=1: the build for coverage (/Od /Zi) - quality.bat.
 setlocal
 if "%VS8%"=="" set VS8=C:\Program Files (x86)\Microsoft Visual Studio 8
 set VC=%VS8%\VC
@@ -8,9 +10,18 @@ set PATH=%VS8%\Common7\IDE;%VC%\bin;%PATH%
 set CORE=%~dp0..\..\VestaCore
 if not exist "%CORE%\vgps.h" set CORE=%~dp0..\core
 cd /d "%~dp0"
-if not exist obj\test mkdir obj\test
-"%VC%\bin\cl.exe" /nologo /O2 /W3 /MT /TP test_offline.cpp offline.cpp offsearch.cpp /Foobj\test\ /Feobj\test\test_offline.exe ^
-  /DUNICODE /D_UNICODE /DWIN32 /DNDEBUG /D_CRT_SECURE_NO_WARNINGS ^
-  /I"%CORE%" /I"%VC%\include" /I"%VC%\PlatformSDK\Include" /link /LIBPATH:"%VC%\lib" /LIBPATH:"%VC%\PlatformSDK\Lib" kernel32.lib
-if errorlevel 1 exit /b 1
-obj\test\test_offline.exe %*
+set MAP=obj\test\OSMapsData\tiny
+if not exist %MAP% mkdir %MAP%
+if not "%1"=="build" (
+  python ..\offline\make_graph.py ..\offline\test\tiny.osm %MAP%\route.grf >nul || exit /b 1
+  python ..\offline\make_search.py ..\offline\test\tiny.osm %MAP%\search.idx >nul || exit /b 1
+)
+set OPT=/O2
+if "%COVER%"=="1" set OPT=/Od /Zi
+"%VC%\bin\cl.exe" /nologo %OPT% /W3 /MT /TP test_offline.cpp offline.cpp offsearch.cpp /Foobj\test\ /Fdobj\test\ ^
+  /Feobj\test\test_offline.exe /DUNICODE /D_UNICODE /DWIN32 /DNDEBUG /D_CRT_SECURE_NO_WARNINGS ^
+  /I"%CORE%" /I"%VC%\include" /I"%VC%\PlatformSDK\Include" /link /DEBUG /LIBPATH:"%VC%\lib" ^
+  /LIBPATH:"%VC%\PlatformSDK\Lib" kernel32.lib >obj\test\build.log
+if errorlevel 1 type obj\test\build.log & exit /b 1
+if "%1"=="build" exit /b 0
+obj\test\test_offline.exe

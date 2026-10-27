@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The offline tests' map (native_osm/test_offline.cpp): a main street west - east (n1..n4), a side street north
+     from n2 to n5, a one-way street north from n3 to n6, an upper street n5 - n6; a town, a house, a filling
+     station. Steps of 0.002 degrees: ~134 m east, ~222 m north at 53 N. -->
+<osm version="0.6" generator="hand">
+  <node id="1" lat="53.000" lon="50.000" version="1"/>
+  <node id="2" lat="53.000" lon="50.002" version="1"/>
+  <node id="3" lat="53.000" lon="50.004" version="1"/>
+  <node id="4" lat="53.000" lon="50.006" version="1"/>
+  <node id="5" lat="53.002" lon="50.002" version="1"/>
+  <node id="6" lat="53.002" lon="50.004" version="1"/>
+  <node id="100" lat="53.001" lon="50.003" version="1">
+    <tag k="place" v="city"/>
+    <tag k="name" v="Тестовск"/>
+  </node>
+  <node id="101" lat="53.0001" lon="50.0021" version="1">
+    <tag k="addr:street" v="Главная улица"/>
+    <tag k="addr:housenumber" v="5"/>
+  </node>
+  <node id="102" lat="53.0003" lon="50.005" version="1">
+    <tag k="amenity" v="fuel"/>
+    <tag k="name" v="Тест-АЗС"/>
+  </node>
+  <way id="11" version="1">
+    <nd ref="1"/><nd ref="2"/><nd ref="3"/><nd ref="4"/>
+    <tag k="highway" v="primary"/>
+    <tag k="name" v="Главная улица"/>
+  </way>
+  <way id="12" version="1">
+    <nd ref="2"/><nd ref="5"/>
+    <tag k="highway" v="residential"/>
+    <tag k="name" v="Боковая улица"/>
+  </way>
+  <way id="13" version="1">
+    <nd ref="3"/><nd ref="6"/>
+    <tag k="highway" v="residential"/>
+    <tag k="oneway" v="yes"/>
+    <tag k="name" v="Односторонняя улица"/>
+  </way>
+  <way id="14" version="1">
+    <nd ref="5"/><nd ref="6"/>
+    <tag k="highway" v="residential"/>
+    <tag k="name" v="Верхняя улица"/>
+  </way>
+</osm>
