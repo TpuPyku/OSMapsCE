@@ -75,21 +75,27 @@ static bool Load(int lat, int lon)
 
 // ---------------------------------------------------------------- the query
 
+static wchar_t Lower(wchar_t c)   // Latin and Russian lower case, ё -> е
+{
+    if (c == 0x401 || c == 0x451)
+        return 0x435;
+    bool upper = (c >= L'A' && c <= L'Z') || (c >= 0x410 && c <= 0x42F);
+    return upper ? (wchar_t)(c + 32) : c;
+}
+
+static bool IsWordChar(wchar_t c)   // a lower case letter (Latin, Russian) or a digit
+{
+    return (c >= L'a' && c <= L'z') || (c >= L'0' && c <= L'9') || (c >= 0x430 && c <= 0x44F);
+}
+
 // make_search.py's norm(): lower case, ё -> е, letters (Latin, Russian) and digits, the rest one space
 static void Norm(const wchar_t* s, wchar_t* out, int cap)
 {
     int n = 0;
     bool space = true;
     for (; *s && n < cap - 1; s++) {
-        wchar_t c = *s;
-        if (c >= L'A' && c <= L'Z')
-            c += 32;
-        else if (c >= 0x410 && c <= 0x42F)
-            c += 32;
-        else if (c == 0x401 || c == 0x451)
-            c = 0x435;
-        bool keep = (c >= L'a' && c <= L'z') || (c >= L'0' && c <= L'9') || (c >= 0x430 && c <= 0x44F);
-        if (keep) {
+        wchar_t c = Lower(*s);
+        if (IsWordChar(c)) {
             out[n++] = c;
             space = false;
         } else if (!space) {
@@ -115,6 +121,39 @@ struct Query {
     char all[200];        // the name's words joined (exact matches)
 };
 
+static bool IsStop(const wchar_t* t)
+{
+    for (int i = 0; i < (int)(sizeof(kStop) / sizeof(kStop[0])); i++)
+        if (!wcscmp(t, kStop[i]))
+            return true;
+    return false;
+}
+
+static bool HouseStarts(const wchar_t* t, const Query& q, bool last)   // a number after the name, or alone at the end
+{
+    return *t >= L'0' && *t <= L'9' && (q.nt || last);
+}
+
+static void Join(char* to, size_t cap, const char* word)   // the words joined by a space
+{
+    if (to[0])
+        strncat(to, " ", cap - strlen(to) - 1);
+    strncat(to, word, cap - strlen(to) - 1);
+}
+
+static void AddWord(Query* q, const wchar_t* t, bool inHouse)   // a word of the house, else of the name (not a kind)
+{
+    char u[64];
+    WideCharToMultiByte(CP_UTF8, 0, t, -1, u, 64, NULL, NULL);
+    u[63] = 0;
+    if (inHouse)
+        Join(q->house, sizeof(q->house), u);
+    else if (!IsStop(t) && q->nt < kTok) {
+        strcpy(q->tok[q->nt++], u);
+        Join(q->all, sizeof(q->all), u);
+    }
+}
+
 static void ParseQuery(const char* utf8, Query* q)
 {
     wchar_t w[200], n[200];
@@ -128,24 +167,8 @@ static void ParseQuery(const char* utf8, Query* q)
         wchar_t* e = wcschr(t, L' ');
         if (e)
             *e = 0;
-        bool stop = false;
-        for (int i = 0; i < (int)(sizeof(kStop) / sizeof(kStop[0])) && !inHouse; i++)
-            stop |= !wcscmp(t, kStop[i]);
-        if (*t >= L'0' && *t <= L'9' && (q->nt || !e))   // a number after the name (or alone at the end): the house
-            inHouse = true;
-        char u[64];
-        WideCharToMultiByte(CP_UTF8, 0, t, -1, u, 64, NULL, NULL);
-        u[63] = 0;
-        if (inHouse) {
-            if (q->house[0])
-                strncat(q->house, " ", sizeof(q->house) - strlen(q->house) - 1);
-            strncat(q->house, u, sizeof(q->house) - strlen(q->house) - 1);
-        } else if (!stop && q->nt < kTok) {
-            strcpy(q->tok[q->nt++], u);
-            if (q->all[0])
-                strncat(q->all, " ", sizeof(q->all) - strlen(q->all) - 1);
-            strncat(q->all, u, sizeof(q->all) - strlen(q->all) - 1);
-        }
+        inHouse = inHouse || HouseStarts(t, *q, !e);
+        AddWord(q, t, inHouse);
         if (!e)
             break;
         t = e + 1;
