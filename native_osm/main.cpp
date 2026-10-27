@@ -185,18 +185,20 @@ static const int   kSetCacheCount = sizeof(kSetCacheMb) / sizeof(kSetCacheMb[0])
 
 // The settings screen as VestaHome's: a top bar with "back", one panel of rows; a row's stepper (port, speed,
 // cache) applies at once - no "Apply" / "Close". Rows at kSetRow0 + i * kSetRowH.
-enum { S_PORT_PREV, S_PORT_NEXT, S_BAUD_PREV, S_BAUD_NEXT, S_CACHE_PREV, S_CACHE_NEXT,
+enum { S_PORT_PREV, S_PORT_NEXT, S_BAUD_PREV, S_BAUD_NEXT, S_CACHE_PREV, S_CACHE_NEXT, S_MAP_PREV, S_MAP_NEXT,
        S_SCAN, S_EXIT, S_BACK, S_COUNT };
-enum { kSetRow0 = 76, kSetRowH = 64 };
+enum { kSetRow0 = 76, kSetRowH = 56 };
 static const RECT kSetCtl[S_COUNT] = {
-    { 512, 84, 560, 128 }, { 712, 84, 760, 128 },     // the steppers' arrows: rows 0..2
-    { 512, 148, 560, 192 }, { 712, 148, 760, 192 },
-    { 512, 212, 560, 256 }, { 712, 212, 760, 256 },
-    { 616, 280, 760, 324 },                            // find GPS
+    { 512, 80, 560, 124 }, { 712, 80, 760, 124 },     // the steppers' arrows: rows 0..3
+    { 512, 136, 560, 180 }, { 712, 136, 760, 180 },
+    { 512, 192, 560, 236 }, { 712, 192, 760, 236 },
+    { 512, 248, 560, 292 }, { 712, 248, 760, 292 },
+    { 616, 304, 760, 348 },                            // find GPS
     { 600, 416, 784, 468 },                            // exit the program
     { 8, 412, 80, 480 },                               // back: VestaHome's, at the bottom left
 };
-static const wchar_t* kSetCaption[S_COUNT] = { NULL, NULL, NULL, NULL, NULL, NULL, L"ПОИСК", L"ЗАВЕРШИТЬ", NULL };
+static const wchar_t* kSetCaption[S_COUNT] = { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, L"ПОИСК", L"ЗАВЕРШИТЬ",
+                                               NULL };
 
 // ---------------------------------------------------------------- view & tiles
 
@@ -563,9 +565,25 @@ static void ApplySettings()
     ConfigSave();
 }
 
+// The base map: OSM's raster tiles or our vector ones (vtile.cpp); the other kind's tiles leave the memory.
+static void MapStyleSet(int vector)
+{
+    if (g_cfg.vector == vector)
+        return;
+    g_cfg.vector = vector;
+    Log("map: %s", vector ? "vector" : "raster");
+    CacheDropBase();
+    s_missKeys.n = 0;
+    s_noParentKeys.n = 0;
+    ConfigSave();
+    Ensure(REQ_USER);
+}
+
 static void OnSettingsCtl(int id)
 {
     switch (id) {
+    case S_MAP_PREV:
+    case S_MAP_NEXT:   MapStyleSet(!g_cfg.vector); break;
     case S_PORT_PREV:  s_setPort = s_setPort > 1 ? s_setPort - 1 : 9; ApplySettings(); break;
     case S_PORT_NEXT:  s_setPort = s_setPort < 9 ? s_setPort + 1 : 1; ApplySettings(); break;
     case S_BAUD_PREV:  s_setBaud = (s_setBaud + kSetBaudCount - 1) % kSetBaudCount; ApplySettings(); break;
@@ -1498,9 +1516,13 @@ static void DrawAttribution(HDC dc, RECT mr)
 {
     if (s_dockShown)
         mr.bottom = kDockY + s_dockOff;
-    const wchar_t* s = !g_cfg.traffic ? L"© OpenStreetMap contributors"
-                     : g_cfg.trafficSrc == TRF_2GIS ? L"© OpenStreetMap contributors, пробки © 2ГИС"
-                     : L"© OpenStreetMap contributors, пробки © Яндекс";
+    // the vector map: OpenFreeMap's terms - OpenMapTiles' schema and the OSM data credited
+    static const wchar_t* kCredit[2][3] = {
+        { L"© OpenStreetMap contributors", L"© OpenStreetMap contributors, пробки © Яндекс",
+          L"© OpenStreetMap contributors, пробки © 2ГИС" },
+        { L"OpenFreeMap © OpenMapTiles © OpenStreetMap", L"OpenFreeMap © OpenMapTiles © OSM, пробки © Яндекс",
+          L"OpenFreeMap © OpenMapTiles © OSM, пробки © 2ГИС" } };
+    const wchar_t* s = kCredit[g_cfg.vector ? 1 : 0][!g_cfg.traffic ? 0 : g_cfg.trafficSrc == TRF_2GIS ? 2 : 1];
     SelectObject(dc, s_fontTiny);
     RECT rc = { 0, 0, 0, 0 };
     DrawText(dc, s, -1, &rc, DT_SINGLELINE | DT_NOPREFIX | DT_CALCRECT);
@@ -2135,7 +2157,6 @@ static void DrawSettings(HDC dc)
     Tile(dc, panel, kPanel, kPanel, 32);
 
     // the receiver's state, under "GPS port"
-    COLORREF c = kText;
     if (!s_gpsRunning)
         wcscpy(s, L"GPS выключен (gps=0)");
     else if (s_gps.status == GPS_OPEN)
@@ -2170,25 +2191,15 @@ static void DrawSettings(HDC dc)
         _snwprintf(s, 128, L"%d МБ", mb);
     Stepper(dc, S_CACHE_PREV, S_CACHE_NEXT, s);
 
-    SetRow(dc, kSetRow0 + 3 * kSetRowH, L"Найти GPS", L"перебрать COM1…COM9 и скорости", false);
+    SetRow(dc, kSetRow0 + 3 * kSetRowH, L"Карта", g_cfg.vector ? L"векторная, OpenFreeMap" : L"растровая, тайлы OSM",
+           true);
+    Stepper(dc, S_MAP_PREV, S_MAP_NEXT, g_cfg.vector ? L"Вектор" : L"Растр");
+
+    SetRow(dc, kSetRow0 + 4 * kSetRowH, L"Найти GPS", L"перебрать COM1…COM9 и скорости", false);
     DrawCtl(dc, kSetCtl[S_SCAN], s_setPressed == S_SCAN, s_fontLabel, kSetCaption[S_SCAN]);
     DrawCtl(dc, kSetCtl[S_EXIT], s_setPressed == S_EXIT, s_fontLabel, kSetCaption[S_EXIT]);
 
-    // live state of the receiver
-    if (!s_gpsRunning) {
-        wcscpy(s, L"GPS выключен (gps=0): включится любым шагом порта или скорости");
-        c = kTextDim;
-    } else {
-        switch (s_gps.status) {
-        case GPS_OPEN:     _snwprintf(s, 128, L"Порт %s %lu открыт", s_gps.port, s_gps.baud); break;
-        case GPS_BUSY:     _snwprintf(s, 128, L"Порт %s занят другой программой", s_gps.port); c = kTextErr; break;
-        case GPS_SCANNING: _snwprintf(s, 128, L"Поиск: %s %lu ...", s_gps.port, s_gps.baud); break;
-        default:           _snwprintf(s, 128, L"Порт %s не открывается", s_gps.port); c = kTextErr; break;
-        }
-    }
-    s[127] = 0;
-    Text(dc, s_fontSmall, c, 36, 330, 580, 348, DT_LEFT, s);
-
+    // live state of the receiver (the port's own state: under "Порт GPS")
     _snwprintf(s, 128, L"NMEA: %d строк, с ошибкой %d", s_gps.lines, s_gps.badLines);
     Text(dc, s_fontSmall, s_gps.lines ? kText : kTextDim, 36, 348, 580, 366, DT_LEFT, s);
 
@@ -3232,6 +3243,11 @@ static void FontsLoad()
     Log("ui: fonts %S", s_face);
 }
 
+const wchar_t* MapFace()
+{
+    return s_face;
+}
+
 static HFONT MakeFont(int height, int weight)
 {
     LOGFONT lf;
@@ -3306,6 +3322,7 @@ static void OnCreate(HWND hwnd)
     LoadImages();
     s_ringBits = ImageCreate(kRingPx, kRingPx, &s_ring);
     CacheInit();
+    VTileInit();
 
 #ifdef UNDER_CE
     s_taskbar = FindWindow(L"HHTaskBar", NULL);

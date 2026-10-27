@@ -35,6 +35,7 @@ struct Config {
     int     trafficSrc;     // TRF_*
     int     follow;         // GPS mode: 0 off, 1 north-up, 2 heading-up
     int     night;          // dark map: lightness inverted, dimmed
+    int     vector;         // the base map: 0 OSM raster tiles, 1 vector tiles (OpenFreeMap, vtile.cpp)
     int     trafficTtlMin;  // traffic image is considered fresh this long
     int     yandexLimit;    // requests per day per traffic provider
     int     twogisLimit;
@@ -185,6 +186,14 @@ bool RouteDest(double* lon, double* lat);
 DWORD RouteSig();                   // changes when what is drawn of the route changes
 bool OnApiResult(ApiResult* r);     // frees it; true = redraw
 
+// vtile.cpp - vector tiles drawn into TILE x TILE images; their .pbf on disk as Cache\<VEC_ZBASE + z>\...
+#define VEC_ZBASE 100
+#define VEC_MAXZ  14        // OpenFreeMap's deepest: z15 and up are parts of the z14 tile drawn larger
+void       VTileInit();     // before the download thread starts
+MapRequest VTileData(const MapRequest& r);   // the data tile (VEC_ZBASE + z) a shown tile is drawn from
+bool       VTileRender(const MapRequest& r, const unsigned char* data, int len, Image* out);   // data NULL: parsed already
+const wchar_t* MapFace();   // main.cpp: the text's face (Golos Text, else Tahoma)
+
 // cache.cpp - decoded images in memory + OSM tiles on disk in <exe>\Cache
 struct CacheEntry {
     MapRequest     req;
@@ -206,6 +215,7 @@ CacheEntry* CacheAdd(MapResult* res, DWORD fetchTick);   // takes the images fro
 int         CacheList(CacheEntry** out, int max);
 int         CacheBytes();                 // decoded images in memory now, for the log
 bool        SameKey(const MapRequest& a, const MapRequest& b);
+void        CacheDropBase();              // the base map's tiles out of memory (raster <-> vector)
 
 // GPS: VestaCore (core/vgps.h) - the port shared with VestaHome through shared memory
 #include "vgps.h"

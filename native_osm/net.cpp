@@ -172,8 +172,78 @@ static int TrafficTimestamp(const char* code)
     return err;
 }
 
+// ---------------------------------------------------------------- vector tiles (OpenFreeMap)
+// The tiles' path names the data's version: read from its TileJSON once a run ("tiles": [".../planet/<ver>/{z}/{x}/{y}.pbf"]).
+static char s_vecPath[96];   // "/planet/<ver>", "" = not read yet
+
+static int VecVersion()
+{
+    if (s_vecPath[0])
+        return NET_OK;
+    unsigned char* body = NULL;
+    int len = 0, status = 0;
+    int err = HttpGet("tiles.openfreemap.org", true, "/planet", &body, &len, &status);
+    if (err == NET_OK && status != 200)
+        err = NET_HTTP;
+    if (err == NET_OK) {
+        const char* t = strstr((const char*)body, "\"tiles\"");
+        const char* p = t ? strstr(t, "/planet/") : NULL;
+        const char* e = p ? strstr(p, "/{z}") : NULL;
+        if (e && e - p < (int)sizeof(s_vecPath)) {
+            memcpy(s_vecPath, p, e - p);
+            s_vecPath[e - p] = 0;
+            Log("net: vector tiles %s", s_vecPath);
+        } else
+            err = NET_DECODE;
+    }
+    free(body);
+    return err;
+}
+
+// A shown tile from its data tile: the disk's .pbf, else downloaded (and kept) - then drawn.
+static void FetchVector(const MapRequest& r, MapResult* res)
+{
+    MapRequest d = VTileData(r);
+    wchar_t file[MAX_PATH];
+    CachePath(file, d);
+    unsigned char* body = NULL;
+    int len = 0;
+    if (ReadWholeFile(file, &body, &len)) {
+        if (!VTileRender(r, body, len, &res->img))
+            res->err = NET_DECODE;
+        free(body);
+        return;
+    }
+    DWORD t0 = GetTickCount();
+    res->err = VecVersion();
+    if (res->err != NET_OK)
+        return;
+    char path[160];
+    _snprintf(path, sizeof(path), "%s/%d/%d/%d.pbf", s_vecPath, d.z - VEC_ZBASE, d.x, d.y);
+    path[sizeof(path) - 1] = 0;
+    res->err = HttpGet("tiles.openfreemap.org", true, path, &body, &len, &res->httpStatus);
+    if (res->err == NET_OK && res->httpStatus != 200) {
+        Log("net: HTTP %d: %.200s", res->httpStatus, body);
+        res->err = NET_HTTP;
+        if (res->httpStatus == 404)
+            s_vecPath[0] = 0;   // a new version: the old one's tiles are gone - read it again
+    }
+    if (res->err == NET_OK) {
+        res->bytes = len;
+        SaveToCache(d, body, len, "");
+        if (!VTileRender(r, body, len, &res->img))
+            res->err = NET_DECODE;
+    }
+    free(body);
+    Log("net: vector %s -> %d (%d bytes, %lu ms)", path, res->err, res->bytes, GetTickCount() - t0);
+}
+
 static void Fetch(const MapRequest& r, MapResult* res)
 {
+    if (r.src == SRC_OSM && g_cfg.vector) {
+        FetchVector(r, res);
+        return;
+    }
     const char* host;
     bool https;
     char path[256];

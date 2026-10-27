@@ -242,15 +242,38 @@ CacheEntry* CacheFind(const MapRequest& r, bool loadFromDisk)
     if (!loadFromDisk || r.src != SRC_OSM)
         return NULL;
     wchar_t path[MAX_PATH];
-    CachePath(path, r);
     MapResult res;
     memset(&res, 0, sizeof(res));
     res.req = r;
+    if (g_cfg.vector) {   // the data tile's .pbf, drawn now (never expires: OpenFreeMap's data is versioned)
+        CachePath(path, VTileData(r));
+        unsigned char* data;
+        int len;
+        if (!ReadWholeFile(path, &data, &len))
+            return NULL;
+        bool ok = VTileRender(r, data, len, &res.img);
+        free(data);
+        return ok ? CacheAdd(&res, 0) : NULL;
+    }
+    CachePath(path, r);
     if (!ImageFromFile(path, &res.img))
         return NULL;
     CacheEntry* e = CacheAdd(&res, 0);
     e->fileDay = FileDay(path);
     return e;
+}
+
+void CacheDropBase()
+{
+    for (int i = 0; i < s_count;) {
+        if (s_mem[i].req.src != SRC_OSM) {
+            i++;
+            continue;
+        }
+        FreeEntry(&s_mem[i]);
+        s_mem[i] = s_mem[--s_count];
+        memset(&s_mem[s_count], 0, sizeof(s_mem[s_count]));
+    }
 }
 
 int CacheBytes()
