@@ -211,10 +211,12 @@ class Tools(unittest.TestCase):
         self.assertEqual(make_region.region_links(page, 'B/'), {'samara_oblast': 'B/samara_oblast-latest.osm.pbf'})
         pages = {make_region.BASE: top, make_region.BASE + 'volga_federal_district/': page,
                  make_region.BASE + 'ural_federal_district/': ''}
-        self.assertEqual(list(make_region.regions(get=pages.get)), ['samara_oblast'])
+        self.assertEqual(sorted(make_region.regions(get=pages.get)), sorted(['samara_oblast'] + list(make_region.APART)))
         pages[make_region.BASE + 'ural_federal_district/'] = '<a href="crimea_republic-latest.osm.pbf">c</a>'
-        self.assertEqual(make_region.regions(get=pages.get)['crimea_republic'],   # (russia/'s copy: nearly empty)
-                         make_region.FULL['crimea_republic'])
+        got = make_region.regions(get=pages.get)            # the disputed lands apart, by neutral names, whole
+        self.assertEqual(sorted(got), ['crimea', 'donetsk', 'luhansk', 'samara_oblast', 'sevastopol'])
+        self.assertEqual(got['donetsk'], make_region.APART['donetsk'])
+        self.assertTrue(got['crimea'].endswith('/crimea-latest.osm.pbf'), got['crimea'])
 
 
 if __name__ == '__main__':
