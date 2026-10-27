@@ -114,6 +114,18 @@ static Pb Sub(Pb& b)   // a length-delimited field
     return s;
 }
 
+// The next field: true = it is the length-delimited field `field` (into s), else it is skipped
+static bool NextField(Pb& b, int field, Pb& s)
+{
+    unsigned int tag = Varint(b);
+    if ((int)(tag >> 3) == field && (tag & 7) == 2) {
+        s = Sub(b);
+        return true;
+    }
+    Skip(b, tag & 7);
+    return false;
+}
+
 static bool StrEq(const Pb& s, const char* t)
 {
     int n = (int)(s.end - s.p);
@@ -135,58 +147,45 @@ template <class T> static bool Push(T*& a, int& n, int& cap, const T& v)
     return true;
 }
 
-// What a feature is drawn as, by its layer, class (NULL: any) and geometry type (1 point, 2 line, 3 area); the first
-// row that matches wins, none: not drawn.
-struct KindRow { const char* layer; const char* cls; unsigned char type, kind; };
+// What a feature is drawn as, by its layer, class (NULL: any) and geometry type (1 point, 2 line, 3 area), and its
+// name's rank (0 the biggest: a city, a main road .. 2); the first row that matches wins, none or kind -1: not drawn.
+struct KindRow { const char* layer; const char* cls; unsigned char type; signed char kind, rank; };
 static const KindRow kKinds[] = {
-    { "water", NULL, 3, K_WATER }, { "building", NULL, 3, K_BUILDING }, { "park", NULL, 3, K_PARK },
-    { "landcover", "wood", 3, K_WOOD }, { "landcover", NULL, 3, K_GRASS },
-    { "landuse", "residential", 3, K_RESID }, { "landuse", "suburb", 3, K_RESID },
-    { "landuse", "neighbourhood", 3, K_RESID },
-    { "landuse", "industrial", 3, K_INDUSTRIAL }, { "landuse", "commercial", 3, K_INDUSTRIAL },
-    { "landuse", "retail", 3, K_INDUSTRIAL }, { "landuse", "railway", 3, K_INDUSTRIAL },
-    { "waterway", NULL, 2, K_WATERWAY },
-    { "transportation", "motorway", 2, K_MAJOR }, { "transportation", "trunk", 2, K_MAJOR },
-    { "transportation", "primary", 2, K_PRIMARY },
-    { "transportation", "secondary", 2, K_SECONDARY }, { "transportation", "tertiary", 2, K_SECONDARY },
-    { "transportation", "minor", 2, K_MINOR }, { "transportation", "service", 2, K_SERVICE },
-    { "transportation", "track", 2, K_PATH }, { "transportation", "path", 2, K_PATH },
-    { "transportation", "rail", 2, K_RAIL }, { "transportation", "transit", 2, K_RAIL },
-    { "place", NULL, 1, K_PLACE }, { "transportation_name", NULL, 2, K_ROADNAME },
-    { "housenumber", NULL, 1, K_HOUSENUM },
-    { "poi", "fuel", 1, K_FUEL }, { "poi", "parking", 1, K_PARKING },   // for the driver: filling stations, car parks
+    { "water", NULL, 3, K_WATER, 2 }, { "building", NULL, 3, K_BUILDING, 2 }, { "park", NULL, 3, K_PARK, 2 },
+    { "landcover", "wood", 3, K_WOOD, 2 }, { "landcover", NULL, 3, K_GRASS, 2 },
+    { "landuse", "residential", 3, K_RESID, 2 }, { "landuse", "suburb", 3, K_RESID, 2 },
+    { "landuse", "neighbourhood", 3, K_RESID, 2 },
+    { "landuse", "industrial", 3, K_INDUSTRIAL, 2 }, { "landuse", "commercial", 3, K_INDUSTRIAL, 2 },
+    { "landuse", "retail", 3, K_INDUSTRIAL, 2 }, { "landuse", "railway", 3, K_INDUSTRIAL, 2 },
+    { "waterway", NULL, 2, K_WATERWAY, 2 },
+    { "transportation", "motorway", 2, K_MAJOR, 2 }, { "transportation", "trunk", 2, K_MAJOR, 2 },
+    { "transportation", "primary", 2, K_PRIMARY, 2 },
+    { "transportation", "secondary", 2, K_SECONDARY, 2 }, { "transportation", "tertiary", 2, K_SECONDARY, 2 },
+    { "transportation", "minor", 2, K_MINOR, 2 }, { "transportation", "service", 2, K_SERVICE, 2 },
+    { "transportation", "track", 2, K_PATH, 2 }, { "transportation", "path", 2, K_PATH, 2 },
+    { "transportation", "rail", 2, K_RAIL, 2 }, { "transportation", "transit", 2, K_RAIL, 2 },
+    { "place", "city", 1, K_PLACE, 0 }, { "place", "town", 1, K_PLACE, 0 },
+    { "place", "suburb", 1, K_PLACE, 1 }, { "place", "village", 1, K_PLACE, 1 }, { "place", "quarter", 1, K_PLACE, 1 },
+    { "place", NULL, 1, K_PLACE, 2 },
+    { "transportation_name", "motorway", 2, K_ROADNAME, 0 }, { "transportation_name", "trunk", 2, K_ROADNAME, 0 },
+    { "transportation_name", "primary", 2, K_ROADNAME, 0 },
+    { "transportation_name", "secondary", 2, K_ROADNAME, 1 }, { "transportation_name", "tertiary", 2, K_ROADNAME, 1 },
+    { "transportation_name", "minor", 2, K_ROADNAME, 2 },
+    { "transportation_name", NULL, 2, -1, 2 },   // (service roads, paths: no names)
+    { "housenumber", NULL, 1, K_HOUSENUM, 2 },
+    { "poi", "fuel", 1, K_FUEL, 0 }, { "poi", "parking", 1, K_PARKING, 1 },   // for the driver: filling stations, car parks
 };
 
-static int Kind(const Pb& layer, const Pb& cls, int geomType)
+static int Kind(const Pb& layer, const Pb& cls, int geomType, int& rank)
 {
     for (int i = 0; i < (int)(sizeof(kKinds) / sizeof(kKinds[0])); i++) {
         const KindRow& k = kKinds[i];
-        if (k.type == geomType && StrEq(layer, k.layer) && (!k.cls || StrEq(cls, k.cls)))
+        if (k.type == geomType && StrEq(layer, k.layer) && (!k.cls || StrEq(cls, k.cls))) {
+            rank = k.rank;
             return k.kind;
+        }
     }
     return -1;
-}
-
-// The names' rank by kind and class (NULL: any; first match wins, none: 2); -1: a street not named (service roads,
-// paths).
-struct RankRow { unsigned char kind; const char* cls; signed char rank; };
-static const RankRow kRanks[] = {
-    { K_PLACE, "city", 0 }, { K_PLACE, "town", 0 },
-    { K_PLACE, "suburb", 1 }, { K_PLACE, "village", 1 }, { K_PLACE, "quarter", 1 },
-    { K_FUEL, NULL, 0 }, { K_PARKING, NULL, 1 },
-    { K_ROADNAME, "motorway", 0 }, { K_ROADNAME, "trunk", 0 }, { K_ROADNAME, "primary", 0 },
-    { K_ROADNAME, "secondary", 1 }, { K_ROADNAME, "tertiary", 1 }, { K_ROADNAME, "minor", 2 },
-    { K_ROADNAME, NULL, -1 },
-};
-
-static int Rank(int kind, const Pb& cls)
-{
-    for (int i = 0; i < (int)(sizeof(kRanks) / sizeof(kRanks[0])); i++) {
-        const RankRow& r = kRanks[i];
-        if (r.kind == kind && (!r.cls || StrEq(cls, r.cls)))
-            return r.rank;
-    }
-    return 2;
 }
 
 // A layer's name and the indexes of its "class" and name keys; its values in s_vals (only strings matter here)
@@ -201,15 +200,23 @@ static void Keep(Pb* a, int& n, int cap, const Pb& v)
 
 static Pb StringValue(Pb v)
 {
-    Pb sv = { 0, 0 };
-    while (v.p < v.end) {
-        unsigned int vt = Varint(v);
-        if ((vt >> 3) == 1 && (vt & 7) == 2)
-            sv = Sub(v);
-        else
-            Skip(v, vt & 7);
-    }
+    Pb sv = { 0, 0 }, s;
+    while (v.p < v.end)
+        if (NextField(v, 1, s))
+            sv = s;
     return sv;
+}
+
+static void KeyIndexes(LayerHead& h, int nk)   // of the keys "class" and the name (a house number's own)
+{
+    const char* nameKey = StrEq(h.name, "housenumber") ? "housenumber" : "name";
+    h.kClass = h.kName = -1;
+    for (int i = 0; i < nk; i++) {
+        if (StrEq(s_keys[i], "class"))
+            h.kClass = i;
+        else if (StrEq(s_keys[i], nameKey))
+            h.kName = i;
+    }
 }
 
 static void ReadLayerHead(Pb scan, LayerHead& h)
@@ -233,14 +240,7 @@ static void ReadLayerHead(Pb scan, LayerHead& h)
         else if (field == 4)
             Keep(s_vals, h.nv, 2048, StringValue(s));
     }
-    const char* nameKey = StrEq(h.name, "housenumber") ? "housenumber" : "name";
-    h.kClass = h.kName = -1;
-    for (int i = 0; i < nk; i++) {
-        if (StrEq(s_keys[i], "class"))
-            h.kClass = i;
-        else if (StrEq(s_keys[i], nameKey))
-            h.kName = i;
-    }
+    KeyIndexes(h, nk);
 }
 
 // A feature's fields: its tags, geometry type, geometry
@@ -362,9 +362,8 @@ static bool DecodeFeature(Pb f, const LayerHead& h, VTile& t)
     int type = 0;
     ReadFeature(f, tags, type, geom);
     ReadTags(tags, h, cls, nm);
-    int kind = Kind(h.name, cls, type);
-    int rank = kind < 0 ? -1 : Rank(kind, cls);
-    if (rank < 0)
+    int rank = 2, kind = Kind(h.name, cls, type, rank);
+    if (kind < 0)
         return true;
     Feat ft;
     ft.kind = (unsigned char)kind;
@@ -385,14 +384,11 @@ static bool DecodeLayer(Pb b, VTile& t)
 {
     LayerHead h;
     ReadLayerHead(b, h);
+    Pb f;
     bool ok = true;
-    while (ok && b.p < b.end) {
-        unsigned int tag = Varint(b);
-        if ((tag >> 3) == 2 && (tag & 7) == 2)
-            ok = DecodeFeature(Sub(b), h, t);
-        else
-            Skip(b, tag & 7);
-    }
+    while (ok && b.p < b.end)
+        if (NextField(b, 2, f))
+            ok = DecodeFeature(f, h, t);
     return ok;
 }
 
@@ -514,15 +510,11 @@ static void LabelsFrom(const VTile& t)
 
 static bool DecodeTile(VTile& t, const unsigned char* data, int len)   // false = out of memory
 {
-    Pb b = { data, data + len };
+    Pb b = { data, data + len }, layer;
     bool ok = true;
-    while (ok && b.p < b.end) {
-        unsigned int tag = Varint(b);
-        if ((tag >> 3) == 3 && (tag & 7) == 2)
-            ok = DecodeLayer(Sub(b), t);
-        else
-            Skip(b, tag & 7);
-    }
+    while (ok && b.p < b.end)
+        if (NextField(b, 3, layer))
+            ok = DecodeLayer(layer, t);
     return ok;
 }
 
@@ -697,9 +689,18 @@ static int LineWidth(int width, int z)
     return w < 1 ? 1 : w;
 }
 
-// One part of an area as edges: its ring, closed
-static void AddRing(int& ne, const VTile& t, const Xf& xf, int p0, int pn)
+// The next feature of kind k from fi whose box is near the drawn tile (margin in px); t.nf: none
+static int NextShown(const VTile& t, const Xf& xf, int k, int margin, int fi)
 {
+    while (fi < t.nf && (t.f[fi].kind != k || !BoxVisible(xf, t.f[fi], margin)))
+        fi++;
+    return fi;
+}
+
+// One part of an area as edges: its ring, closed
+static void AddRing(int& ne, const VTile& t, const Xf& xf, const Feat& f, int pi)
+{
+    int p0 = t.parts[(f.part0 + pi) * 2], pn = t.parts[(f.part0 + pi) * 2 + 1];
     int fx, fy, px, py;
     Apply(xf, t.pts[p0 * 2], t.pts[p0 * 2 + 1], &fx, &fy);
     px = fx;
@@ -721,13 +722,10 @@ static void FillAreas(const VTile& t, const Xf& xf, int z, const Style* pal, uns
         if (z < MinZoom(k))
             continue;
         unsigned short c = RGB565(pal[k].r, pal[k].g, pal[k].b);
-        for (int fi = 0; fi < t.nf; fi++) {
-            const Feat& f = t.f[fi];
-            if (f.kind != k || !BoxVisible(xf, f, 0))
-                continue;
+        for (int fi = NextShown(t, xf, k, 0, 0); fi < t.nf; fi = NextShown(t, xf, k, 0, fi + 1)) {
             int ne = 0;
-            for (int pi = 0; pi < f.nparts; pi++)
-                AddRing(ne, t, xf, t.parts[(f.part0 + pi) * 2], t.parts[(f.part0 + pi) * 2 + 1]);
+            for (int pi = 0; pi < t.f[fi].nparts; pi++)
+                AddRing(ne, t, xf, t.f[fi], pi);
             FillEdges(bits, ne, c);
         }
     }
@@ -746,8 +744,9 @@ static bool LineRoom(int pn)   // s_line holds pn points
 }
 
 // One part of a line in whole pixels, points closer than 2 px to the last one left out (but the end)
-static void StrokePart(HDC dc, const VTile& t, const Xf& xf, int p0, int pn)
+static void StrokePart(HDC dc, const VTile& t, const Xf& xf, const Feat& f, int pi)
 {
+    int p0 = t.parts[(f.part0 + pi) * 2], pn = t.parts[(f.part0 + pi) * 2 + 1];
     if (!LineRoom(pn))
         return;
     int m = 0;
@@ -771,13 +770,9 @@ static void StrokeKind(HDC dc, const VTile& t, const Xf& xf, int k, int w, COLOR
 {
     HPEN pen = CreatePen(PS_SOLID, w, color);
     HGDIOBJ op = SelectObject(dc, pen);
-    for (int fi = 0; fi < t.nf; fi++) {
-        const Feat& f = t.f[fi];
-        if (f.kind != k || !BoxVisible(xf, f, w))
-            continue;
-        for (int pi = 0; pi < f.nparts; pi++)
-            StrokePart(dc, t, xf, t.parts[(f.part0 + pi) * 2], t.parts[(f.part0 + pi) * 2 + 1]);
-    }
+    for (int fi = NextShown(t, xf, k, w, 0); fi < t.nf; fi = NextShown(t, xf, k, w, fi + 1))
+        for (int pi = 0; pi < t.f[fi].nparts; pi++)
+            StrokePart(dc, t, xf, t.f[fi], pi);
     SelectObject(dc, op);
     DeleteObject(pen);
 }
@@ -888,19 +883,16 @@ struct LabelView {
 };
 static Placed s_placed[16 + 400];
 
-static bool OnMap(const RECT& mr, const Placed& box)
-{
-    return box.l >= mr.left && box.t >= mr.top && box.r <= mr.right && box.b <= mr.bottom;
-}
-
 static bool Overlap(const Placed& a, const Placed& b)
 {
     return b.l < a.r && b.r > a.l && b.t < a.b && b.b > a.t;
 }
 
+// The box whole on the map and over none of the placed ones
 static bool Free(const LabelView& v, const Placed& box)
 {
-    if (!OnMap(*v.mr, box))
+    const RECT& mr = *v.mr;
+    if (box.l < mr.left || box.t < mr.top || box.r > mr.right || box.b > mr.bottom)
         return false;
     for (int i = 0; i < v.np; i++)
         if (Overlap(s_placed[i], box))
