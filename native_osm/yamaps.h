@@ -194,7 +194,8 @@ bool OnApiResult(ApiResult* r);     // frees it; true = redraw
 void       VTileInit();     // before the download thread starts
 MapRequest VTileData(const MapRequest& r);   // the data tile (VEC_ZBASE + z) a shown tile is drawn from
 bool       VTileRender(const MapRequest& r, const unsigned char* data, int len, Image* out);   // data NULL: parsed already
-void       VLabelsDraw(HDC dc, const RECT& mr, double cx, double cy, double vx, double vy, double angle, int z);
+void       VLabelsDraw(HDC dc, const RECT& mr, double cx, double cy, double vx, double vy, double angle, int z,
+                       const RECT* avoid, int navoid);   // avoid: the controls over the map, no names under them
 const wchar_t* MapFace();   // main.cpp: the text's face (Golos Text, else Tahoma)
 
 // cache.cpp - decoded images in memory + OSM tiles on disk in <exe>\Cache

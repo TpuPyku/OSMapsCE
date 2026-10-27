@@ -2049,6 +2049,8 @@ static void DrawRoute(HDC dc, double cx, double cy, double vx, double vy, double
     }
 }
 
+static bool TripShown();
+
 static void DrawMap(HDC dc)
 {
     RECT mr = { g_cfg.mapX, g_cfg.mapY, g_cfg.mapX + g_cfg.mapW, g_cfg.mapY + g_cfg.mapH };
@@ -2091,8 +2093,34 @@ static void DrawMap(HDC dc)
         Text(dc, s_fontSmall, g_cfg.night ? RGB(160, 160, 160) : RGB(90, 90, 90), mr.left, mr.top, mr.right,
              mr.bottom, DT_CENTER, s_lastErr ? NetErrorText(s_lastErr) : L"Загрузка карты...");
 
-    if (g_cfg.vector && drawn)   // the names over the turned frame, upright (vtile.cpp)
-        VLabelsDraw(dc, mr, cx, cy, vx, vy, angle, g_cfg.z);
+    if (g_cfg.vector && drawn) {   // the names over the turned frame, upright (vtile.cpp); not under the controls
+        RECT avoid[16];   // the top + up to 7 buttons + 6 more
+        int na = 0;
+        SetRect(&avoid[na++], 0, 0, s_cw, kStatusH + 4);   // the top: status chips, the clock
+        for (int b = 0; b < B_COUNT && na < 8; b++)
+            if (ButtonRect(b, &avoid[na]))
+                na++;
+        if (s_dockShown)
+            SetRect(&avoid[na++], 0, kDockY + s_dockOff, s_cw, s_ch);
+        else   // the credit line (DrawAttribution)
+            SetRect(&avoid[na++], mr.right - 320, mr.bottom - 22, mr.right, mr.bottom);
+        RouteInfo ri;
+        RouteGet(&ri);
+        if (ri.state != ROUTE_NONE)   // the turn card (the big one at most)
+            SetRect(&avoid[na++], 0, kStatusH, 350, 260);
+        if (TripShown())
+            SetRect(&avoid[na++], 190, 394, 610, 472);
+        if (s_gps.valid && !s_dockShown)   // the speed
+            SetRect(&avoid[na++], 14, 388, 100, 474);
+        if (s_gps.fixTick) {   // the car
+            double gx, gy;
+            GeoToWorld(s_gps.lon, s_gps.lat, g_cfg.z, &gx, &gy);
+            double ra = angle * M_PI / 180.0, dx = gx - vx, dy = gy - vy;
+            int px = (int)(cx + dx * cos(ra) + dy * sin(ra)), py = (int)(cy - dx * sin(ra) + dy * cos(ra));
+            SetRect(&avoid[na++], px - 34, py - 34, px + 34, py + 34);
+        }
+        VLabelsDraw(dc, mr, cx, cy, vx, vy, angle, g_cfg.z, avoid, na);
+    }
     DrawAttribution(dc, mr);
     DrawRoute(dc, cx, cy, vx, vy, angle);
     DrawGpsMarker(dc, cx, cy, vx, vy, angle);
