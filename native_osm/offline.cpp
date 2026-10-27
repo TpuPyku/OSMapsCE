@@ -897,95 +897,154 @@ bool OfflineRoadAt(int lat, int lon, double maxM, char* name, int cap)
     return true;
 }
 
-// "/routed-car/route/v1/driving/lon,lat;lon,lat...?...&bearings=deg,60;..." -> an OSRM answer, or false (no region
-// holds the points, no road near, no way): then OSRM is asked.
-bool OfflineRoute(const char* path, char** body, int* len)
+// ---------------------------------------------------------------- the request
+
+struct Request {         // OSRM's route request, checked once
+    int    pts[2 * (kMaxVia + 2)];   // the start, the stops, the end: lat, lon pairs (1e-6 degrees)
+    int    n;
+    double course;       // the car's course at the start, degrees; -1 none
+};
+
+// "lon,lat" at p into pt (lat, lon); returns the next point's text (past its ';'); NULL = no comma.
+static const char* ParsePoint(const char* p, int* pt)
+{
+    double lon = atof(p);
+    const char* c = strchr(p, ',');
+    if (!c)
+        return NULL;
+    double lat = atof(c + 1);
+    pt[0] = (int)(lat * 1e6);
+    pt[1] = (int)(lon * 1e6);
+    p = c + 1;
+    while (*p && *p != ';' && *p != '?')
+        p++;
+    return *p == ';' ? p + 1 : p;
+}
+
+static double Course(const char* path)   // "bearings=deg,60;..": the first one; -1 none ("bearings=,;")
+{
+    const char* br = strstr(path, "bearings=");
+    return br && br[9] != ',' && br[9] != ';' ? atof(br + 9) : -1;
+}
+
+// "/routed-car/route/v1/driving/lon,lat;lon,lat...?...&bearings=deg,60;..." into r; false = not a route of 2+ points.
+static bool ParseRequest(const char* path, Request* r)
 {
     const char* p = strstr(path, "/driving/");
     if (!p)
         return false;
     p += 9;
-    int pts[2 * (kMaxVia + 2)], n = 0;
-    while (n < kMaxVia + 2 && *p && *p != '?') {
-        double lon = atof(p);
-        const char* c = strchr(p, ',');
-        if (!c)
+    r->n = 0;
+    while (r->n < kMaxVia + 2 && *p && *p != '?') {
+        p = ParsePoint(p, r->pts + r->n * 2);
+        if (!p)
             return false;
-        double lat = atof(c + 1);
-        pts[n * 2] = (int)(lat * 1e6);
-        pts[n * 2 + 1] = (int)(lon * 1e6);
-        n++;
-        p = c + 1;
-        while (*p && *p != ';' && *p != '?')
-            p++;
-        if (*p == ';')
-            p++;
+        r->n++;
     }
-    if (n < 2)
+    r->course = Course(path);
+    return r->n >= 2;
+}
+
+// ---------------------------------------------------------------- a route
+
+static bool SnapLeg(const Request& r, int leg, Snap* sa, Snap* sb)   // the leg's ends onto roads within 2 km
+{
+    const int* p = r.pts + leg * 2;
+    if (SnapTo(p[0], p[1], sa) && SnapTo(p[2], p[3], sb) && sa->distM <= 2000 && sb->distM <= 2000)
+        return true;
+    Log("offline: no road near point %d", sa->distM > 2000 ? leg : leg + 1);
+    return false;
+}
+
+// The start the way the car goes (within 90 degrees of its course): returns false = only that side; true = no
+// course, either side.
+static bool AnyStart(Snap* s, double course)
+{
+    if (course < 0)
+        return true;
+    int np = EdgePts(s->from, s->e, s_pts, kPtsCap);
+    int k = s->seg < np - 1 ? s->seg : np - 2;
+    double eb = Bearing(s_pts[k * 2], s_pts[k * 2 + 1], s_pts[k * 2 + 2], s_pts[k * 2 + 3]);
+    Snap f;
+    if (fabs(TurnOf(course, eb)) > 90 && Flip(*s, &f))
+        *s = f;
+    return false;
+}
+
+static double LineM(const Line& line, int from)   // the line's metres from its point from on
+{
+    double m = 0;
+    for (int i = from + 1; i < line.n; i++) {
+        double dx = (line.p[i * 2 + 1] - line.p[i * 2 - 1]) * s_kx, dy = (line.p[i * 2] - line.p[i * 2 - 2]) * 0.111195;
+        m += sqrt(dx * dx + dy * dy);
+    }
+    return m;
+}
+
+// One leg: found, its steps written, the line grown, its time and length added; false = no road near, no way.
+static bool RouteLeg(const Request& r, int leg, JBuf& b, Line& line, DWORD* totalDs, double* totalM)
+{
+    Snap sa, sb;
+    if (!SnapLeg(r, leg, &sa, &sb))
         return false;
-    double course = -1;
-    const char* br = strstr(path, "bearings=");
-    if (br && br[9] != ',' && br[9] != ';')
-        course = atof(br + 9);
+    bool any = leg ? true : AnyStart(&sa, r.course);
+    Way w;
+    memset(&w, 0, sizeof(w));
+    if (!Search(sa, sb, any, &w) && (any || !Search(sa, sb, true, &w))) {   // against the course: either side
+        FreeWay(w);
+        return false;
+    }
+    if (leg)
+        JPut(b, ",");
+    JPut(b, "{\"steps\":[");
+    int lineFrom = line.n;
+    Steps(b, line, w);
+    JPut(b, "]}");
+    *totalM += LineM(line, lineFrom);
+    *totalDs += w.timeDs;
+    FreeWay(w);
+    return true;
+}
+
+static bool RouteLegs(const Request& r, JBuf& b, Line& line, DWORD* totalDs, double* totalM)
+{
+    bool ok = true;
+    for (int leg = 0; leg + 1 < r.n && ok; leg++)
+        ok = RouteLeg(r, leg, b, line, totalDs, totalM);
+    return ok;
+}
+
+static void PutGeometry(JBuf& b, const Line& line)   // the line as polyline6
+{
+    int plat = 0, plon = 0;
+    for (int i = 0; i < line.n; i++) {
+        PolyNum(b, line.p[i * 2] - plat);
+        PolyNum(b, line.p[i * 2 + 1] - plon);
+        plat = line.p[i * 2];
+        plon = line.p[i * 2 + 1];
+    }
+}
+
+// "/routed-car/route/v1/driving/lon,lat;lon,lat...?...&bearings=deg,60;..." -> an OSRM answer, or false (no region
+// holds the points, no road near, no way): then OSRM is asked.
+bool OfflineRoute(const char* path, char** body, int* len)
+{
+    Request r;
+    if (!ParseRequest(path, &r))
+        return false;
     DWORD t0 = GetTickCount();
-    if (!Region(pts, n))
+    if (!Region(r.pts, r.n))
         return false;
-    s_kx = 0.111195 * cos(pts[0] / 1e6 * M_PI / 180);
+    s_kx = 0.111195 * cos(r.pts[0] / 1e6 * M_PI / 180);
     JBuf b = { NULL, 0, 0 };
     Line line = { NULL, 0, 0 };
     JPut(b, "{\"code\":\"Ok\",\"routes\":[{\"legs\":[");
     DWORD totalDs = 0;
     double totalM = 0;
-    bool ok = true;
-    for (int leg = 0; leg + 1 < n && ok; leg++) {
-        Snap sa, sb, fa;
-        if (!SnapTo(pts[leg * 2], pts[leg * 2 + 1], &sa) || !SnapTo(pts[leg * 2 + 2], pts[leg * 2 + 3], &sb) ||
-            sa.distM > 2000 || sb.distM > 2000) {
-            Log("offline: no road near point %d", sa.distM > 2000 ? leg : leg + 1);
-            ok = false;
-            break;
-        }
-        // the start: the way the car goes (within 90 degrees of its course), else either side
-        bool any = true;
-        if (leg == 0 && course >= 0) {
-            int np = EdgePts(sa.from, sa.e, s_pts, kPtsCap);
-            int k = sa.seg < np - 1 ? sa.seg : np - 2;
-            double eb = Bearing(s_pts[k * 2], s_pts[k * 2 + 1], s_pts[k * 2 + 2], s_pts[k * 2 + 3]);
-            if (fabs(TurnOf(course, eb)) > 90 && Flip(sa, &fa))
-                sa = fa;
-            any = false;
-        }
-        Way w;
-        memset(&w, 0, sizeof(w));
-        if (!Search(sa, sb, any, &w) && !(any == false && Search(sa, sb, true, &w))) {
-            ok = false;
-            FreeWay(w);
-            break;
-        }
-        if (leg)
-            JPut(b, ",");
-        JPut(b, "{\"steps\":[");
-        int lineFrom = line.n;
-        Steps(b, line, w);
-        JPut(b, "]}");
-        double m = 0;
-        for (int i = lineFrom + 1; i < line.n; i++) {
-            double dx = (line.p[i * 2 + 1] - line.p[i * 2 - 1]) * s_kx, dy = (line.p[i * 2] - line.p[i * 2 - 2]) * 0.111195;
-            m += sqrt(dx * dx + dy * dy);
-        }
-        totalM += m;
-        totalDs += w.timeDs;
-        FreeWay(w);
-    }
+    bool ok = RouteLegs(r, b, line, &totalDs, &totalM);
     if (ok && line.n >= 2) {
         JPutf(b, "],\"duration\":%.1f,\"distance\":%.1f,\"geometry\":\"", totalDs / 10.0, totalM);
-        int plat = 0, plon = 0;
-        for (int i = 0; i < line.n; i++) {
-            PolyNum(b, line.p[i * 2] - plat);
-            PolyNum(b, line.p[i * 2 + 1] - plon);
-            plat = line.p[i * 2];
-            plon = line.p[i * 2 + 1];
-        }
+        PutGeometry(b, line);
         JPut(b, "\"}]}");
     }
     free(line.p);
