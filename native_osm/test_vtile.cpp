@@ -686,9 +686,66 @@ static void Levels()
     ImageFree(&ib);
 }
 
+// The third person's view (the user 2026-10-27): the flat map tilted, the car at its row and size, the far smaller and
+// higher, nothing past the fog (the visibility: a circle around the car)
+static bool Near(double a, double b)
+{
+    return fabs(a - b) < 0.01;
+}
+
+static void TiltChecks()
+{
+    Tilt t, t70;
+    TiltMake(&t, 120, 150, 300, 60);    // the car 120 px below the flat map's centre, on the screen 150; the fog at
+    TiltMake(&t70, 120, 150, 300, 70);  // 300 px; the camera 60 degrees from straight down (70: lower)
+    double sx, sy, fy, k, half, inner, sx2, sy2;
+    Check(TiltPoint(t, 0, 120, &sx, &sy) && Near(sx, 0) && Near(sy, 150), "tilt: the car at its row");
+    Check(TiltPoint(t, 10, 120, &sx, &sy) && Near(sx, 10), "tilt: at the car's row the map's own size");
+    Check(TiltPoint(t, 0, 119, &sx, &sy) && fabs(150 - sy - 1 / tan(60 * M_PI / 180)) < 0.005 &&
+          TiltPoint(t70, 0, 119, &sx2, &sy2) && sy2 > sy, "tilt: at the car the depth shortened by the camera's angle");
+    Check(TiltPoint(t, 10, 20, &sx, &sy) && TiltPoint(t, 10, -60, &sx2, &sy2) && sy2 < sy && sy < 150 &&
+          sx2 < sx && sx < 10, "tilt: the farther the higher on the screen and the smaller");
+    Check(TiltPoint(t, 0, 120 - 299, &sx, &sy) && !TiltPoint(t, 0, 120 - 301, &sx, &sy), "tilt: the fog at 300 px ahead");
+    Check(!TiltPoint(t, 250, -80, &sx, &sy), "tilt: the fog around the car, aside too");
+    Check(TiltPoint(t, 0, 400, &sx, &sy) && sy > 240, "tilt: behind the car below the screen");
+    Check(TiltRow(t, 100, &fy, &k, &half, &inner) && TiltPoint(t, 30 * k, fy, &sx, &sy) && Near(sx, 30) &&
+          Near(sy, 100), "tilt: a screen row back to the flat map");
+    Check(half > inner && inner > 0 && TiltPoint(t, (half - 1) * k, fy, &sx, &sy) &&
+          !TiltPoint(t, (half + 1) * k, fy, &sx, &sy), "tilt: the row's ground up to the fog, its fading part inside");
+    double fogRow = 150 - t.rc * 300 / (300 + t.f);
+    Check(!TiltRow(t, fogRow - 1, &fy, &k, &half, &inner) && TiltRow(t, fogRow + 1, &fy, &k, &half, &inner),
+          "tilt: above the fog's row only fog");
+    double x0 = 0, y0 = 120, x1 = 0, y1 = -580;
+    Check(TiltClip(t, &x0, &y0, &x1, &y1) && Near(y0, 120) && Near(y1, 120 - 300), "tilt: a line cut at the fog");
+    x0 = 400, y0 = 120, x1 = 400, y1 = -580;
+    Check(!TiltClip(t, &x0, &y0, &x1, &y1), "tilt: a line all in the fog: none of it");
+    x0 = 0, y0 = 100, x1 = 10, y1 = 90;
+    Check(TiltClip(t, &x0, &y0, &x1, &y1) && Near(x0, 0) && Near(y1, 90), "tilt: a line all seen: whole");
+    x0 = -400, y0 = 20, x1 = 400, y1 = 20;   // 100 px ahead, across: the circle's chord +-sqrt(300^2 - 100^2)
+    Check(TiltClip(t, &x0, &y0, &x1, &y1) && Near(x0, -282.843) && Near(x1, 282.843) && Near(y0, 20) && Near(y1, 20),
+          "tilt: a line across cut at both ends");
+    x0 = 100, y0 = 120, x1 = 700, y1 = -480;  // out at s = (-12 + sqrt(2448)) / 144 of it
+    double s = (-12 + sqrt(2448.0)) / 144;
+    Check(TiltClip(t, &x0, &y0, &x1, &y1) && Near(x0, 100) && Near(y0, 120) && Near(x1, 100 + 600 * s) &&
+          Near(y1, 120 - 600 * s), "tilt: a line going out aslant cut where it leaves");
+    x0 = 0, y0 = -300, x1 = 0, y1 = -400;    // on a line through the circle, past it
+    Check(!TiltClip(t, &x0, &y0, &x1, &y1), "tilt: a line beyond the fog on a line through it: none");
+    Check(!TiltPoint(t, 0, 120 - 300, &sx, &sy), "tilt: the fog's very edge not seen");
+    x0 = -200, y0 = 20, x1 = 200, y1 = -230;   // aslant, off the car: out at (95.194, -164.496) - on the circle
+    Check(TiltClip(t, &x0, &y0, &x1, &y1) && Near(x0, -200) && Near(y0, 20) && Near(x1, 95.194) && Near(y1, -164.496),
+          "tilt: a line aslant off the car cut where it leaves");
+    x0 = 0, y0 = 100, x1 = 1, y1 = 100;
+    Check(TiltClip(t, &x0, &y0, &x1, &y1) && Near(x1, 1), "tilt: a line of 1 px kept");
+    x0 = 0, y0 = 120, x1 = 0, y1 = -80;        // its line leaves the circle at 1.5 of it
+    Check(TiltClip(t, &x0, &y0, &x1, &y1) && Near(y1, -80), "tilt: a line ending inside kept to its end");
+    double v = 299.999, rowEdge = t.cs - t.rc + t.rc * t.f / (v + t.f);   // the ground there: less than a pixel wide
+    Check(TiltRow(t, rowEdge, &fy, &k, &half, &inner) && half < 1, "tilt: the fog's edge row still has its ground");
+}
+
 int main()
 {
     VTileInit();
+    TiltChecks();
     unsigned char data[4096];
     int len = MakeTile(data);
     const unsigned short water = RGB565(168, 204, 226), road = RGB565(255, 228, 176), land = RGB565(243, 240, 235);

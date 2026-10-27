@@ -225,6 +225,16 @@ void       VLabelsDraw(HDC dc, const RECT& mr, double cx, double cy, double vx, 
                        const RECT* avoid, int navoid);   // avoid: the controls over the map, no names under them
 const wchar_t* MapFace();   // main.cpp: the text's face (Golos Text, else Tahoma)
 
+// tilt.cpp: the third person's view - the flat map (offsets from the map's centre, px, y down) tilted, the car at
+// (0, cf) to the screen's (0, cs) keeping its size, nothing past the fog (a circle of radius fog around the car)
+struct Tilt { double cf, cs, rc, f, fog; };
+extern const Tilt* g_tilt;   // the view's tilt while it is on (VLabelsDraw), else NULL
+void TiltMake(Tilt* t, double carFlat, double carScreen, double fogPx, double pitchDeg);   // pitch: from straight down
+bool TiltPoint(const Tilt& t, double fx, double fy, double* sx, double* sy);   // false: in the fog
+bool TiltRow(const Tilt& t, double sy, double* fy, double* k, double* half, double* inner);   // a screen row: the flat
+                                // row fy, its x = sx * k; the ground up to |sx| < half, fading from inner; false: fog
+bool TiltClip(const Tilt& t, double* x0, double* y0, double* x1, double* y1);   // a flat line cut to the seen part
+
 // cache.cpp - decoded images in memory + OSM tiles on disk in <exe>\Cache
 struct CacheEntry {
     MapRequest     req;

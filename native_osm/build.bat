@@ -8,7 +8,7 @@ if "%VS8%"=="" set VS8=C:\Program Files (x86)\Microsoft Visual Studio 8
 set VC=%VS8%\VC
 set SDK=%VS8%\SmartDevices\SDK\PocketPC2003
 set PATH=%VS8%\Common7\IDE;%VC%\bin;%PATH%
-set SRC=main.cpp net.cpp http.cpp cache.cpp image.cpp util.cpp route.cpp vtile.cpp offline.cpp offsearch.cpp offdata.cpp vpack.cpp
+set SRC=main.cpp net.cpp http.cpp cache.cpp image.cpp util.cpp route.cpp vtile.cpp tilt.cpp offline.cpp offsearch.cpp offdata.cpp vpack.cpp
 set OUT=..\OSMapsCE
 set BR=%~dp0..\third_party\bearssl-0.6
 set COMPAT=%~dp0..\third_party\compat
