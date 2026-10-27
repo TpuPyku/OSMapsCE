@@ -1,17 +1,17 @@
 #include "yamaps.h"
 
 // The third person's view (the user 2026-10-27): a camera behind and over the car looking ahead, its angle from
-// straight down by the zoom (z16 less, z17 more, ~70 degrees). A flat point v px ahead of the car (v < 0: behind) goes
-// to the screen row r = rc * f / (v + f) below the horizon (the car's row: rc), sideways scaled by r / rc - so the car
-// keeps its size, the far is higher and smaller; at the car the depth is shortened by rc / f = cot(pitch). The
-// visibility: the fog, a circle of radius fog around the car ("the fog of war": the map's ring of tiles in memory is
-// enough, nothing more is downloaded); f = 1.25 fog keeps v + f > 0 inside it. A screen row is one flat row, its x a
-// scale of the screen's - the turned frame (main.cpp RotateRing) stays a walk along a line per row, in integers.
+// straight down by the zoom (z16 less, z17 more). A flat point v px ahead of the car (v < 0: behind) goes to the
+// screen row r = rc * f / (v + f) below the horizon (the car's row: rc), sideways scaled by r / rc - so the car keeps
+// its size, the far is higher and smaller; at the car the depth is shortened by rc / f = cot(pitch). The visibility:
+// a fog by the depth (a straight horizon - the user's choice), fog px ahead and behind, fading in from 0.8 of it;
+// f = 1.25 fog keeps v + f > 0 within it. A screen row is one flat row, its x a scale of the screen's - the turned
+// frame (main.cpp) stays a walk along a line per row, in integers.
 
 const Tilt* g_tilt;
 
 static const double kDepth = 1.25;   // f / fog
-static const double kFade = 0.8;     // the fog starts fading in at this part of its radius
+static const double kFade = 0.8;     // the fog starts fading in at this part of its depth
 
 void TiltMake(Tilt* t, double carFlat, double carScreen, double fogPx, double pitchDeg)
 {
@@ -25,7 +25,7 @@ void TiltMake(Tilt* t, double carFlat, double carScreen, double fogPx, double pi
 bool TiltPoint(const Tilt& t, double fx, double fy, double* sx, double* sy)
 {
     double v = t.cf - fy;
-    if (fx * fx + v * v >= t.fog * t.fog)
+    if (fabs(v) >= t.fog)
         return false;
     double r = t.rc * t.f / (v + t.f);
     *sx = fx * r / t.rc;
@@ -33,40 +33,45 @@ bool TiltPoint(const Tilt& t, double fx, double fy, double* sx, double* sy)
     return true;
 }
 
-static double HalfAt(double radius, double v, double k)   // the circle's half-width at depth v, on the screen
-{
-    return radius > fabs(v) ? sqrt(radius * radius - v * v) / k : 0;
-}
-
-bool TiltRow(const Tilt& t, double sy, double* fy, double* k, double* half, double* inner)
+bool TiltRow(const Tilt& t, double sy, double* fy, double* k, double* fade)
 {
     double r = sy - (t.cs - t.rc);
     if (r <= 0)
         return false;
-    double v = t.f * (t.rc / r - 1);
+    double v = t.f * (t.rc / r - 1), a = (v - kFade * t.fog) / ((1 - kFade) * t.fog);
     *fy = t.cf - v;
     *k = t.rc / r;
-    *half = HalfAt(t.fog, v, *k);
-    *inner = HalfAt(t.fog * kFade, v, *k);
-    return *half > 0;
+    *fade = a < 0 ? 0 : a;
+    return v < t.fog;
+}
+
+// The part s0..s1 of a line where the depth v = v0 + s dv is within the fog's (-fog, fog)
+static bool DepthSpan(double v0, double dv, double fog, double* s0, double* s1)
+{
+    *s0 = 0;
+    *s1 = 1;
+    if (dv == 0)
+        return fabs(v0) < fog;
+    double a = (-fog - v0) / dv, b = (fog - v0) / dv;
+    if (a > b) {
+        double x = a;
+        a = b;
+        b = x;
+    }
+    *s0 = a > 0 ? a : 0;
+    *s1 = b < 1 ? b : 1;
+    return *s0 < *s1;
 }
 
 bool TiltClip(const Tilt& t, double* x0, double* y0, double* x1, double* y1)
 {
-    // the line's points p0 + s (p1 - p0), s in 0..1, inside the circle: a s^2 + b s + c < 0
-    double ax = *x0, ay = *y0 - t.cf, dx = *x1 - *x0, dy = *y1 - *y0;
-    double a = dx * dx + dy * dy, b = 2 * (ax * dx + ay * dy), c = ax * ax + ay * ay - t.fog * t.fog;
-    double disc = b * b - 4 * a * c;
-    if (a == 0 || disc <= 0)
+    double dx = *x1 - *x0, dy = *y1 - *y0, s0, s1;
+    if (!DepthSpan(t.cf - *y0, -dy, t.fog, &s0, &s1))
         return false;
-    double q = sqrt(disc), s0 = (-b - q) / (2 * a), s1 = (-b + q) / (2 * a);
-    s0 = s0 < 0 ? 0 : s0;
-    s1 = s1 > 1 ? 1 : s1;
-    if (s0 >= s1)
-        return false;
+    double ax = *x0, ay = *y0;
     *x0 = ax + s0 * dx;
-    *y0 = ay + s0 * dy + t.cf;
+    *y0 = ay + s0 * dy;
     *x1 = ax + s1 * dx;
-    *y1 = ay + s1 * dy + t.cf;
+    *y1 = ay + s1 * dy;
     return true;
 }
