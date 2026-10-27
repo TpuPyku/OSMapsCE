@@ -1071,7 +1071,7 @@ static const LabelPass kPasses[] = {
     { K_PLACE, 0, 0 }, { K_PLACE, 1, 0 }, { K_PLACE, 2, 0 },   // (each place from its own zoom: PlaceMinZoom)
     { K_FUEL, 0, 14 }, { K_PARKING, 1, 17 },
     { K_ROADNAME, 0, 14 }, { K_ROADNAME, 1, 14 }, { K_ROADNAME, 2, 15 },
-    { K_HOUSENUM, 2, 17 },
+    { K_HOUSENUM, 2, 15 },   // (the user 2026-10-27: from z15)
 };
 
 static HFONT Cached(HFONT& f, int height, int weight, int tenths)   // created when first needed
@@ -1328,7 +1328,7 @@ void VLabelsDraw(HDC dc, const RECT& mr, double cx, double cy, double vx, double
     v.font0 = NULL;
     v.np = 0;
     AddAvoid(v, avoid, navoid);
-    v.cap = v.np + (z >= 17 ? 400 : 160);   // (close up: the house numbers too)
+    v.cap = v.np + (z >= 15 ? 400 : 160);   // (close up: the house numbers too)
     SetBkMode(dc, TRANSPARENT);
     EnterCriticalSection(&s_cs);
     for (int i = 0; i < (int)(sizeof(kPasses) / sizeof(kPasses[0])); i++)

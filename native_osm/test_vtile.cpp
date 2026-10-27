@@ -734,6 +734,10 @@ int main()
     Labels(f, 9000, 5000, 192, 144, 17, 0, mr, NULL, 0);
     Check(Count(f, 390, 231, 411, 251, blue) > 100, "z17: the car park's sign");
     Check(Count(f, 255, 230, 290, 250, RGB565(120, 112, 104)) > 3, "z17: the house number");
+    Labels(f, 9000, 5000, 176, 144, 15, 0, mr, NULL, 0);   // (the user 2026-10-27: from z15, the zoom one finds a house at)
+    Check(Count(f, 380, 230, 420, 250, RGB565(120, 112, 104)) > 3, "z15: the house number");
+    Labels(f, 9000, 5000, 176, 144, 14, 0, mr, NULL, 0);
+    Check(Count(f, 0, 0, 800, 480, RGB565(120, 112, 104)) == 0, "z14: no house numbers");
     Close(f);
     Close(g);
 
