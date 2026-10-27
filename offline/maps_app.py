@@ -131,8 +131,8 @@ class App:
         have = installed(self.drive.get()) if self.drive.get() else {}
         st = states(self.cat, have)
         self.tree.delete(*self.tree.get_children())
-        for r in self.cat['regions']:
-            self.tree.insert('', 'end', iid=r['name'], text=r['name'].replace('_', ' '),
+        for r in sorted(self.cat['regions'], key=lambda r: r.get('title', r['name'])):   # (by the Russian name)
+            self.tree.insert('', 'end', iid=r['name'], text=r.get('title', r['name']),
                              values=('%.1f МБ' % (r['size'] / 1e6), have.get(r['name'], '—'), STATE[st[r['name']]]))
         self.status.set('Областей: %d. Свободно: %s' % (len(self.cat['regions']), self.free()))
 
