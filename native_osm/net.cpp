@@ -209,7 +209,7 @@ static void FetchVector(const MapRequest& r, MapResult* res)
     CachePath(file, d);
     unsigned char* body = NULL;
     int len = 0;
-    if (ReadWholeFile(file, &body, &len)) {
+    if (VPackTile(d, &body, &len) || ReadWholeFile(file, &body, &len)) {   // the region's pack, the cache's copy
         if (!VTileRender(r, body, len, &res->img))
             res->err = NET_DECODE;
         free(body);

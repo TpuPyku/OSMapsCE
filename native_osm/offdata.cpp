@@ -46,6 +46,69 @@ void OffClose(OffFile* f)
     memset(f, 0, sizeof(*f));
 }
 
+// ---------------------------------------------------------------- the regions' folders
+
+static const wchar_t* kDataDirs[] = { L"\\SDMemory\\OSMapsData", L"\\USBDevice\\OSMapsData" };
+
+// The folders the regions' folders may be in; returns their count.
+static int DataDirs(wchar_t dirs[][MAX_PATH])
+{
+    int nd = 0;
+    for (int i = 0; i < 2; i++)
+        wcscpy(dirs[nd++], kDataDirs[i]);
+    PathInDir(dirs[nd++], L"OSMapsData");
+#ifndef UNDER_CE
+    PathInDir(dirs[nd++], L"..\\OSMapsData");   // the PC: the tool's output beside the program's folder
+#endif
+    return nd;
+}
+
+// A found entry of a data folder: a region's folder whose file passes the test (dir = the folder)?
+static bool Holds(const wchar_t* data, const WIN32_FIND_DATA& fd, const wchar_t* file, OffHolds holds, void* ctx,
+                  wchar_t* dir)
+{
+    if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || fd.cFileName[0] == L'.')
+        return false;
+    wchar_t path[MAX_PATH];
+    _snwprintf(path, MAX_PATH, L"%s\\%s\\%s", data, fd.cFileName, file);
+    path[MAX_PATH - 1] = 0;
+    if (!holds(path, ctx))
+        return false;
+    _snwprintf(dir, MAX_PATH, L"%s\\%s", data, fd.cFileName);
+    dir[MAX_PATH - 1] = 0;
+    return true;
+}
+
+static bool RegionIn(const wchar_t* data, const wchar_t* file, OffHolds holds, void* ctx, wchar_t* dir)
+{
+    wchar_t mask[MAX_PATH];
+    _snwprintf(mask, MAX_PATH, L"%s\\*", data);
+    WIN32_FIND_DATA fd;
+    HANDLE ff = FindFirstFile(mask, &fd);
+    if (ff == INVALID_HANDLE_VALUE)
+        return false;
+    bool found = Holds(data, fd, file, holds, ctx, dir);
+    while (!found && FindNextFile(ff, &fd))
+        found = Holds(data, fd, file, holds, ctx, dir);
+    FindClose(ff);
+    return found;
+}
+
+bool OffInside(const int* box, int lat, int lon)
+{
+    return lat >= box[0] && lat <= box[2] && lon >= box[1] && lon <= box[3];
+}
+
+bool OffRegion(const wchar_t* file, OffHolds holds, void* ctx, wchar_t* dir)
+{
+    wchar_t dirs[4][MAX_PATH];
+    int nd = DataDirs(dirs);
+    for (int d = 0; d < nd; d++)
+        if (RegionIn(dirs[d], file, holds, ctx, dir))
+            return true;
+    return false;
+}
+
 // ---------------------------------------------------------------- JSON
 
 void JPut(JBuf& b, const char* s, int n)

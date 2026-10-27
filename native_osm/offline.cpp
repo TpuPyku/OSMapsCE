@@ -44,8 +44,6 @@ static Graph s_g;      // the region loaded (one at a time)
 
 // ---------------------------------------------------------------- the data
 
-static const wchar_t* kDataDirs[] = { L"\\SDMemory\\OSMapsData", L"\\USBDevice\\OSMapsData" };
-
 static void Unload()
 {
     OffClose(&s_g.d);
@@ -86,74 +84,29 @@ static bool Load(const wchar_t* path)
     return true;
 }
 
-static bool Inside(const GHead& h, int lat, int lon)
-{
-    return lat >= h.minLat && lat <= h.maxLat && lon >= h.minLon && lon <= h.maxLon;
-}
-
 static bool HoldsAll(const GHead& h, const int* pts, int n)
 {
     int i = 0;
-    while (i < n && Inside(h, pts[i * 2], pts[i * 2 + 1]))
+    while (i < n && OffInside(&h.minLat, pts[i * 2], pts[i * 2 + 1]))
         i++;
     return i == n;
 }
 
-// The folders the regions' folders may be in; returns their count.
-static int DataDirs(wchar_t dirs[][MAX_PATH])
-{
-    int nd = 0;
-    for (int i = 0; i < 2; i++)
-        wcscpy(dirs[nd++], kDataDirs[i]);
-    PathInDir(dirs[nd++], L"OSMapsData");
-#ifndef UNDER_CE
-    PathInDir(dirs[nd++], L"..\\OSMapsData");   // the PC: the tool's output beside the program's folder
-#endif
-    return nd;
-}
+struct Points { const int* pts; int n; };
 
-// A found entry of a data folder: a region's folder whose graph holds the points (dir = it)?
-static bool Holds(const wchar_t* data, const WIN32_FIND_DATA& fd, const int* pts, int n, wchar_t* dir)
+static bool GraphHolds(const wchar_t* path, void* ctx)   // OffRegion's test: the graph's bounds hold the points
 {
-    if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || fd.cFileName[0] == L'.')
-        return false;
-    wchar_t path[MAX_PATH];
-    _snwprintf(path, MAX_PATH, L"%s\\%s\\route.grf", data, fd.cFileName);
-    path[MAX_PATH - 1] = 0;
+    const Points* p = (const Points*)ctx;
     GHead h;
-    if (!ReadHead(path, &h) || !HoldsAll(h, pts, n))
-        return false;
-    _snwprintf(dir, MAX_PATH, L"%s\\%s", data, fd.cFileName);
-    dir[MAX_PATH - 1] = 0;
-    return true;
-}
-
-// The region in one data folder whose graph holds the points: dir = its folder; false = none there.
-static bool RegionIn(const wchar_t* data, const int* pts, int n, wchar_t* dir)
-{
-    wchar_t mask[MAX_PATH];
-    _snwprintf(mask, MAX_PATH, L"%s\\*", data);
-    WIN32_FIND_DATA fd;
-    HANDLE ff = FindFirstFile(mask, &fd);
-    if (ff == INVALID_HANDLE_VALUE)
-        return false;
-    bool found = Holds(data, fd, pts, n, dir);
-    while (!found && FindNextFile(ff, &fd))
-        found = Holds(data, fd, pts, n, dir);
-    FindClose(ff);
-    return found;
+    return ReadHead(path, &h) && HoldsAll(h, p->pts, p->n);
 }
 
 // The folder of the region whose graph holds all the points (lat, lon pairs, 1e-6 degrees): dir = its folder, with
 // route.grf (the graph), search.idx (offsearch.cpp); false = none.
 bool OfflineDir(const int* pts, int n, wchar_t* dir)
 {
-    wchar_t dirs[4][MAX_PATH];
-    int nd = DataDirs(dirs);
-    for (int d = 0; d < nd; d++)
-        if (RegionIn(dirs[d], pts, n, dir))
-            return true;
-    return false;
+    Points p = { pts, n };
+    return OffRegion(L"route.grf", GraphHolds, &p, dir);
 }
 
 // The region whose graph holds all the points: loaded; false = none.

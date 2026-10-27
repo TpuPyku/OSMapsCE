@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.dirname(HERE))
 import make_graph    # noqa: E402
 import make_region   # noqa: E402
 import make_search   # noqa: E402
+import make_tiles    # noqa: E402
 
 TINY = os.path.join(HERE, 'tiny.osm')
 
@@ -37,6 +38,31 @@ def graph(path):
             name = d[off[4] + nm:d.index(b'\0', off[4] + nm)].decode().split('\t')[0]
             edges.append((nodes[a], nodes[to], dm, ds, name))
     return nodes, edges
+
+
+def pack_tiles(path):
+    """{(z, x, y): data} as the unit reads tiles.vtp: the header, the sorted index, the blobs."""
+    d = read(path)
+    magic, version, count, *_bbox, off_index = struct.unpack_from(make_tiles.HEADER, d, 0)
+    out, keys = {}, []
+    for i in range(count):
+        key, off, length = struct.unpack_from('<III', d, off_index + i * 12)
+        keys.append(key)
+        out[(key >> 28, (key >> 14) & 0x3FFF, key & 0x3FFF)] = d[off:off + length]
+    return magic, keys, out
+
+
+def make_mbtiles(path, tiles):
+    """An MBTiles file as planetiler writes it: TMS rows, gzipped tile data."""
+    import gzip
+    import sqlite3
+    db = sqlite3.connect(path)
+    db.execute('create table tiles (zoom_level integer, tile_column integer, tile_row integer, tile_data blob)')
+    db.execute('create table metadata (name text, value text)')
+    for (z, x, y), data in tiles.items():
+        db.execute('insert into tiles values (?, ?, ?, ?)', (z, x, (1 << z) - 1 - y, gzip.compress(data)))
+    db.commit()
+    db.close()
 
 
 class Tools(unittest.TestCase):
@@ -66,6 +92,16 @@ class Tools(unittest.TestCase):
         self.assertIsNone(make_graph.car_way({'highway': 'primary', 'access': 'private'}, [1, 2]))
         self.assertEqual(make_graph.car_way({'highway': 'primary', 'oneway': '-1'}, [1, 2]).oneway, -1)
         self.assertEqual(make_graph.car_way({'highway': 'track', 'tracktype': 'grade4'}, [1, 2]).speed, 8)
+
+    def test_tile_pack_from_mbtiles(self):
+        src, out = os.path.join(self.tmp, 'r.mbtiles'), os.path.join(self.tmp, 'tiles.vtp')
+        tiles = {(14, 9907, 5118): b'samara z14', (14, 9908, 5118): b'east', (0, 0, 0): b'world'}
+        make_mbtiles(src, tiles)
+        make_tiles.build(src, out)
+        magic, keys, got = pack_tiles(out)
+        self.assertEqual(magic, b'OSMT')
+        self.assertEqual(keys, sorted(keys))          # the unit finds a tile by binary search
+        self.assertEqual(got, tiles)                  # XYZ rows (not TMS), data ungzipped
 
     def test_search_index(self):
         out = os.path.join(self.tmp, 'search.idx')
@@ -112,6 +148,25 @@ class Tools(unittest.TestCase):
         self.assertEqual(os.path.getmtime(os.path.join(folder, 'route.grf')), stamp)
         with self.assertRaises(SystemExit):
             make_region.update(['nowhere'], known)
+
+    def test_region_tiles_with_planetiler(self):
+        work, data = os.path.join(self.tmp, 'work'), os.path.join(self.tmp, 'data')
+        os.makedirs(os.path.join(work, 'data', 'sources'))
+        for name in make_region.SOURCES:                  # already fetched: nothing downloaded
+            open(os.path.join(work, 'data', 'sources', name), 'wb').close()
+        open(os.path.join(work, 'planetiler.jar'), 'wb').close()
+        asked = []
+
+        def planetiler(argv):                             # writes the MBTiles it is asked for, as planetiler does
+            asked.append(argv)
+            out = [a[len('--output='):] for a in argv if a.startswith('--output=')][0]
+            make_mbtiles(out, {(14, 10467, 5226): b'pbf'})
+        make_region.build('tiny', pathlib.Path(TINY).as_uri(), work, data, run=planetiler)
+        _, _, got = pack_tiles(os.path.join(data, 'tiny', 'tiles.vtp'))
+        self.assertEqual(got, {(14, 10467, 5226): b'pbf'})
+        self.assertIn('--maxzoom=14', asked[0])
+        self.assertFalse(os.path.exists(os.path.join(data, 'tiny', 'tiles.mbtiles')))   # the go-between removed
+        self.assertIsNone(make_region.tile_builder(self.tmp))                           # no planetiler: no tiles
 
     def test_region_links(self):
         top = '<a href="volga_federal_district/">v</a><a href="ural_federal_district/">u</a>'

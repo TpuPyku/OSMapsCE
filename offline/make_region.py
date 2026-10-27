@@ -13,6 +13,7 @@ import os
 import pathlib
 import re
 import shutil
+import subprocess
 import sys
 import time
 import urllib.error
@@ -21,6 +22,7 @@ import urllib.request
 
 import make_graph
 import make_search
+import make_tiles
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 WORK = os.path.join(HERE, 'work')
@@ -74,18 +76,53 @@ def fetch(url, path):
     return True
 
 
-def build(name, url, work=WORK, data=DATA):
-    """The region's folder up to date: its extract, graph, index and region.txt. Returns the folder."""
+# planetiler's own sources (OpenMapTiles' water, lakes, small-scale layers): fetched here, once - its downloader's
+# size check timed out on these servers (2026-10-27) while plain requests went through
+SOURCES = {
+    'lake_centerline.shp.zip': 'https://github.com/acalcutt/osm-lakelines/releases/download/v12/lake_centerline.shp.zip',
+    'natural_earth_vector.sqlite.zip': 'https://naciscdn.org/naturalearth/packages/natural_earth_vector.sqlite.zip',
+    'water-polygons-split-3857.zip': 'https://osmdata.openstreetmap.de/download/water-polygons-split-3857.zip',
+}
+
+
+def tile_builder(work, run=subprocess.check_call):
+    """The tiles' step when planetiler.jar is in the work folder (else None: the region goes without tiles - the
+    unit then asks OpenFreeMap): planetiler's MBTiles (OpenMapTiles, z0-14) -> make_tiles' tiles.vtp."""
+    jar = os.path.join(work, 'planetiler.jar')
+    if not os.path.exists(jar):
+        return None
+
+    def build_tiles(pbf, target):
+        sources = os.path.join(work, 'data', 'sources')
+        os.makedirs(sources, exist_ok=True)
+        for name, url in SOURCES.items():
+            if not os.path.exists(os.path.join(sources, name)):
+                fetch(url, os.path.join(sources, name))
+        mbtiles = os.path.splitext(target)[0] + '.mbtiles'
+        run(['java', '-Xmx6g', '-jar', jar, '--osm-path=' + pbf, '--output=' + mbtiles, '--force', '--maxzoom=14',
+             '--download_dir=' + sources])
+        make_tiles.build(mbtiles, target)
+        os.remove(mbtiles)
+    return build_tiles
+
+
+def build(name, url, work=WORK, data=DATA, run=subprocess.check_call):
+    """The region's folder up to date: its extract, graph, index, tiles (with planetiler) and region.txt. Returns
+    the folder."""
     os.makedirs(work, exist_ok=True)
     out = os.path.join(data, name)
     os.makedirs(out, exist_ok=True)
     # (the extract's own suffix: .osm.pbf, or .osm for a plain XML one - pyosmium reads by it)
     pbf = os.path.join(work, name + ''.join(pathlib.PurePosixPath(urllib.parse.urlparse(url).path).suffixes[-2:]))
     new = fetch(url, pbf)
-    for tool, file in ((make_graph, 'route.grf'), (make_search, 'search.idx')):
+    steps = [(make_graph.build, 'route.grf'), (make_search.build, 'search.idx')]
+    tiles = tile_builder(work, run)
+    if tiles:
+        steps.append((tiles, 'tiles.vtp'))
+    for step, file in steps:
         target = os.path.join(out, file)
         if new or not os.path.exists(target):
-            tool.build(pbf, target + '.part')   # (a half-built file never takes the place of a good one)
+            step(pbf, target + '.part')   # (a half-built file never takes the place of a good one)
             os.replace(target + '.part', target)
     day = time.strftime('%Y-%m-%d', time.gmtime(os.path.getmtime(pbf)))
     with open(os.path.join(out, 'region.txt'), 'w', encoding='utf-8') as f:

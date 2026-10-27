@@ -149,6 +149,8 @@ bool  OfflineDir(const int* latLon, int n, wchar_t* dir);          // the region
 bool  OfflineRoadAt(int lat, int lon, double maxM, char* name, int cap);   // the nearest road's name (1e-6 degrees)
 // offsearch.cpp - the search and the address of a point from a region's index (search.idx), answered as Photon's
 bool  OfflineSearch(const char* photonPath, char** body, int* len);   // false: no region / nothing - ask Photon
+// vpack.cpp - a region's vector tiles (tiles.vtp, offline/make_tiles.py): the data tile d (VEC_ZBASE + z), malloc'd
+bool  VPackTile(const MapRequest& d, unsigned char** data, int* len);   // false: no region's pack has it
 // offdata.cpp - the offline data's files (a header, parts kept in memory) and the JSON text of the answers
 enum { kOffParts = 6 };
 struct OffFile { HANDLE file; void* part[kOffParts]; int nparts; bool bad; };   // bad: a part not read
@@ -156,6 +158,11 @@ bool  OffOpen(OffFile* f, const wchar_t* path, void* head, DWORD bytes);   // th
 void* OffPart(OffFile* f, DWORD off, DWORD bytes);   // a part read into memory, freed by OffClose; NULL: no memory
 bool  OffRead(HANDLE f, DWORD off, void* to, DWORD bytes);
 void  OffClose(OffFile* f);                          // the parts freed, the file closed, all zero
+// The region (a folder of OSMapsData on the SD card / USB disk / beside the program) whose file passes the test:
+// dir = its folder; false = none. holds: reads the file's header, says whether it serves the caller (ctx).
+typedef bool (*OffHolds)(const wchar_t* path, void* ctx);
+bool  OffInside(const int* box, int lat, int lon);   // box: minLat, minLon, maxLat, maxLon (1e-6 degrees, a header's)
+bool  OffRegion(const wchar_t* file, OffHolds holds, void* ctx, wchar_t* dir);
 struct JBuf { char* p; int n, cap; };                // a growing 0-terminated text (no memory: the rest left out)
 void  JPut(JBuf& b, const char* s, int n = -1);
 void  JPutf(JBuf& b, const char* fmt, ...);

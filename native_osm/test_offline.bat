@@ -16,10 +16,11 @@ if not exist %MAP% mkdir %MAP%
 if not "%1"=="build" (
   python ..\offline\make_graph.py ..\offline\test\tiny.osm %MAP%\route.grf >nul || exit /b 1
   python ..\offline\make_search.py ..\offline\test\tiny.osm %MAP%\search.idx >nul || exit /b 1
+  python ..\offline\test\make_test_tiles.py %MAP%\tiles.vtp >nul || exit /b 1
 )
 set OPT=/O2
 if "%COVER%"=="1" set OPT=/Od /Zi
-"%VC%\bin\cl.exe" /nologo %OPT% /W3 /MT /TP test_offline.cpp offline.cpp offsearch.cpp offdata.cpp /Foobj\test\ /Fdobj\test\ ^
+"%VC%\bin\cl.exe" /nologo %OPT% /W3 /MT /TP test_offline.cpp offline.cpp offsearch.cpp offdata.cpp vpack.cpp /Foobj\test\ /Fdobj\test\ ^
   /Feobj\test\test_offline.exe /DUNICODE /D_UNICODE /DWIN32 /DNDEBUG /D_CRT_SECURE_NO_WARNINGS ^
   /I"%CORE%" /I"%VC%\include" /I"%VC%\PlatformSDK\Include" /link /DEBUG /LIBPATH:"%VC%\lib" ^
   /LIBPATH:"%VC%\PlatformSDK\Lib" kernel32.lib >obj\test\build.log
