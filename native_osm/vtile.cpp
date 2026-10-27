@@ -789,7 +789,7 @@ static void PoiSign(HDC dc, int x, int y, int kind, const Style& st)
 
 // The names of the view's data tiles over the frame: (cx, cy) the screen point of the view's world point (vx, vy) at
 // zoom z, the map turned by angle (degrees, as DrawRoute). Places first (the biggest first), then streets along their
-// road, upright; none over another or under the controls (avoid), a street's name once per 300 px.
+// road, upright; none over another or over avoid (the car), a street's name once per 300 px.
 void VLabelsDraw(HDC dc, const RECT& mr, double cx, double cy, double vx, double vy, double angle, int z,
                  const RECT* avoid, int navoid)
 {
