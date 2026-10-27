@@ -37,7 +37,7 @@ struct Graph {
     char*   names;
     DWORD*  cstart;    // gw * gh + 1
     DWORD*  items;
-    HANDLE  file;      // the geometry is read from it
+    OffFile d;         // the parts above; the geometry is read from its file
 };
 
 static Graph s_g;      // the region loaded (one at a time)
@@ -48,38 +48,15 @@ static const wchar_t* kDataDirs[] = { L"\\SDMemory\\OSMapsData", L"\\USBDevice\\
 
 static void Unload()
 {
-    free(s_g.nodes);
-    free(s_g.first);
-    free(s_g.edges);
-    free(s_g.names);
-    free(s_g.cstart);
-    free(s_g.items);
-    if (s_g.file && s_g.file != INVALID_HANDLE_VALUE)
-        CloseHandle(s_g.file);
+    OffClose(&s_g.d);
     memset(&s_g, 0, sizeof(s_g));
-}
-
-static void* ReadAt(HANDLE f, DWORD off, DWORD bytes)
-{
-    void* p = malloc(bytes ? bytes : 1);
-    DWORD got = 0;
-    if (!p || SetFilePointer(f, off, NULL, FILE_BEGIN) == 0xFFFFFFFF || !ReadFile(f, p, bytes, &got, NULL) ||
-        got != bytes) {
-        free(p);
-        return NULL;
-    }
-    return p;
 }
 
 static bool ReadHead(const wchar_t* path, GHead* h)
 {
-    HANDLE f = CreateFile(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
-    if (f == INVALID_HANDLE_VALUE)
-        return false;
-    DWORD got = 0;
-    bool ok = ReadFile(f, h, sizeof(*h), &got, NULL) && got == sizeof(*h) && !memcmp(h->magic, "OSMG", 4) &&
-              h->version == 1;
-    CloseHandle(f);
+    OffFile f;
+    bool ok = OffOpen(&f, path, h, sizeof(*h)) && !memcmp(h->magic, "OSMG", 4) && h->version == 1;
+    OffClose(&f);
     return ok;
 }
 
@@ -89,23 +66,17 @@ static bool Load(const wchar_t* path)
         return true;
     Unload();
     DWORD t0 = GetTickCount();
-    HANDLE f = CreateFile(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
-    if (f == INVALID_HANDLE_VALUE)
-        return false;
-    s_g.file = f;
     GHead& h = s_g.h;
-    DWORD got = 0;
-    if (!ReadFile(f, &h, sizeof(h), &got, NULL) || got != sizeof(h)) {
-        Unload();
+    if (!OffOpen(&s_g.d, path, &h, sizeof(h)))
         return false;
-    }
-    s_g.nodes = (int*)ReadAt(f, h.off[0], h.nodes * 8);
-    s_g.first = (DWORD*)ReadAt(f, h.off[1], (h.nodes + 1) * 4);
-    s_g.edges = (GEdge*)ReadAt(f, h.off[2], h.edges * sizeof(GEdge));
-    s_g.names = (char*)ReadAt(f, h.off[4], h.nameBytes);
-    s_g.cstart = (DWORD*)ReadAt(f, h.off[5], (h.gw * h.gh + 1) * 4);
-    s_g.items = (DWORD*)ReadAt(f, h.off[5] + (h.gw * h.gh + 1) * 4, h.items * 4);
-    if (!s_g.nodes || !s_g.first || !s_g.edges || !s_g.names || !s_g.cstart || !s_g.items) {
+    OffFile* f = &s_g.d;
+    s_g.nodes = (int*)OffPart(f, h.off[0], h.nodes * 8);
+    s_g.first = (DWORD*)OffPart(f, h.off[1], (h.nodes + 1) * 4);
+    s_g.edges = (GEdge*)OffPart(f, h.off[2], h.edges * sizeof(GEdge));
+    s_g.names = (char*)OffPart(f, h.off[4], h.nameBytes);
+    s_g.cstart = (DWORD*)OffPart(f, h.off[5], (h.gw * h.gh + 1) * 4);
+    s_g.items = (DWORD*)OffPart(f, h.off[5] + (h.gw * h.gh + 1) * 4, h.items * 4);
+    if (f->bad) {
         Log("offline: cannot load %S (memory?)", path);
         Unload();
         return false;
@@ -209,19 +180,15 @@ static int EdgePts(DWORD from, DWORD e, int* out, int cap)
     int inner = g.ngeom;
     if (inner > cap - 2)
         inner = cap - 2;
-    if (inner > 0) {
-        DWORD got = 0;
-        if (SetFilePointer(s_g.file, s_g.h.off[3] + g.geom * 8, NULL, FILE_BEGIN) != 0xFFFFFFFF &&
-            ReadFile(s_g.file, out + 2, inner * 8, &got, NULL) && got == (DWORD)inner * 8) {
-            if (g.flags & 1)   // backwards
-                for (int i = 0; i < inner / 2; i++)
-                    for (int k = 0; k < 2; k++) {
-                        int t = out[2 + i * 2 + k];
-                        out[2 + i * 2 + k] = out[2 + (inner - 1 - i) * 2 + k];
-                        out[2 + (inner - 1 - i) * 2 + k] = t;
-                    }
-            n += inner;
-        }
+    if (inner > 0 && OffRead(s_g.d.file, s_g.h.off[3] + g.geom * 8, out + 2, inner * 8)) {
+        if (g.flags & 1)   // backwards
+            for (int i = 0; i < inner / 2; i++)
+                for (int k = 0; k < 2; k++) {
+                    int t = out[2 + i * 2 + k];
+                    out[2 + i * 2 + k] = out[2 + (inner - 1 - i) * 2 + k];
+                    out[2 + (inner - 1 - i) * 2 + k] = t;
+                }
+        n += inner;
     }
     out[n * 2] = s_g.nodes[g.to * 2];
     out[n * 2 + 1] = s_g.nodes[g.to * 2 + 1];
@@ -234,9 +201,8 @@ static double FirstBearing(DWORD from, DWORD e)
     const GEdge& g = s_g.edges[e];
     int p[2] = { s_g.nodes[g.to * 2], s_g.nodes[g.to * 2 + 1] };
     if (g.ngeom) {
-        DWORD got = 0, at = g.geom + ((g.flags & 1) ? g.ngeom - 1 : 0);
-        if (SetFilePointer(s_g.file, s_g.h.off[3] + at * 8, NULL, FILE_BEGIN) == 0xFFFFFFFF ||
-            !ReadFile(s_g.file, p, 8, &got, NULL) || got != 8) {
+        DWORD at = g.geom + ((g.flags & 1) ? g.ngeom - 1 : 0);
+        if (!OffRead(s_g.d.file, s_g.h.off[3] + at * 8, p, 8)) {
             p[0] = s_g.nodes[g.to * 2];
             p[1] = s_g.nodes[g.to * 2 + 1];
         }
@@ -525,67 +491,21 @@ static bool Search(const Snap& sa, const Snap& sb, bool anyStart, Way* w)
 
 // ---------------------------------------------------------------- the answer (OSRM's JSON)
 
-struct Buf { char* p; int n, cap; };
-
-static void Put(Buf& b, const char* s, int n = -1)
-{
-    if (n < 0)
-        n = (int)strlen(s);
-    if (b.n + n + 1 > b.cap) {
-        int c = (b.cap ? b.cap * 2 : 65536);
-        while (c < b.n + n + 1)
-            c *= 2;
-        char* p = (char*)realloc(b.p, c);
-        if (!p)
-            return;
-        b.p = p;
-        b.cap = c;
-    }
-    memcpy(b.p + b.n, s, n);
-    b.n += n;
-    b.p[b.n] = 0;
-}
-
-static void Putf(Buf& b, const char* fmt, ...)
-{
-    char t[256];
-    va_list a;
-    va_start(a, fmt);
-    int n = _vsnprintf(t, sizeof(t) - 1, fmt, a);
-    va_end(a);
-    t[sizeof(t) - 1] = 0;
-    Put(b, t, n < 0 ? (int)strlen(t) : n);
-}
-
-static void PutStr(Buf& b, const char* s, int n)   // a JSON string
-{
-    Put(b, "\"");
-    for (int i = 0; i < n; i++) {
-        char c = s[i];
-        if (c == '"' || c == '\\') {
-            char e[2] = { '\\', c };
-            Put(b, e, 2);
-        } else if ((unsigned char)c >= 0x20)
-            Put(b, &c, 1);
-    }
-    Put(b, "\"");
-}
-
-static void PutName(Buf& b, DWORD name)   // "name":..,"ref":..
+static void PutName(JBuf& b, DWORD name)   // "name":..,"ref":..
 {
     const char* s = s_g.names + name;
     const char* tab = strchr(s, '\t');
     int nl = tab ? (int)(tab - s) : (int)strlen(s);
-    Put(b, "\"name\":");
-    PutStr(b, s, nl);
-    Put(b, ",\"ref\":");
+    JPut(b, "\"name\":");
+    JPutStr(b, s, nl);
+    JPut(b, ",\"ref\":");
     const char* r = tab ? tab + 1 : "";
-    PutStr(b, r, (int)strlen(r));
+    JPutStr(b, r, (int)strlen(r));
 }
 
 // Google's polyline, one value, inside a JSON string: its characters (63..126) include the backslash, written "\\"
 // as OSRM writes it (route.cpp's JSON reader takes a lone one for an escape)
-static void PolyNum(Buf& b, int v)
+static void PolyNum(JBuf& b, int v)
 {
     unsigned int u = v < 0 ? ~((unsigned int)v << 1) : (unsigned int)v << 1;
     char t[16];
@@ -599,7 +519,7 @@ static void PolyNum(Buf& b, int v)
             break;
         u >>= 5;
     }
-    Put(b, t, n);
+    JPut(b, t, n);
 }
 
 // The way's line (lat, lon pairs): growing array
@@ -659,19 +579,19 @@ static double TurnOf(double before, double after)
     return t;
 }
 
-static void Step(Buf& b, bool& firstStep, const char* type, const char* mod, double before, double after, int lat,
+static void Step(JBuf& b, bool& firstStep, const char* type, const char* mod, double before, double after, int lat,
                  int lon, DWORD name, int exit)
 {
     if (!firstStep)
-        Put(b, ",");
+        JPut(b, ",");
     firstStep = false;
-    Put(b, "{");
+    JPut(b, "{");
     PutName(b, name);
-    Putf(b, ",\"maneuver\":{\"type\":\"%s\",\"modifier\":\"%s\",\"bearing_before\":%d,\"bearing_after\":%d,"
+    JPutf(b, ",\"maneuver\":{\"type\":\"%s\",\"modifier\":\"%s\",\"bearing_before\":%d,\"bearing_after\":%d,"
             "\"location\":[%.6f,%.6f]", type, mod, (int)before, (int)after, lon / 1e6, lat / 1e6);
     if (exit > 0)
-        Putf(b, ",\"exit\":%d", exit);
-    Put(b, "}}");
+        JPutf(b, ",\"exit\":%d", exit);
+    JPut(b, "}}");
 }
 
 // A road class's rank for the instructions (make_graph.py's kClasses): 0 motorway, trunk .. 5 service, track; the
@@ -690,7 +610,7 @@ static DWORD EdgeAt(const Way& w, int i)   // the way's i-th edge (0: the start'
 }
 
 // One leg's steps: depart, the maneuvers at the nodes between its edges, arrive. The line grows.
-static void Steps(Buf& b, Line& line, const Way& w)
+static void Steps(JBuf& b, Line& line, const Way& w)
 {
     bool first = true;
     // the way as a list of (from, edge, start snap?, end snap?)
@@ -848,9 +768,9 @@ bool OfflineRoute(const char* path, char** body, int* len)
     if (!Region(pts, n))
         return false;
     s_kx = 0.111195 * cos(pts[0] / 1e6 * M_PI / 180);
-    Buf b = { NULL, 0, 0 };
+    JBuf b = { NULL, 0, 0 };
     Line line = { NULL, 0, 0 };
-    Put(b, "{\"code\":\"Ok\",\"routes\":[{\"legs\":[");
+    JPut(b, "{\"code\":\"Ok\",\"routes\":[{\"legs\":[");
     DWORD totalDs = 0;
     double totalM = 0;
     bool ok = true;
@@ -880,11 +800,11 @@ bool OfflineRoute(const char* path, char** body, int* len)
             break;
         }
         if (leg)
-            Put(b, ",");
-        Put(b, "{\"steps\":[");
+            JPut(b, ",");
+        JPut(b, "{\"steps\":[");
         int lineFrom = line.n;
         Steps(b, line, w);
-        Put(b, "]}");
+        JPut(b, "]}");
         double m = 0;
         for (int i = lineFrom + 1; i < line.n; i++) {
             double dx = (line.p[i * 2 + 1] - line.p[i * 2 - 1]) * s_kx, dy = (line.p[i * 2] - line.p[i * 2 - 2]) * 0.111195;
@@ -895,7 +815,7 @@ bool OfflineRoute(const char* path, char** body, int* len)
         FreeWay(w);
     }
     if (ok && line.n >= 2) {
-        Putf(b, "],\"duration\":%.1f,\"distance\":%.1f,\"geometry\":\"", totalDs / 10.0, totalM);
+        JPutf(b, "],\"duration\":%.1f,\"distance\":%.1f,\"geometry\":\"", totalDs / 10.0, totalM);
         int plat = 0, plon = 0;
         for (int i = 0; i < line.n; i++) {
             PolyNum(b, line.p[i * 2] - plat);
@@ -903,7 +823,7 @@ bool OfflineRoute(const char* path, char** body, int* len)
             plat = line.p[i * 2];
             plon = line.p[i * 2 + 1];
         }
-        Put(b, "\"}]}");
+        JPut(b, "\"}]}");
     }
     free(line.p);
     if (!ok || !b.p) {

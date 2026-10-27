@@ -149,6 +149,17 @@ bool  OfflineDir(const int* latLon, int n, wchar_t* dir);          // the region
 bool  OfflineRoadAt(int lat, int lon, double maxM, char* name, int cap);   // the nearest road's name (1e-6 degrees)
 // offsearch.cpp - the search and the address of a point from a region's index (search.idx), answered as Photon's
 bool  OfflineSearch(const char* photonPath, char** body, int* len);   // false: no region / nothing - ask Photon
+// offdata.cpp - the offline data's files (a header, parts kept in memory) and the JSON text of the answers
+enum { kOffParts = 6 };
+struct OffFile { HANDLE file; void* part[kOffParts]; int nparts; bool bad; };   // bad: a part not read
+bool  OffOpen(OffFile* f, const wchar_t* path, void* head, DWORD bytes);   // the file and its header; false: closed
+void* OffPart(OffFile* f, DWORD off, DWORD bytes);   // a part read into memory, freed by OffClose; NULL: no memory
+bool  OffRead(HANDLE f, DWORD off, void* to, DWORD bytes);
+void  OffClose(OffFile* f);                          // the parts freed, the file closed, all zero
+struct JBuf { char* p; int n, cap; };                // a growing 0-terminated text (no memory: the rest left out)
+void  JPut(JBuf& b, const char* s, int n = -1);
+void  JPutf(JBuf& b, const char* fmt, ...);
+void  JPutStr(JBuf& b, const char* s, int n);       // a JSON string: quoted, escaped, control characters left out
 
 // route.cpp - search (Photon) and the route (OSRM) with its guidance; OSM data, public servers
 struct SearchHit { wchar_t name[80], sub[96]; double lon, lat; };

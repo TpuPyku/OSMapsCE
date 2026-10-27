@@ -27,36 +27,19 @@ struct Index {
     SPlace*  places;
     SStreet* streets;
     SPoi*    pois;
-    HANDLE   file;   // the houses and their grid are read from it
+    OffFile  d;      // the parts above; the houses and their grid are read from its file
 };
 static Index s_x;
 
 static void Unload()
 {
-    free(s_x.str);
-    free(s_x.places);
-    free(s_x.streets);
-    free(s_x.pois);
-    if (s_x.file && s_x.file != INVALID_HANDLE_VALUE)
-        CloseHandle(s_x.file);
+    OffClose(&s_x.d);
     memset(&s_x, 0, sizeof(s_x));
 }
 
 static bool ReadAt(DWORD off, void* to, DWORD bytes)
 {
-    DWORD got = 0;
-    return SetFilePointer(s_x.file, off, NULL, FILE_BEGIN) != 0xFFFFFFFF && ReadFile(s_x.file, to, bytes, &got, NULL) &&
-           got == bytes;
-}
-
-static void* Alloc(DWORD off, DWORD bytes)
-{
-    void* p = malloc(bytes ? bytes : 1);
-    if (p && !ReadAt(off, p, bytes)) {
-        free(p);
-        return NULL;
-    }
-    return p;
+    return OffRead(s_x.d.file, off, to, bytes);
 }
 
 // The index of the region at a point: loaded; false = none.
@@ -71,18 +54,16 @@ static bool Load(int lat, int lon)
     Unload();
     _snwprintf(path, MAX_PATH, L"%s\\search.idx", dir);
     path[MAX_PATH - 1] = 0;
-    s_x.file = CreateFile(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
-    if (s_x.file == INVALID_HANDLE_VALUE || !ReadAt(0, &s_x.h, sizeof(s_x.h)) || memcmp(s_x.h.magic, "OSMS", 4) ||
-        s_x.h.version != 1) {
+    if (!OffOpen(&s_x.d, path, &s_x.h, sizeof(s_x.h)) || memcmp(s_x.h.magic, "OSMS", 4) || s_x.h.version != 1) {
         Unload();
         return false;
     }
     const SHead& h = s_x.h;
-    s_x.str = (char*)Alloc(h.off[0], h.strBytes);
-    s_x.places = (SPlace*)Alloc(h.off[1], h.places * sizeof(SPlace));
-    s_x.streets = (SStreet*)Alloc(h.off[2], h.streets * sizeof(SStreet));
-    s_x.pois = (SPoi*)Alloc(h.off[4], h.pois * sizeof(SPoi));
-    if (!s_x.str || !s_x.places || !s_x.streets || !s_x.pois) {
+    s_x.str = (char*)OffPart(&s_x.d, h.off[0], h.strBytes);
+    s_x.places = (SPlace*)OffPart(&s_x.d, h.off[1], h.places * sizeof(SPlace));
+    s_x.streets = (SStreet*)OffPart(&s_x.d, h.off[2], h.streets * sizeof(SStreet));
+    s_x.pois = (SPoi*)OffPart(&s_x.d, h.off[4], h.pois * sizeof(SPoi));
+    if (s_x.d.bad) {
         Log("offsearch: cannot load %S", path);
         Unload();
         return false;
@@ -230,40 +211,12 @@ static int CmpHit(const void* a, const void* b)
     return d < 0 ? -1 : d > 0 ? 1 : 0;
 }
 
-struct Out { char* p; int n, cap; };
-
-static void Put(Out& o, const char* s)
+static void PutField(JBuf& o, const char* key, const char* s, bool comma)
 {
-    int n = (int)strlen(s);
-    if (o.n + n + 1 > o.cap) {
-        int c = o.cap ? o.cap * 2 : 4096;
-        while (c < o.n + n + 1)
-            c *= 2;
-        char* p = (char*)realloc(o.p, c);
-        if (!p)
-            return;
-        o.p = p;
-        o.cap = c;
-    }
-    memcpy(o.p + o.n, s, n + 1);
-    o.n += n;
-}
-
-static void PutField(Out& o, const char* key, const char* s, bool comma)
-{
-    char t[2] = { 0, 0 };
-    Put(o, comma ? ",\"" : "\"");
-    Put(o, key);
-    Put(o, "\":\"");
-    for (; *s; s++) {
-        if (*s == '"' || *s == '\\')
-            Put(o, "\\");
-        if ((unsigned char)*s >= 0x20) {
-            t[0] = *s;
-            Put(o, t);
-        }
-    }
-    Put(o, "\"");
+    JPut(o, comma ? ",\"" : "\"");
+    JPut(o, key);
+    JPut(o, "\":");
+    JPutStr(o, s, (int)strlen(s));
 }
 
 static const char* S(DWORD off)
@@ -271,15 +224,15 @@ static const char* S(DWORD off)
     return off < s_x.h.strBytes ? s_x.str + off : "";
 }
 
-static void PutHits(Out& o, const Hit* hits, int n)
+static void PutHits(JBuf& o, const Hit* hits, int n)
 {
-    Put(o, "{\"features\":[");
+    JPut(o, "{\"features\":[");
     for (int i = 0; i < n; i++) {
         const Hit& h = hits[i];
         char t[96];
         _snprintf(t, sizeof(t), "%s{\"geometry\":{\"coordinates\":[%.6f,%.6f]},\"properties\":{", i ? "," : "",
                   h.lon / 1e6, h.lat / 1e6);
-        Put(o, t);
+        JPut(o, t);
         char name[200];
         if (h.kind == H_POI && h.what) {   // "Лукойл (АЗС)"
             _snprintf(name, sizeof(name), "%s (%s)", S(h.name), S(h.what));
@@ -290,9 +243,9 @@ static void PutHits(Out& o, const Hit* hits, int n)
         PutField(o, "street", h.street != 0xFFFFFFFF ? S(s_x.streets[h.street].name) : "", true);
         PutField(o, "housenumber", S(h.number), true);
         PutField(o, "city", S(h.city), true);
-        Put(o, "}}");
+        JPut(o, "}}");
     }
-    Put(o, "]}");
+    JPut(o, "]}");
 }
 
 static bool ReadHouse(DWORD i, SHouse* hs)
@@ -360,7 +313,7 @@ static bool Search(const char* q8, int lat, int lon, char** body, int* len)
     if (!n)
         return false;
     qsort(hits, n, sizeof(Hit), CmpHit);
-    Out o = { NULL, 0, 0 };
+    JBuf o = { NULL, 0, 0 };
     PutHits(o, hits, n < 7 ? n : 7);
     *body = o.p;
     *len = o.n;
@@ -418,7 +371,7 @@ static bool Reverse(int lat, int lon, char** body, int* len)
         }
     if (best.kind < 0)
         return false;
-    Out o = { NULL, 0, 0 };
+    JBuf o = { NULL, 0, 0 };
     PutHits(o, &best, 1);
     *body = o.p;
     *len = o.n;

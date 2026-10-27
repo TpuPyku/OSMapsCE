@@ -1,6 +1,7 @@
 @echo off
 rem The offline router and search tests (desktop x86): builds the test map (..\offline\test\tiny.osm) with the
-rem region tools into obj\test\OSMapsData\tiny, builds test_offline.exe with offline.cpp + offsearch.cpp, runs it.
+rem region tools into obj\test\OSMapsData\tiny, builds test_offline.exe with offline.cpp + offsearch.cpp +
+rem offdata.cpp, runs it.
 rem Exit code: the failed checks.  "test_offline.bat build": only the program (the map kept) - mutator.py's build.
 rem COVER=1: the build for coverage (/Od /Zi) - quality.bat.
 setlocal
@@ -18,7 +19,7 @@ if not "%1"=="build" (
 )
 set OPT=/O2
 if "%COVER%"=="1" set OPT=/Od /Zi
-"%VC%\bin\cl.exe" /nologo %OPT% /W3 /MT /TP test_offline.cpp offline.cpp offsearch.cpp /Foobj\test\ /Fdobj\test\ ^
+"%VC%\bin\cl.exe" /nologo %OPT% /W3 /MT /TP test_offline.cpp offline.cpp offsearch.cpp offdata.cpp /Foobj\test\ /Fdobj\test\ ^
   /Feobj\test\test_offline.exe /DUNICODE /D_UNICODE /DWIN32 /DNDEBUG /D_CRT_SECURE_NO_WARNINGS ^
   /I"%CORE%" /I"%VC%\include" /I"%VC%\PlatformSDK\Include" /link /DEBUG /LIBPATH:"%VC%\lib" ^
   /LIBPATH:"%VC%\PlatformSDK\Lib" kernel32.lib >obj\test\build.log

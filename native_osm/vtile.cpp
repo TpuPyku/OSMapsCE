@@ -135,50 +135,35 @@ template <class T> static bool Push(T*& a, int& n, int& cap, const T& v)
     return true;
 }
 
+// What a feature is drawn as, by its layer, class (NULL: any) and geometry type (1 point, 2 line, 3 area); the first
+// row that matches wins, none: not drawn.
+struct KindRow { const char* layer; const char* cls; unsigned char type, kind; };
+static const KindRow kKinds[] = {
+    { "water", NULL, 3, K_WATER }, { "building", NULL, 3, K_BUILDING }, { "park", NULL, 3, K_PARK },
+    { "landcover", "wood", 3, K_WOOD }, { "landcover", NULL, 3, K_GRASS },
+    { "landuse", "residential", 3, K_RESID }, { "landuse", "suburb", 3, K_RESID },
+    { "landuse", "neighbourhood", 3, K_RESID },
+    { "landuse", "industrial", 3, K_INDUSTRIAL }, { "landuse", "commercial", 3, K_INDUSTRIAL },
+    { "landuse", "retail", 3, K_INDUSTRIAL }, { "landuse", "railway", 3, K_INDUSTRIAL },
+    { "waterway", NULL, 2, K_WATERWAY },
+    { "transportation", "motorway", 2, K_MAJOR }, { "transportation", "trunk", 2, K_MAJOR },
+    { "transportation", "primary", 2, K_PRIMARY },
+    { "transportation", "secondary", 2, K_SECONDARY }, { "transportation", "tertiary", 2, K_SECONDARY },
+    { "transportation", "minor", 2, K_MINOR }, { "transportation", "service", 2, K_SERVICE },
+    { "transportation", "track", 2, K_PATH }, { "transportation", "path", 2, K_PATH },
+    { "transportation", "rail", 2, K_RAIL }, { "transportation", "transit", 2, K_RAIL },
+    { "place", NULL, 1, K_PLACE }, { "transportation_name", NULL, 2, K_ROADNAME },
+    { "housenumber", NULL, 1, K_HOUSENUM },
+    { "poi", "fuel", 1, K_FUEL }, { "poi", "parking", 1, K_PARKING },   // for the driver: filling stations, car parks
+};
+
 static int Kind(const Pb& layer, const Pb& cls, int geomType)
 {
-    if (StrEq(layer, "water"))
-        return geomType == 3 ? K_WATER : -1;
-    if (StrEq(layer, "building"))
-        return geomType == 3 ? K_BUILDING : -1;
-    if (StrEq(layer, "park"))
-        return geomType == 3 ? K_PARK : -1;
-    if (StrEq(layer, "landcover") && geomType == 3)
-        return StrEq(cls, "wood") ? K_WOOD : K_GRASS;
-    if (StrEq(layer, "landuse") && geomType == 3) {
-        if (StrEq(cls, "residential") || StrEq(cls, "suburb") || StrEq(cls, "neighbourhood"))
-            return K_RESID;
-        if (StrEq(cls, "industrial") || StrEq(cls, "commercial") || StrEq(cls, "retail") || StrEq(cls, "railway"))
-            return K_INDUSTRIAL;
-        return -1;
+    for (int i = 0; i < (int)(sizeof(kKinds) / sizeof(kKinds[0])); i++) {
+        const KindRow& k = kKinds[i];
+        if (k.type == geomType && StrEq(layer, k.layer) && (!k.cls || StrEq(cls, k.cls)))
+            return k.kind;
     }
-    if (StrEq(layer, "waterway"))
-        return geomType == 2 ? K_WATERWAY : -1;
-    if (StrEq(layer, "transportation") && geomType == 2) {
-        if (StrEq(cls, "motorway") || StrEq(cls, "trunk"))
-            return K_MAJOR;
-        if (StrEq(cls, "primary"))
-            return K_PRIMARY;
-        if (StrEq(cls, "secondary") || StrEq(cls, "tertiary"))
-            return K_SECONDARY;
-        if (StrEq(cls, "minor"))
-            return K_MINOR;
-        if (StrEq(cls, "service"))
-            return K_SERVICE;
-        if (StrEq(cls, "track") || StrEq(cls, "path"))
-            return K_PATH;
-        if (StrEq(cls, "rail") || StrEq(cls, "transit"))
-            return K_RAIL;
-        return -1;
-    }
-    if (StrEq(layer, "place") && geomType == 1)
-        return K_PLACE;
-    if (StrEq(layer, "transportation_name") && geomType == 2)
-        return K_ROADNAME;
-    if (StrEq(layer, "housenumber") && geomType == 1)
-        return K_HOUSENUM;
-    if (StrEq(layer, "poi") && geomType == 1)   // for the driver: filling stations, car parks
-        return StrEq(cls, "fuel") ? K_FUEL : StrEq(cls, "parking") ? K_PARKING : -1;
     return -1;
 }
 
