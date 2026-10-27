@@ -354,7 +354,12 @@ static DWORD WINAPI NetThread(LPVOID)
                 ar->kind = job.kind;
                 ar->seq = apiSeq;
                 DWORD t0 = GetTickCount();
-                ar->err = HttpGet(job.host, job.https, job.path, (unsigned char**)&ar->body, &ar->len, &ar->httpStatus);
+                if (job.kind == API_ROUTE && OfflineRoute(job.path, &ar->body, &ar->len)) {   // a region's graph
+                    ar->err = NET_OK;
+                    ar->httpStatus = 200;
+                } else
+                    ar->err = HttpGet(job.host, job.https, job.path, (unsigned char**)&ar->body, &ar->len,
+                                      &ar->httpStatus);
                 Log("net: api %s%.120s -> %d (HTTP %d, %d bytes, %lu ms)", job.host, job.path, ar->err,
                     ar->httpStatus, ar->len, GetTickCount() - t0);
                 if (s_stop || !PostMessage(s_notify, WM_APP_API, 0, (LPARAM)ar))

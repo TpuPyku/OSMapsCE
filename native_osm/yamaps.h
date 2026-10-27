@@ -143,6 +143,8 @@ struct ApiResult {
 };
 DWORD NetApi(int kind, const char* host, bool https, const char* path);   // returns sequence number
 void  ApiFree(ApiResult* r);
+// offline.cpp - routes from a region's road graph (OSMapsData\<region>oute.grf), answered as OSRM's JSON
+bool  OfflineRoute(const char* osrmPath, char** body, int* len);   // false: no region / no way - ask OSRM
 
 // route.cpp - search (Photon) and the route (OSRM) with its guidance; OSM data, public servers
 struct SearchHit { wchar_t name[80], sub[96]; double lon, lat; };
