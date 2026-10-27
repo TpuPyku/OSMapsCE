@@ -600,52 +600,79 @@ static int CmpEdge(const void* a, const void* b)
     return ((const Edge*)a)->r0 - ((const Edge*)b)->r0;
 }
 
+static int s_act[4096];   // the edges crossing the row
+static int s_nact;
+
+static int LastRow(int ne)   // past the last row of the edges
+{
+    int rmax = 0;
+    for (int i = 0; i < ne; i++)
+        if (s_edges[i].r1 > rmax)
+            rmax = s_edges[i].r1;
+    return rmax;
+}
+
+static int Activate(int next, int ne, int r)   // the edges starting at row r (sorted by r0); the next one after
+{
+    while (next < ne && s_edges[next].r0 == r) {
+        if (s_nact < 4096)
+            s_act[s_nact++] = next;
+        next++;
+    }
+    return next;
+}
+
+static void InsertSorted(int& nx, int x)   // insertion sort: few crossings per row
+{
+    if (nx >= 1024)
+        return;
+    int j = nx++;
+    while (j > 0 && s_xs[j - 1] > x) {
+        s_xs[j] = s_xs[j - 1];
+        j--;
+    }
+    s_xs[j] = x;
+}
+
+static int Crossings(int r)   // row r's crossings into s_xs, sorted; the edges past it dropped; their count
+{
+    int nx = 0;
+    for (int i = 0; i < s_nact;) {
+        Edge& e = s_edges[s_act[i]];
+        if (e.r1 <= r) {
+            s_act[i] = s_act[--s_nact];
+            continue;
+        }
+        InsertSorted(nx, e.x);
+        e.x += e.dx;
+        i++;
+    }
+    return nx;
+}
+
+static void FillRow(unsigned short* row, int nx, unsigned short color)   // even-odd between the crossings
+{
+    for (int i = 0; i + 1 < nx; i += 2) {
+        int a = (s_xs[i] + 0x7FFF) >> 16, b = (s_xs[i + 1] + 0x7FFF) >> 16;   // centres inside [xa, xb)
+        if (a < 0)
+            a = 0;
+        if (b > TILE)
+            b = TILE;
+        for (int x = a; x < b; x++)
+            row[x] = color;
+    }
+}
+
 static void FillEdges(unsigned short* bits, int ne, unsigned short color)
 {
     if (!ne)
         return;
     qsort(s_edges, ne, sizeof(Edge), CmpEdge);
-    int rmin = s_edges[0].r0, rmax = 0;
-    for (int i = 0; i < ne; i++)
-        if (s_edges[i].r1 > rmax)
-            rmax = s_edges[i].r1;
-    int next = 0, nact = 0;
-    static int act[4096];
-    for (int r = rmin; r < rmax; r++) {
-        while (next < ne && s_edges[next].r0 == r) {
-            if (nact < 4096)
-                act[nact++] = next;
-            next++;
-        }
-        int nx = 0;
-        for (int i = 0; i < nact;) {
-            Edge& e = s_edges[act[i]];
-            if (e.r1 <= r) {
-                act[i] = act[--nact];
-                continue;
-            }
-            int x = e.x;
-            e.x += e.dx;
-            if (nx < 1024) {
-                int j = nx++;   // insertion sort: few crossings per row
-                while (j > 0 && s_xs[j - 1] > x) {
-                    s_xs[j] = s_xs[j - 1];
-                    j--;
-                }
-                s_xs[j] = x;
-            }
-            i++;
-        }
-        unsigned short* row = bits + (TILE - 1 - r) * TILE;   // bottom-up rows, 512 bytes each
-        for (int i = 0; i + 1 < nx; i += 2) {
-            int a = (s_xs[i] + 0x7FFF) >> 16, b = (s_xs[i + 1] + 0x7FFF) >> 16;   // centres inside [xa, xb)
-            if (a < 0)
-                a = 0;
-            if (b > TILE)
-                b = TILE;
-            for (int x = a; x < b; x++)
-                row[x] = color;
-        }
+    int rmax = LastRow(ne), next = 0;
+    s_nact = 0;
+    for (int r = s_edges[0].r0; r < rmax; r++) {
+        next = Activate(next, ne, r);
+        FillRow(bits + (TILE - 1 - r) * TILE, Crossings(r), color);   // bottom-up rows, 512 bytes each
     }
 }
 
@@ -670,14 +697,26 @@ static int LineWidth(int width, int z)
     return w < 1 ? 1 : w;
 }
 
-static void Draw(const VTile& t, const Xf& xf, int z, bool night, HDC dc, unsigned short* bits)
+// One part of an area as edges: its ring, closed
+static void AddRing(int& ne, const VTile& t, const Xf& xf, int p0, int pn)
 {
-    const Style* pal = kStyle[night ? 1 : 0];
-    const unsigned char* bc = kBg[night ? 1 : 0];
-    unsigned short bg = RGB565(bc[0], bc[1], bc[2]);
-    for (int i = 0; i < TILE * TILE; i++)
-        bits[i] = bg;
-    // areas, kind by kind, then the lines with their casings, then the labels
+    int fx, fy, px, py;
+    Apply(xf, t.pts[p0 * 2], t.pts[p0 * 2 + 1], &fx, &fy);
+    px = fx;
+    py = fy;
+    for (int q = 1; q < pn; q++) {
+        int x, y;
+        Apply(xf, t.pts[(p0 + q) * 2], t.pts[(p0 + q) * 2 + 1], &x, &y);
+        AddEdge(ne, px, py, x, y);
+        px = x;
+        py = y;
+    }
+    AddEdge(ne, px, py, fx, fy);
+}
+
+// The areas, kind by kind (the later over the earlier)
+static void FillAreas(const VTile& t, const Xf& xf, int z, const Style* pal, unsigned short* bits)
+{
     for (int k = 0; k < kFirstLine; k++) {
         if (z < MinZoom(k))
             continue;
@@ -687,67 +726,90 @@ static void Draw(const VTile& t, const Xf& xf, int z, bool night, HDC dc, unsign
             if (f.kind != k || !BoxVisible(xf, f, 0))
                 continue;
             int ne = 0;
-            for (int pi = 0; pi < f.nparts; pi++) {
-                int p0 = t.parts[(f.part0 + pi) * 2], pn = t.parts[(f.part0 + pi) * 2 + 1];
-                int fx, fy, px, py;
-                Apply(xf, t.pts[p0 * 2], t.pts[p0 * 2 + 1], &fx, &fy);
-                px = fx;
-                py = fy;
-                for (int q = 1; q < pn; q++) {
-                    int x, y;
-                    Apply(xf, t.pts[(p0 + q) * 2], t.pts[(p0 + q) * 2 + 1], &x, &y);
-                    AddEdge(ne, px, py, x, y);
-                    px = x;
-                    py = y;
-                }
-                AddEdge(ne, px, py, fx, fy);
-            }
+            for (int pi = 0; pi < f.nparts; pi++)
+                AddRing(ne, t, xf, t.parts[(f.part0 + pi) * 2], t.parts[(f.part0 + pi) * 2 + 1]);
             FillEdges(bits, ne, c);
         }
     }
+}
+
+static bool LineRoom(int pn)   // s_line holds pn points
+{
+    if (pn <= s_lineCap)
+        return true;
+    POINT* nl = (POINT*)realloc(s_line, pn * 2 * sizeof(POINT));
+    if (!nl)
+        return false;
+    s_line = nl;
+    s_lineCap = pn * 2;
+    return true;
+}
+
+// One part of a line in whole pixels, points closer than 2 px to the last one left out (but the end)
+static void StrokePart(HDC dc, const VTile& t, const Xf& xf, int p0, int pn)
+{
+    if (!LineRoom(pn))
+        return;
+    int m = 0;
+    for (int q = 0; q < pn; q++) {
+        int x, y;
+        Apply(xf, t.pts[(p0 + q) * 2], t.pts[(p0 + q) * 2 + 1], &x, &y);
+        x = (x + 8) >> 4;
+        y = (y + 8) >> 4;
+        if (m && abs(x - s_line[m - 1].x) + abs(y - s_line[m - 1].y) < 2 && q < pn - 1)
+            continue;
+        s_line[m].x = x;
+        s_line[m].y = y;
+        m++;
+    }
+    if (m > 1)
+        Polyline(dc, s_line, m);
+}
+
+// The lines of kind k with a pen w px wide
+static void StrokeKind(HDC dc, const VTile& t, const Xf& xf, int k, int w, COLORREF color)
+{
+    HPEN pen = CreatePen(PS_SOLID, w, color);
+    HGDIOBJ op = SelectObject(dc, pen);
+    for (int fi = 0; fi < t.nf; fi++) {
+        const Feat& f = t.f[fi];
+        if (f.kind != k || !BoxVisible(xf, f, w))
+            continue;
+        for (int pi = 0; pi < f.nparts; pi++)
+            StrokePart(dc, t, xf, t.parts[(f.part0 + pi) * 2], t.parts[(f.part0 + pi) * 2 + 1]);
+    }
+    SelectObject(dc, op);
+    DeleteObject(pen);
+}
+
+// All the lines, kind by kind: the casings (2 px wider, of the cased kinds), or the lines themselves
+static void StrokeLines(HDC dc, const VTile& t, const Xf& xf, int z, const Style* pal, bool casing)
+{
+    for (int k = kFirstLine; k < K_PLACE; k++) {
+        const Style& sty = pal[k];
+        if ((casing && !sty.cased) || z < MinZoom(k))
+            continue;
+        if (casing)
+            StrokeKind(dc, t, xf, k, LineWidth(sty.width, z) + 2, RGB(sty.cr, sty.cg, sty.cb));
+        else
+            StrokeKind(dc, t, xf, k, LineWidth(sty.width, z), RGB(sty.r, sty.g, sty.b));
+    }
+}
+
+static void Draw(const VTile& t, const Xf& xf, int z, bool night, HDC dc, unsigned short* bits)
+{
+    const Style* pal = kStyle[night ? 1 : 0];
+    const unsigned char* bc = kBg[night ? 1 : 0];
+    unsigned short bg = RGB565(bc[0], bc[1], bc[2]);
+    for (int i = 0; i < TILE * TILE; i++)
+        bits[i] = bg;
+    // areas, kind by kind, then the lines with their casings (the labels: over the frame, VLabelsDraw)
+    FillAreas(t, xf, z, pal, bits);
 #ifndef UNDER_CE
     GdiFlush();   // the desktop's GDI may batch: our pixels before its lines (CE draws at once)
 #endif
-    for (int pass = 0; pass < 2; pass++)
-        for (int k = kFirstLine; k < K_PLACE; k++) {
-            const Style& sty = pal[k];
-            if ((pass == 0 && !sty.cased) || z < MinZoom(k))
-                continue;
-            int w = LineWidth(sty.width, z) + (pass == 0 ? 2 : 0);
-            HPEN pen = CreatePen(PS_SOLID, w, pass == 0 ? RGB(sty.cr, sty.cg, sty.cb) : RGB(sty.r, sty.g, sty.b));
-            HGDIOBJ op = SelectObject(dc, pen);
-            for (int fi = 0; fi < t.nf; fi++) {
-                const Feat& f = t.f[fi];
-                if (f.kind != k || !BoxVisible(xf, f, w))
-                    continue;
-                for (int pi = 0; pi < f.nparts; pi++) {
-                    int p0 = t.parts[(f.part0 + pi) * 2], pn = t.parts[(f.part0 + pi) * 2 + 1];
-                    if (pn > s_lineCap) {
-                        POINT* nl = (POINT*)realloc(s_line, pn * 2 * sizeof(POINT));
-                        if (!nl)
-                            continue;
-                        s_line = nl;
-                        s_lineCap = pn * 2;
-                    }
-                    int m = 0;
-                    for (int q = 0; q < pn; q++) {
-                        int x, y;
-                        Apply(xf, t.pts[(p0 + q) * 2], t.pts[(p0 + q) * 2 + 1], &x, &y);
-                        x = (x + 8) >> 4;
-                        y = (y + 8) >> 4;
-                        if (m && abs(x - s_line[m - 1].x) + abs(y - s_line[m - 1].y) < 2 && q < pn - 1)
-                            continue;
-                        s_line[m].x = x;
-                        s_line[m].y = y;
-                        m++;
-                    }
-                    if (m > 1)
-                        Polyline(dc, s_line, m);
-                }
-            }
-            SelectObject(dc, op);
-            DeleteObject(pen);
-        }
+    StrokeLines(dc, t, xf, z, pal, true);
+    StrokeLines(dc, t, xf, z, pal, false);
 #ifndef UNDER_CE
     GdiFlush();
 #endif
