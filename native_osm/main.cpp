@@ -903,10 +903,19 @@ static void AccentFromIni()
     static const struct { int code; COLORREF c; } kAcc[] = { { 130, RGB(0xff, 0x6b, 0x1a) }, { 195, RGB(0xdc, 0x3c, 0x3c) },
         { 247, RGB(0xc3, 0xb8, 0x9c) }, { 372, RGB(0x72, 0xc0, 0x59) }, { 476, RGB(0x4f, 0x7a, 0xca) },
         { 619, RGB(0xab, 0xba, 0xd8) }, { 691, RGB(0xee, 0xee, 0xee) } };
-    static const wchar_t* kIni[2] = { L"..\\VestaHome\\VestaHome.ini", L"..\\..\\VestaHome\\VestaHome\\VestaHome\\VestaHome.ini" };
-    for (int f = 0; f < 2; f++) {
+    // VestaHome on \ResidentFlash (since 2026-10-27), or an older install beside us on \SDMMC; the PC: the repos
+    static const wchar_t* kIni[3] = { L"\\ResidentFlash\\VestaHome\\VestaHome.ini", L"..\\VestaHome\\VestaHome.ini",
+                                      L"..\\..\\VestaHome\\VestaHome\\VestaHome\\VestaHome.ini" };
+    for (int f = 0; f < 3; f++) {
         wchar_t path[MAX_PATH];
-        PathInDir(path, kIni[f]);
+        if (kIni[f][0] == L'\\') {
+#ifndef UNDER_CE
+            continue;   // (the PC: no \ResidentFlash)
+#endif
+            wcscpy(path, kIni[f]);
+        } else {
+            PathInDir(path, kIni[f]);
+        }
         unsigned char* data;
         int len;
         if (!ReadWholeFile(path, &data, &len))
