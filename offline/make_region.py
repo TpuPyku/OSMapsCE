@@ -39,6 +39,9 @@ APART = {'crimea': [UKRAINE % 'crimea', UKRAINE % 'sevastopol'], 'donetsk': UKRA
 # A city in its oblast's hole (moscow_oblast's extract has holes where Moscow is; the unit routes within one
 # region): built with the oblast, no region of its own (the user 2026-10-27: the card's room is short)
 INSIDE = {'moscow': 'moscow_oblast'}
+# Gone: russia/'s nearly empty copies (APART has them whole); Saint Petersburg - leningrad_oblast's extract has it
+# all (its .poly one ring around the city too), a region of its own only doubled it
+GONE = ('crimea_republic', 'sevastopol', 'saint_petersburg')
 UA = {'User-Agent': 'OSMapsCE-make_region (+https://github.com/TpuPyku/OSMapsCE)'}
 
 
@@ -61,7 +64,7 @@ def regions(get=get):
     out = {}
     for d in district_links(get(BASE)):
         out.update(region_links(get(BASE + d + '/'), BASE + d + '/'))
-    for gone in ('crimea_republic', 'sevastopol'):
+    for gone in GONE:
         out.pop(gone, None)
     for city, region in INSIDE.items():
         if city in out:

@@ -241,6 +241,8 @@ class Tools(unittest.TestCase):
                                                               '<a href="moscow_oblast-latest.osm.pbf">o</a>')
         got = make_region.regions(get=pages.get)            # Moscow: inside its oblast (the oblast's extract: holes)
         self.assertNotIn('moscow', got)
+        pages[make_region.BASE + 'ural_federal_district/'] = '<a href="saint_petersburg-latest.osm.pbf">p</a>'
+        self.assertNotIn('saint_petersburg', make_region.regions(get=pages.get))   # (in leningrad_oblast's already)
         self.assertEqual(got['moscow_oblast'], [make_region.BASE + 'ural_federal_district/moscow_oblast-latest.osm.pbf',
                                                 make_region.BASE + 'ural_federal_district/moscow-latest.osm.pbf'])
 

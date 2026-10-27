@@ -39,6 +39,8 @@ class Maps(unittest.TestCase):
         with zipfile.ZipFile(os.path.join(self.dist, 'tiny.zip')) as z:
             self.assertEqual(sorted(z.namelist()), ['region.txt', 'route.grf', 'search.idx'])
         self.assertEqual(entry['name'], 'tiny')
+        self.assertEqual(entry['title'], 'tiny')                          # (no Russian name: the name itself)
+        self.assertEqual(release_regions.title('moscow_oblast'), 'Москва и Московская область')
         self.assertEqual(entry['zip'], 'tiny.zip')
         self.assertEqual(entry['size'], os.path.getsize(os.path.join(self.dist, 'tiny.zip')))
         self.assertRegex(entry['date'], r'^\d{4}-\d\d-\d\d$')

@@ -26,6 +26,50 @@ ASSETS = 'https://github.com/TpuPyku/OSMapsCE/releases/download/maps/'
 FILES = ('route.grf', 'search.idx', 'region.txt')
 
 
+# The regions' Russian names, for the app's list (the catalog's title; a region not here: its name)
+TITLES = {
+    'adygea_republic': 'Адыгея', 'altai_krai': 'Алтайский край', 'altai_republic': 'Республика Алтай',
+    'amur_oblast': 'Амурская область', 'arkhangelsk_oblast': 'Архангельская область',
+    'astrakhan_oblast': 'Астраханская область', 'bashkortostan_republic': 'Башкортостан',
+    'belgorod_oblast': 'Белгородская область', 'bryansk_oblast': 'Брянская область', 'buryatia_republic': 'Бурятия',
+    'chechen_republic': 'Чечня', 'chelyabinsk_oblast': 'Челябинская область',
+    'chukotka_autonomous_okrug': 'Чукотский автономный округ', 'chuvash_republic': 'Чувашия',
+    'crimea': 'Крым и Севастополь', 'dagestan_republic': 'Дагестан', 'donetsk': 'Донецк',
+    'ingushetia_republic': 'Ингушетия', 'irkutsk_oblast': 'Иркутская область', 'ivanovo_oblast': 'Ивановская область',
+    'jewish_autonomous_oblast': 'Еврейская автономная область', 'kabardino_balkar_republic': 'Кабардино-Балкария',
+    'kaliningrad_oblast': 'Калининградская область', 'kalmykia_republic': 'Калмыкия',
+    'kaluga_oblast': 'Калужская область', 'kamchatka_krai': 'Камчатский край',
+    'karachay_cherkess_republic': 'Карачаево-Черкесия', 'karelia_republic': 'Карелия',
+    'kemerovo_oblast': 'Кемеровская область', 'khabarovsk_krai': 'Хабаровский край', 'khakassia_republic': 'Хакасия',
+    'khanty_mansi_autonomous_okrug': 'Ханты-Мансийский автономный округ', 'kirov_oblast': 'Кировская область',
+    'komi_republic': 'Коми', 'kostroma_oblast': 'Костромская область', 'krasnodar_krai': 'Краснодарский край',
+    'krasnoyarsk_krai': 'Красноярский край', 'kurgan_oblast': 'Курганская область', 'kursk_oblast': 'Курская область',
+    'leningrad_oblast': 'Санкт-Петербург и Ленинградская область', 'lipetsk_oblast': 'Липецкая область',
+    'luhansk': 'Луганск', 'magadan_oblast': 'Магаданская область', 'mari_el_republic': 'Марий Эл',
+    'mordovia_republic': 'Мордовия', 'moscow_oblast': 'Москва и Московская область',
+    'murmansk_oblast': 'Мурманская область', 'nenets_autonomous_okrug': 'Ненецкий автономный округ',
+    'nizhny_novgorod_oblast': 'Нижегородская область', 'north_ossetia_alania_republic': 'Северная Осетия',
+    'novgorod_oblast': 'Новгородская область', 'novosibirsk_oblast': 'Новосибирская область',
+    'omsk_oblast': 'Омская область', 'orenburg_oblast': 'Оренбургская область', 'oryol_oblast': 'Орловская область',
+    'penza_oblast': 'Пензенская область', 'perm_krai': 'Пермский край', 'primorsky_krai': 'Приморский край',
+    'pskov_oblast': 'Псковская область', 'rostov_oblast': 'Ростовская область', 'ryazan_oblast': 'Рязанская область',
+    'sakha_republic': 'Якутия', 'sakhalin_oblast': 'Сахалинская область', 'samara_oblast': 'Самарская область',
+    'saratov_oblast': 'Саратовская область', 'smolensk_oblast': 'Смоленская область',
+    'stavropol_krai': 'Ставропольский край', 'sverdlovsk_oblast': 'Свердловская область',
+    'tambov_oblast': 'Тамбовская область', 'tatarstan_republic': 'Татарстан', 'tomsk_oblast': 'Томская область',
+    'tula_oblast': 'Тульская область', 'tuva_republic': 'Тыва', 'tver_oblast': 'Тверская область',
+    'tyumen_oblast': 'Тюменская область', 'udmurt_republic': 'Удмуртия', 'ulyanovsk_oblast': 'Ульяновская область',
+    'vladimir_oblast': 'Владимирская область', 'volgograd_oblast': 'Волгоградская область',
+    'vologda_oblast': 'Вологодская область', 'voronezh_oblast': 'Воронежская область',
+    'yamalo_nenets_autonomous_okrug': 'Ямало-Ненецкий автономный округ', 'yaroslavl_oblast': 'Ярославская область',
+    'zabaykalsky_krai': 'Забайкальский край',
+}
+
+
+def title(name):
+    return TITLES.get(name, name)
+
+
 def graph_bbox(path):
     """(minLon, minLat, maxLon, maxLat), degrees, from route.grf's header."""
     with open(path, 'rb') as f:
@@ -48,7 +92,7 @@ def build_region(name, url, dist, work):
     with zipfile.ZipFile(zpath, 'w', zipfile.ZIP_DEFLATED) as z:
         for f in FILES:
             z.write(os.path.join(folder, f), f)
-    entry = {'name': name, 'date': region_info(os.path.join(folder, 'region.txt'))['date'], 'zip': name + '.zip',
+    entry = {'name': name, 'title': title(name), 'date': region_info(os.path.join(folder, 'region.txt'))['date'], 'zip': name + '.zip',
              'size': os.path.getsize(zpath), 'bbox': graph_bbox(os.path.join(folder, 'route.grf'))}
     with open(os.path.join(dist, name + '.json'), 'w', encoding='utf-8') as f:
         json.dump(entry, f)

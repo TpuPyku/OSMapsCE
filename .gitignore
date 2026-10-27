@@ -9,3 +9,7 @@ native_vtest/obj/
 VTileTest/*PC.exe
 VTileTest/*.txt
 VTileTest/tiles/
+offline/work/
+OSMapsData/
+__pycache__/
+offline/app/
