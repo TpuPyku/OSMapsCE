@@ -875,14 +875,35 @@ static HFONT LabelFont(int height, int weight, int tenths)
 
 struct Placed { int l, t, r, b; const wchar_t* name; int cx, cy; };
 
-static const RECT* s_mapRect;   // VLabelsDraw's: a name only whole on the map
+// One VLabelsDraw: the view (world point (vx, vy) at the screen's (cx, cy), turned by rc, rs = cos, sin), what is
+// placed so far (s_placed[0..np), at most cap)
+struct LabelView {
+    HDC dc;
+    const RECT* mr;             // a name only whole on the map
+    double cx, cy, vx, vy, rc, rs, unit;
+    int z;
+    const Style* pal;
+    HGDIOBJ font0;              // the dc's own font, put back at the end
+    int np, cap;
+};
+static Placed s_placed[16 + 400];
 
-static bool Free(const Placed* p, int np, const Placed& box)
+static bool OnMap(const RECT& mr, const Placed& box)
 {
-    if (box.l < s_mapRect->left || box.t < s_mapRect->top || box.r > s_mapRect->right || box.b > s_mapRect->bottom)
+    return box.l >= mr.left && box.t >= mr.top && box.r <= mr.right && box.b <= mr.bottom;
+}
+
+static bool Overlap(const Placed& a, const Placed& b)
+{
+    return b.l < a.r && b.r > a.l && b.t < a.b && b.b > a.t;
+}
+
+static bool Free(const LabelView& v, const Placed& box)
+{
+    if (!OnMap(*v.mr, box))
         return false;
-    for (int i = 0; i < np; i++)
-        if (box.l < p[i].r && box.r > p[i].l && box.t < p[i].b && box.b > p[i].t)
+    for (int i = 0; i < v.np; i++)
+        if (Overlap(s_placed[i], box))
             return false;
     return true;
 }
@@ -937,6 +958,235 @@ static void PoiSign(HDC dc, int x, int y, int kind, const Style& st)
     DeleteObject(white);
 }
 
+// The label passes in drawing order: places (the biggest first), signs, streets, house numbers; each from its zoom
+// (car parks from z17: PC 2026-10-27, many at z16; neighbourhoods and the small streets close up only)
+struct LabelPass { unsigned char kind, rank, minZoom; };
+static const LabelPass kPasses[] = {
+    { K_PLACE, 0, 0 }, { K_PLACE, 1, 0 }, { K_PLACE, 2, 14 },
+    { K_FUEL, 0, 14 }, { K_PARKING, 1, 17 },
+    { K_ROADNAME, 0, 14 }, { K_ROADNAME, 1, 14 }, { K_ROADNAME, 2, 15 },
+    { K_HOUSENUM, 2, 17 },
+};
+
+static HFONT Cached(HFONT& f, int height, int weight, int tenths)   // created when first needed
+{
+    if (!f)
+        f = LabelFont(height, weight, tenths);
+    return f;
+}
+
+static HFONT PassFont(int kind, int rank)
+{
+    static const int kPlaceHeight[3] = { 17, 15, 13 };
+    if (kind == K_PLACE)
+        return Cached(s_placeFont[rank], kPlaceHeight[rank], rank < 2 ? FW_BOLD : FW_NORMAL, 0);
+    if (kind == K_ROADNAME)
+        return Cached(s_streetFont[18], 13, FW_NORMAL, 0);
+    return Cached(s_houseFont, 11, FW_NORMAL, 0);   // house numbers, the stations' names
+}
+
+static HFONT StreetFont(int bucket)
+{
+    return Cached(s_streetFont[bucket + 18], 13, FW_NORMAL, bucket * 50);
+}
+
+static void AddAvoid(LabelView& v, const RECT* avoid, int navoid)   // taken by the controls
+{
+    for (int i = 0; i < navoid && i < 16; i++) {
+        Placed& p = s_placed[v.np++];
+        p.l = avoid[i].left;
+        p.t = avoid[i].top;
+        p.r = avoid[i].right;
+        p.b = avoid[i].bottom;
+        p.name = NULL;   // (no name: never "the same street")
+        p.cx = p.cy = 0;
+    }
+}
+
+// The label's screen point (x, y); false = too far off the map
+static bool OnScreen(const LabelView& v, const VLabelSet& set, const VLabel& lb, double& x, double& y)
+{
+    double ox = (double)set.key.x * kExtent * v.unit, oy = (double)set.key.y * kExtent * v.unit;
+    double dx = ox + lb.x * v.unit - v.vx, dy = oy + lb.y * v.unit - v.vy;
+    x = v.cx + dx * v.rc + dy * v.rs;
+    y = v.cy - dx * v.rs + dy * v.rc;
+    const RECT& mr = *v.mr;
+    return x >= mr.left - 60 && x <= mr.right + 60 && y >= mr.top - 20 && y <= mr.bottom + 20;
+}
+
+static bool SignNamed(const LabelView& v, int kind, int n)   // a station's name under its sign from z16
+{
+    return n && kind == K_FUEL && v.z >= 16;
+}
+
+static bool SignLabel(LabelView& v, int kind, const wchar_t* s, int n, const SIZE& sz, double x, double y,
+                      Placed& box)
+{
+    bool named = SignNamed(v, kind, n);
+    int w = 20, below = 0;
+    if (named) {
+        below = sz.cy;
+        if (sz.cx > 20)
+            w = sz.cx;
+    }
+    box.l = (int)x - w / 2 - 1;
+    box.t = (int)y - 11;
+    box.r = box.l + w + 2;
+    box.b = (int)y + 11 + below;
+    box.name = NULL;
+    if (!Free(v, box))
+        return false;
+    PoiSign(v.dc, (int)x, (int)y, kind, v.pal[kind]);
+    if (named)
+        Halo(v.dc, (int)x - sz.cx / 2, (int)y + 11, s, n, v.pal[K_ROADNAME]);
+    return true;
+}
+
+// A place's name (with its halo) or a house number (many, small - no halo: 9 draws each would be slow on the unit)
+static bool TextLabel(LabelView& v, int kind, const wchar_t* s, int n, const SIZE& sz, double x, double y,
+                      Placed& box)
+{
+    box.l = (int)x - sz.cx / 2 - 2;
+    box.t = (int)y - sz.cy / 2 - 1;
+    box.r = box.l + sz.cx + 4;
+    box.b = box.t + sz.cy + 2;
+    if (!Free(v, box))
+        return false;
+    if (kind == K_PLACE)
+        Halo(v.dc, box.l + 2, box.t + 1, s, n, v.pal[K_PLACE]);
+    else {
+        SetTextColor(v.dc, RGB(v.pal[K_HOUSENUM].r, v.pal[K_HOUSENUM].g, v.pal[K_HOUSENUM].b));
+        ExtTextOut(v.dc, box.l + 2, box.t + 1, 0, NULL, s, (UINT)n, NULL);
+    }
+    return true;
+}
+
+// The road's screen direction (sx, sy) upright (never upside down), in 5 degree steps counterclockwise: -18..18
+static int UprightBucket(double sx, double sy)
+{
+    if (sx < 0 || (sx == 0 && sy > 0)) {
+        sx = -sx;
+        sy = -sy;
+    }
+    double th = atan2(-sy, sx) * 180.0 / M_PI;   // counterclockwise, -90..90
+    int bucket = (int)floor(th / 5.0 + 0.5);
+    return bucket < -18 ? -18 : bucket > 18 ? 18 : bucket;
+}
+
+static void Span(const double* v, double& lo, double& hi)   // of 4 values
+{
+    lo = hi = v[0];
+    for (int k = 1; k < 4; k++) {
+        if (v[k] < lo) lo = v[k];
+        if (v[k] > hi) hi = v[k];
+    }
+}
+
+// The text of size sz centred on (x, y) turned by the bucket's angle: its origin (tx, ty), its screen box
+static void TurnedBox(double x, double y, const SIZE& sz, int bucket, Placed& box, double& tx, double& ty)
+{
+    double a = bucket * 5.0 * M_PI / 180.0, ca = cos(a), sa = sin(a);
+    // the text's direction (ca, -sa), its "down" (sa, ca); the origin is its top left corner
+    double w = sz.cx, h = sz.cy;
+    tx = x - ca * w / 2 - sa * h / 2;
+    ty = y + sa * w / 2 - ca * h / 2;
+    double xs[4] = { tx, tx + ca * w, tx + sa * h, tx + ca * w + sa * h };
+    double ys[4] = { ty, ty - sa * w, ty + ca * h, ty - sa * w + ca * h };
+    double l, r, t, b;
+    Span(xs, l, r);
+    Span(ys, t, b);
+    box.l = (int)l - 1;
+    box.t = (int)t - 1;
+    box.r = (int)r + 1;
+    box.b = (int)b + 1;
+}
+
+static bool SameStreetNear(const LabelView& v, const Placed& box)   // its name already placed within 300 px
+{
+    bool again = false;
+    for (int k = 0; k < v.np && !again; k++)
+        again = s_placed[k].name && !wcscmp(s_placed[k].name, box.name) &&
+                abs(s_placed[k].cx - box.cx) + abs(s_placed[k].cy - box.cy) < 300;
+    return again;
+}
+
+// A street's name along its road, upright
+static bool StreetLabel(LabelView& v, const VLabel& lb, const wchar_t* s, int n, const SIZE& sz, double x, double y,
+                        Placed& box)
+{
+    double sx = lb.dx * v.rc + lb.dy * v.rs, sy = -lb.dx * v.rs + lb.dy * v.rc;   // the road on the screen
+    double len = sqrt(sx * sx + sy * sy);
+    if (len * v.unit < sz.cx + 12)
+        return false;   // the segment is shorter than the name
+    int bucket = UprightBucket(sx, sy);
+    double tx, ty;
+    TurnedBox(x, y, sz, bucket, box, tx, ty);
+    if (SameStreetNear(v, box) || !Free(v, box))
+        return false;
+    SelectObject(v.dc, StreetFont(bucket));
+    Halo(v.dc, (int)floor(tx + 0.5), (int)floor(ty + 0.5), s, n, v.pal[K_ROADNAME]);
+    return true;
+}
+
+// One label at its screen point (x, y), unless it would cover another
+static void PlaceLabel(LabelView& v, int kind, HFONT pf, const VLabelSet& set, const VLabel& lb, double x, double y)
+{
+    const wchar_t* s = set.names + lb.name;
+    int n = (int)wcslen(s);
+    HGDIOBJ prev = SelectObject(v.dc, pf);
+    if (!v.font0)
+        v.font0 = prev;
+    SIZE sz;
+    GetTextExtentPoint32(v.dc, s, n, &sz);
+    Placed box;
+    box.name = s;
+    box.cx = (int)x;
+    box.cy = (int)y;
+    bool shown;
+    if (kind == K_FUEL || kind == K_PARKING)
+        shown = SignLabel(v, kind, s, n, sz, x, y, box);
+    else if (kind == K_ROADNAME)
+        shown = StreetLabel(v, lb, s, n, sz, x, y, box);
+    else
+        shown = TextLabel(v, kind, s, n, sz, x, y, box);
+    if (shown)
+        s_placed[v.np++] = box;
+}
+
+static void DrawSet(LabelView& v, const LabelPass& p, HFONT pf, const VLabelSet& set)   // one tile's labels of a pass
+{
+    for (int li = 0; li < set.n && v.np < v.cap; li++) {
+        const VLabel& lb = set.l[li];
+        double x, y;
+        if (lb.rank == p.rank && lb.kind == p.kind && OnScreen(v, set, lb, x, y))
+            PlaceLabel(v, p.kind, pf, set, lb, x, y);
+    }
+}
+
+static void DrawPass(LabelView& v, const LabelPass& p, int zd)   // the labels of a pass, of all tiles of zoom zd
+{
+    HFONT pf = PassFont(p.kind, p.rank);
+    for (int si = 0; si < kLabelSets && v.np < v.cap; si++) {
+        const VLabelSet& set = s_labels[si];
+        if (set.useTick && set.key.z == VEC_ZBASE + zd)
+            DrawSet(v, p, pf, set);
+    }
+}
+
+static void LogLabelTime(DWORD ms, int shown)   // for the unit's log: turned text may be slow there (every 30 frames)
+{
+    static DWORD s_ms, s_max;
+    static int s_frames, s_shown;
+    s_ms += ms;
+    s_max = ms > s_max ? ms : s_max;
+    s_shown += shown;
+    if (++s_frames == 30) {
+        Log("vtile: labels %d per frame, %lu ms avg, %lu max", s_shown / 30, s_ms / 30, s_max);
+        s_ms = s_max = 0;
+        s_frames = s_shown = 0;
+    }
+}
+
 // The names of the view's data tiles over the frame: (cx, cy) the screen point of the view's world point (vx, vy) at
 // zoom z, the map turned by angle (degrees, as DrawRoute). Places first (the biggest first), then streets along their
 // road, upright; none over another or over avoid (the car), a street's name once per 300 px.
@@ -947,162 +1197,30 @@ void VLabelsDraw(HDC dc, const RECT& mr, double cx, double cy, double vx, double
     if (zd < 10)
         return;
     DWORD t0 = GetTickCount();
-    s_mapRect = &mr;
-    const Style* pal = kStyle[g_cfg.night ? 1 : 0];
-    double ra = angle * M_PI / 180.0, rc = cos(ra), rs = sin(ra);
-    double unit = (double)(1 << (z - zd)) * TILE / kExtent;   // world px per tile unit
-    static Placed placed[16 + 400];
-    int np = 0;
-    for (int i = 0; i < navoid && i < 16; i++) {   // taken by the controls (no name: never "the same street")
-        Placed& p = placed[np++];
-        p.l = avoid[i].left;
-        p.t = avoid[i].top;
-        p.r = avoid[i].right;
-        p.b = avoid[i].bottom;
-        p.name = NULL;
-        p.cx = p.cy = 0;
-    }
-    int cap = np + (z >= 17 ? 400 : 160);   // (close up: the house numbers too)
+    double ra = angle * M_PI / 180.0;
+    LabelView v;
+    v.dc = dc;
+    v.mr = &mr;
+    v.cx = cx;
+    v.cy = cy;
+    v.vx = vx;
+    v.vy = vy;
+    v.rc = cos(ra);
+    v.rs = sin(ra);
+    v.unit = (double)(1 << (z - zd)) * TILE / kExtent;   // world px per tile unit
+    v.z = z;
+    v.pal = kStyle[g_cfg.night ? 1 : 0];
+    v.font0 = NULL;
+    v.np = 0;
+    AddAvoid(v, avoid, navoid);
+    v.cap = v.np + (z >= 17 ? 400 : 160);   // (close up: the house numbers too)
     SetBkMode(dc, TRANSPARENT);
-    HGDIOBJ of = NULL;
     EnterCriticalSection(&s_cs);
-    static const int kOrder[4] = { 0, 3, 1, 2 };   // places, signs, streets, house numbers
-    for (int oi = 0; oi < 4; oi++)
-        for (int rank = 0; rank < 3; rank++) {
-            int kind = kOrder[oi];
-            if (kind == 3 && (rank == 2 || z < (rank == 0 ? 14 : 17)))
-                continue;   // filling stations from z14, car parks from z17 (PC 2026-10-27: many at z16)
-            if (kind == 2 && (rank != 2 || z < 17))
-                continue;   // house numbers: close up only
-            if (kind == 0 && rank == 2 && z < 14)
-                continue;   // neighbourhoods: close up only
-            if (kind == 1 && (z < 14 || (rank == 2 && z < 15)))
-                continue;   // streets: from z14, the small ones from z15
-            HFONT pf;
-            if (kind == 2 || kind == 3) {
-                if (!s_houseFont)
-                    s_houseFont = LabelFont(11, FW_NORMAL, 0);
-                pf = s_houseFont;
-            } else if (kind == 0) {
-                if (!s_placeFont[rank])
-                    s_placeFont[rank] = LabelFont(rank == 0 ? 17 : rank == 1 ? 15 : 13, rank < 2 ? FW_BOLD : FW_NORMAL, 0);
-                pf = s_placeFont[rank];
-            } else {
-                if (!s_streetFont[18])
-                    s_streetFont[18] = LabelFont(13, FW_NORMAL, 0);
-                pf = s_streetFont[18];
-            }
-            for (int si = 0; si < kLabelSets && np < cap; si++) {
-                const VLabelSet& set = s_labels[si];
-                if (!set.useTick || set.key.z != VEC_ZBASE + zd)
-                    continue;
-                double ox = (double)set.key.x * kExtent * unit, oy = (double)set.key.y * kExtent * unit;
-                for (int li = 0; li < set.n && np < cap; li++) {
-                    const VLabel& lb = set.l[li];
-                    int want = kind == 0 ? K_PLACE : kind == 1 ? K_ROADNAME : kind == 2 ? K_HOUSENUM :
-                               rank == 0 ? K_FUEL : K_PARKING;
-                    if (lb.rank != rank || lb.kind != want)
-                        continue;
-                    double dx = ox + lb.x * unit - vx, dy = oy + lb.y * unit - vy;
-                    double x = cx + dx * rc + dy * rs, y = cy - dx * rs + dy * rc;
-                    if (x < mr.left - 60 || x > mr.right + 60 || y < mr.top - 20 || y > mr.bottom + 20)
-                        continue;
-                    const wchar_t* s = set.names + lb.name;
-                    int n = (int)wcslen(s);
-                    HGDIOBJ prev = SelectObject(dc, pf);
-                    if (!of)
-                        of = prev;
-                    SIZE sz;
-                    GetTextExtentPoint32(dc, s, n, &sz);
-                    Placed box;
-                    box.name = s;
-                    box.cx = (int)x;
-                    box.cy = (int)y;
-                    if (kind == 3) {   // the sign; a station's name under it from z16
-                        bool named = n && want == K_FUEL && z >= 16;
-                        int w = named && sz.cx > 20 ? sz.cx : 20;
-                        box.l = (int)x - w / 2 - 1;
-                        box.t = (int)y - 11;
-                        box.r = box.l + w + 2;
-                        box.b = (int)y + 11 + (named ? sz.cy : 0);
-                        box.name = NULL;
-                        if (!Free(placed, np, box))
-                            continue;
-                        PoiSign(dc, (int)x, (int)y, want, pal[want]);
-                        if (named)
-                            Halo(dc, (int)x - sz.cx / 2, (int)y + 11, s, n, pal[K_ROADNAME]);
-                    } else if (kind != 1) {
-                        box.l = (int)x - sz.cx / 2 - 2;
-                        box.t = (int)y - sz.cy / 2 - 1;
-                        box.r = box.l + sz.cx + 4;
-                        box.b = box.t + sz.cy + 2;
-                        if (!Free(placed, np, box))
-                            continue;
-                        if (kind == 0)
-                            Halo(dc, box.l + 2, box.t + 1, s, n, pal[K_PLACE]);
-                        else {   // house numbers: many, small - no halo (9 draws each would be slow on the unit)
-                            SetTextColor(dc, RGB(pal[K_HOUSENUM].r, pal[K_HOUSENUM].g, pal[K_HOUSENUM].b));
-                            ExtTextOut(dc, box.l + 2, box.t + 1, 0, NULL, s, (UINT)n, NULL);
-                        }
-                    } else {
-                        // the road's direction on the screen, upright (never upside down)
-                        double sx = lb.dx * rc + lb.dy * rs, sy = -lb.dx * rs + lb.dy * rc;
-                        double len = sqrt(sx * sx + sy * sy);
-                        if (len * unit < sz.cx + 12)
-                            continue;   // the segment is shorter than the name
-                        if (sx < 0 || (sx == 0 && sy > 0)) {
-                            sx = -sx;
-                            sy = -sy;
-                        }
-                        double th = atan2(-sy, sx) * 180.0 / M_PI;   // counterclockwise, -90..90
-                        int bucket = (int)floor(th / 5.0 + 0.5);
-                        bucket = bucket < -18 ? -18 : bucket > 18 ? 18 : bucket;
-                        double a = bucket * 5.0 * M_PI / 180.0, ca = cos(a), sa = sin(a);
-                        // the text's direction (ca, -sa), its "down" (sa, ca); the origin is its top left corner
-                        double w = sz.cx, h = sz.cy;
-                        double tx = x - ca * w / 2 - sa * h / 2, ty = y + sa * w / 2 - ca * h / 2;
-                        double xs[4] = { tx, tx + ca * w, tx + sa * h, tx + ca * w + sa * h };
-                        double ys[4] = { ty, ty - sa * w, ty + ca * h, ty - sa * w + ca * h };
-                        double l = xs[0], r = xs[0], t = ys[0], b = ys[0];
-                        for (int k = 1; k < 4; k++) {
-                            if (xs[k] < l) l = xs[k];
-                            if (xs[k] > r) r = xs[k];
-                            if (ys[k] < t) t = ys[k];
-                            if (ys[k] > b) b = ys[k];
-                        }
-                        box.l = (int)l - 1;
-                        box.t = (int)t - 1;
-                        box.r = (int)r + 1;
-                        box.b = (int)b + 1;
-                        bool again = false;   // the same street close by: once
-                        for (int k = 0; k < np && !again; k++)
-                            again = placed[k].name && !wcscmp(placed[k].name, s) &&
-                                    abs(placed[k].cx - box.cx) + abs(placed[k].cy - box.cy) < 300;
-                        if (again || !Free(placed, np, box))
-                            continue;
-                        int fi = bucket + 18;
-                        if (!s_streetFont[fi])
-                            s_streetFont[fi] = LabelFont(13, FW_NORMAL, bucket * 50);
-                        SelectObject(dc, s_streetFont[fi]);
-                        Halo(dc, (int)floor(tx + 0.5), (int)floor(ty + 0.5), s, n, pal[K_ROADNAME]);
-                    }
-                    placed[np++] = box;
-                }
-            }
-        }
+    for (int i = 0; i < (int)(sizeof(kPasses) / sizeof(kPasses[0])); i++)
+        if (z >= kPasses[i].minZoom)
+            DrawPass(v, kPasses[i], zd);
     LeaveCriticalSection(&s_cs);
-    if (of)
-        SelectObject(dc, of);
-    // the time, for the unit's log: turned text may be slow there (every 30 frames)
-    static DWORD s_ms, s_max;
-    static int s_frames, s_shown;
-    DWORD ms = GetTickCount() - t0;
-    s_ms += ms;
-    s_max = ms > s_max ? ms : s_max;
-    s_shown += np - navoid;
-    if (++s_frames == 30) {
-        Log("vtile: labels %d per frame, %lu ms avg, %lu max", s_shown / 30, s_ms / 30, s_max);
-        s_ms = s_max = 0;
-        s_frames = s_shown = 0;
-    }
+    if (v.font0)
+        SelectObject(dc, v.font0);
+    LogLabelTime(GetTickCount() - t0, v.np - navoid);
 }
