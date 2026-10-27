@@ -470,11 +470,22 @@ static void Ensure(int mode)
     }
 }
 
+int MapLook()
+{
+    return (g_cfg.vector ? 1 : 0) + (g_cfg.night ? 2 : 0);
+}
+
 static void OnMapResult(MapResult* res)
 {
     if (res->seq == s_inflightSeq)
         s_inflight = false;
-    if (res->err == NET_OK) {
+    if (res->err == NET_OK && res->req.src == SRC_OSM && res->look != (g_cfg.vector ? MapLook() : -1)) {
+        ImageFree(&res->img);   // drawn for the other kind / palette (switched while it came)
+        res->look = -2;
+    }
+    if (res->look == -2) {
+        // dropped: the view asks for it again below
+    } else if (res->err == NET_OK) {
         CacheAdd(res, GetTickCount());
         s_noParentKeys.n = 0;   // new tile on disk
         s_lastErr = 0;
@@ -565,18 +576,24 @@ static void ApplySettings()
     ConfigSave();
 }
 
-// The base map: OSM's raster tiles or our vector ones (vtile.cpp); the other kind's tiles leave the memory.
+// The base map's tiles out of memory, the view's ones loaded / downloaded again (another kind or palette).
+static void BaseRedraw()
+{
+    CacheDropBase();
+    s_missKeys.n = 0;
+    s_noParentKeys.n = 0;
+    Ensure(REQ_USER);
+}
+
+// The base map: OSM's raster tiles or our vector ones (vtile.cpp).
 static void MapStyleSet(int vector)
 {
     if (g_cfg.vector == vector)
         return;
     g_cfg.vector = vector;
     Log("map: %s", vector ? "vector" : "raster");
-    CacheDropBase();
-    s_missKeys.n = 0;
-    s_noParentKeys.n = 0;
     ConfigSave();
-    Ensure(REQ_USER);
+    BaseRedraw();
 }
 
 static void OnSettingsCtl(int id)
@@ -691,6 +708,8 @@ static void NightSet(bool night)
         s_nightLut = NULL;
     }
     ConfigSave();
+    if (g_cfg.vector)   // its tiles are drawn in the night palette: drawn again
+        BaseRedraw();
     InvalidateRect(s_wnd, NULL, FALSE);
 }
 
@@ -1406,7 +1425,7 @@ static void DrawSlot(HDC rdc, HDC src, int tx, int ty, bool inWorld, const Cache
             if (ov[i].left < (tx + 1) * TILE && ov[i].right > tx * TILE && ov[i].top < (ty + 1) * TILE &&
                 ov[i].bottom > ty * TILE)
                 BlendRing(ov[i].e->ov, ox + ov[i].left - tx * TILE, oy + ov[i].top - ty * TILE, ov[i].sy, rc);
-    const unsigned short* lut = g_cfg.night ? NightLut() : NULL;
+    const unsigned short* lut = g_cfg.night && !g_cfg.vector ? NightLut() : NULL;   // (vector: its own night palette)
     if (lut)
         for (int y = rc.top; y < rc.bottom; y++) {
             unsigned short* p = s_ringBits + (kRingPx - 1 - y) * kRingPx + rc.left;
@@ -2072,6 +2091,8 @@ static void DrawMap(HDC dc)
         Text(dc, s_fontSmall, g_cfg.night ? RGB(160, 160, 160) : RGB(90, 90, 90), mr.left, mr.top, mr.right,
              mr.bottom, DT_CENTER, s_lastErr ? NetErrorText(s_lastErr) : L"Загрузка карты...");
 
+    if (g_cfg.vector && drawn)   // the names over the turned frame, upright (vtile.cpp)
+        VLabelsDraw(dc, mr, cx, cy, vx, vy, angle, g_cfg.z);
     DrawAttribution(dc, mr);
     DrawRoute(dc, cx, cy, vx, vy, angle);
     DrawGpsMarker(dc, cx, cy, vx, vy, angle);

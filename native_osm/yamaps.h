@@ -123,7 +123,9 @@ struct MapResult {
     int            bytes;
     Image          img;     // base map
     Overlay*       ov;      // traffic overlay
+    int            look;    // a vector tile: drawn for this g_cfg.vector + 2 * night (MapLook); else -1
 };
+int   MapLook();            // the base map's kind and palette now: a tile drawn for another one is not kept
 void  NetStart(HWND notify);
 DWORD NetRequest(const MapRequest& r);   // returns sequence number
 void  NetStop();
@@ -192,6 +194,7 @@ bool OnApiResult(ApiResult* r);     // frees it; true = redraw
 void       VTileInit();     // before the download thread starts
 MapRequest VTileData(const MapRequest& r);   // the data tile (VEC_ZBASE + z) a shown tile is drawn from
 bool       VTileRender(const MapRequest& r, const unsigned char* data, int len, Image* out);   // data NULL: parsed already
+void       VLabelsDraw(HDC dc, const RECT& mr, double cx, double cy, double vx, double vy, double angle, int z);
 const wchar_t* MapFace();   // main.cpp: the text's face (Golos Text, else Tahoma)
 
 // cache.cpp - decoded images in memory + OSM tiles on disk in <exe>\Cache

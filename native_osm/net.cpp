@@ -203,6 +203,7 @@ static int VecVersion()
 // A shown tile from its data tile: the disk's .pbf, else downloaded (and kept) - then drawn.
 static void FetchVector(const MapRequest& r, MapResult* res)
 {
+    res->look = MapLook();   // (read before drawing: a switch meanwhile drops this tile)
     MapRequest d = VTileData(r);
     wchar_t file[MAX_PATH];
     CachePath(file, d);
@@ -374,6 +375,7 @@ static DWORD WINAPI NetThread(LPVOID)
                 break;
             res->req = r;
             res->seq = seq;
+            res->look = -1;
             Fetch(r, res);
             if (s_stop || !PostMessage(s_notify, WM_APP_MAP, 0, (LPARAM)res)) {
                 ImageFree(&res->img);

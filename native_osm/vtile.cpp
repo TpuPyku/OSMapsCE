@@ -6,31 +6,50 @@
 // z14) and only turned with the view. z15 and up: a part of the z14 tile drawn larger. The .pbf files go to the disk
 // cache as Cache\<100 + z>\... (VEC_ZBASE: the same size limit and pruning as the raster tiles).
 // The parser and the filler are VTileTest's (native_vtest/vtest.cpp): areas filled by our own scanline filler in
-// integers (the unit's ARM has no FPU), roads as GDI lines with a casing, place names as text.
+// integers (the unit's ARM has no FPU), roads as GDI lines with a casing. The names (places, streets) are not in the
+// tiles: each parsed tile leaves its labels (VLabelSet), drawn over the turned frame by VLabelsDraw - upright, streets
+// along their road, without overlaps.
 
 static const int kExtent = 4096;
 
 // What is drawn, in drawing order: areas, then lines, then points.
 enum { K_RESID, K_INDUSTRIAL, K_GRASS, K_WOOD, K_PARK, K_WATER, K_BUILDING,
-       K_WATERWAY, K_RAIL, K_PATH, K_SERVICE, K_MINOR, K_SECONDARY, K_PRIMARY, K_MAJOR, K_PLACE, K_COUNT };
+       K_WATERWAY, K_RAIL, K_PATH, K_SERVICE, K_MINOR, K_SECONDARY, K_PRIMARY, K_MAJOR, K_PLACE, K_ROADNAME, K_COUNT };
 static const int kFirstLine = K_WATERWAY;
 
-struct Style { unsigned char r, g, b; int width; unsigned char cr, cg, cb; };   // width 0: area; c*: casing
-static const Style kStyle[K_COUNT] = {
-    { 0xe0, 0xdf, 0xdf, 0 }, { 0xeb, 0xdb, 0xe8, 0 }, { 0xcd, 0xeb, 0xb0, 0 }, { 0xad, 0xd1, 0x9e, 0 },
-    { 0xc8, 0xfa, 0xcc, 0 }, { 0xaa, 0xd3, 0xdf, 0 }, { 0xd9, 0xd0, 0xc9, 0 },
-    { 0xaa, 0xd3, 0xdf, 2 }, { 0x99, 0x99, 0x99, 2 }, { 0xfa, 0x80, 0x72, 1 },
-    { 0xff, 0xff, 0xff, 2, 0xcc, 0xcc, 0xcc }, { 0xff, 0xff, 0xff, 5, 0xbb, 0xbb, 0xbb }, { 0xf7, 0xfa, 0xbf, 7, 0xb0, 0xb0, 0x90 },
-    { 0xfc, 0xd6, 0xa4, 8, 0xa0, 0x80, 0x50 }, { 0xe8, 0x92, 0xa2, 9, 0xa0, 0x50, 0x60 },
-    { 0x30, 0x30, 0x30, 0 },
-};
+// The two palettes of design v3 (VestaHome/skin/make_osm_v3_mockup.py, 2026-10-26): the day warm and light, the night
+// its own dark one (not the raster map's inverted lightness), roads without casings. K_PLACE, K_ROADNAME: the text,
+// c* its halo.
+struct Style { unsigned char r, g, b; int width; bool cased; unsigned char cr, cg, cb; };   // width 0: area
+static const Style kStyle[2][K_COUNT] = { {
+    { 236, 232, 226, 0 }, { 234, 228, 232, 0 }, { 216, 234, 202, 0 }, { 198, 222, 186, 0 },
+    { 206, 232, 196, 0 }, { 168, 204, 226, 0 }, { 224, 217, 208, 0 },
+    { 168, 204, 226, 2 }, { 184, 180, 174, 2 }, { 206, 196, 184, 1 },
+    { 255, 255, 255, 2, true, 214, 208, 200 }, { 255, 255, 255, 5, true, 214, 208, 200 },
+    { 255, 247, 214, 7, true, 222, 204, 160 }, { 255, 228, 176, 8, true, 224, 182, 120 },
+    { 255, 206, 150, 9, true, 214, 150, 90 },
+    { 40, 44, 50, 0, true, 255, 255, 255 }, { 66, 70, 76, 0, true, 255, 255, 255 },
+}, {
+    { 22, 25, 30, 0 }, { 25, 25, 31, 0 }, { 20, 31, 25, 0 }, { 18, 33, 25, 0 },
+    { 21, 37, 29, 0 }, { 13, 34, 50, 0 }, { 31, 35, 42, 0 },
+    { 13, 34, 50, 2 }, { 48, 52, 58, 2 }, { 32, 36, 42, 1 },
+    { 38, 43, 50, 2 }, { 44, 50, 58, 5 }, { 62, 70, 80, 7 }, { 84, 80, 68, 8 }, { 112, 88, 58, 9 },
+    { 205, 208, 214, 0, true, 11, 12, 14 }, { 150, 156, 166, 0, true, 11, 12, 14 },
+} };
+static const unsigned char kBg[2][3] = { { 243, 240, 235 }, { 17, 19, 23 } };
+// The smallest shown zoom of a kind (design v3: buildings from z15, paths from z16)
+static int MinZoom(int kind)
+{
+    return kind == K_BUILDING || kind == K_SERVICE ? 15 : kind == K_PATH ? 16 : 0;
+}
 
 struct Feat {
     unsigned char kind;
     unsigned short nparts;
     int part0;                  // into VTile::parts
     short x0, y0, x1, y1;       // bounding box, tile units
-    int name;                   // K_PLACE: into VTile::names, -1 none
+    int name;                   // K_PLACE, K_ROADNAME: into VTile::names, -1 none
+    unsigned char rank;         // the names: 0 the biggest (a city, a main road) .. 2
 };
 
 struct VTile {
@@ -150,6 +169,8 @@ static int Kind(const Pb& layer, const Pb& cls, int geomType)
     }
     if (StrEq(layer, "place") && geomType == 1)
         return K_PLACE;
+    if (StrEq(layer, "transportation_name") && geomType == 2)
+        return K_ROADNAME;
     return -1;
 }
 
@@ -229,6 +250,18 @@ static bool DecodeLayer(Pb b, VTile& t)
         ft.x0 = ft.y0 = 32767;
         ft.x1 = ft.y1 = -32768;
         ft.name = -1;
+        ft.rank = 2;
+        if (kind == K_PLACE)
+            ft.rank = StrEq(cls, "city") || StrEq(cls, "town") ? 0 :
+                      StrEq(cls, "suburb") || StrEq(cls, "village") || StrEq(cls, "quarter") ? 1 : 2;
+        else if (kind == K_ROADNAME) {
+            if (StrEq(cls, "motorway") || StrEq(cls, "trunk") || StrEq(cls, "primary"))
+                ft.rank = 0;
+            else if (StrEq(cls, "secondary") || StrEq(cls, "tertiary"))
+                ft.rank = 1;
+            else if (!StrEq(cls, "minor"))
+                continue;   // (service roads, paths: no names)
+        }
         int x = 0, y = 0, start = -1;
         bool ok = true;
         while (geom.p < geom.end) {
@@ -266,7 +299,7 @@ static bool DecodeLayer(Pb b, VTile& t)
             return false;
         if (!ft.nparts)
             continue;
-        if (kind == K_PLACE && nm.p) {
+        if ((kind == K_PLACE || kind == K_ROADNAME) && nm.p) {
             wchar_t w[64];
             char u[128];
             int n = (int)(nm.end - nm.p);
@@ -280,6 +313,8 @@ static bool DecodeLayer(Pb b, VTile& t)
                     Push(t.names, t.nnames, t.ncap, w[i]);
             }
         }
+        if (kind == K_ROADNAME && ft.name < 0)
+            continue;
         if (!Push(t.f, t.nf, t.fcap, ft))
             return false;
     }
@@ -293,6 +328,83 @@ static void FreeParsed(VTile& t)
     free(t.pts);
     free(t.names);
     memset(&t, 0, sizeof(t));
+}
+
+// ---------------------------------------------------------------- labels
+
+// A tile's names: places at their point, streets at the middle of their longest segment (dx, dy: the segment).
+// Only the ones whose point is inside the tile: the tiles' buffers repeat their neighbours' names.
+struct VLabel { unsigned char kind, rank; short x, y, dx, dy; int name; };
+struct VLabelSet { MapRequest key; VLabel* l; int n; wchar_t* names; int nn; DWORD useTick; };
+enum { kLabelSets = 48 };       // a z13 view needs ~24 data tiles
+static VLabelSet s_labels[kLabelSets];
+
+static void LabelsFrom(const VTile& t)
+{
+    VLabelSet* set = &s_labels[0];
+    for (int i = 0; i < kLabelSets; i++) {
+        if (s_labels[i].useTick && SameKey(s_labels[i].key, t.key)) {
+            s_labels[i].useTick = GetTickCount();
+            return;
+        }
+        if (s_labels[i].useTick < set->useTick)
+            set = &s_labels[i];
+    }
+    free(set->l);
+    free(set->names);
+    memset(set, 0, sizeof(*set));
+    int n = 0;
+    for (int i = 0; i < t.nf; i++)
+        if (t.f[i].name >= 0)
+            n++;
+    set->l = (VLabel*)malloc((n ? n : 1) * sizeof(VLabel));
+    set->names = (wchar_t*)malloc((t.nnames ? t.nnames : 1) * sizeof(wchar_t));
+    if (!set->l || !set->names) {
+        free(set->l);
+        free(set->names);
+        memset(set, 0, sizeof(*set));
+        return;
+    }
+    memcpy(set->names, t.names, t.nnames * sizeof(wchar_t));
+    set->nn = t.nnames;
+    for (int i = 0; i < t.nf; i++) {
+        const Feat& f = t.f[i];
+        if (f.name < 0)
+            continue;
+        VLabel l;
+        l.kind = f.kind;
+        l.rank = f.rank;
+        l.name = f.name;
+        l.dx = l.dy = 0;
+        if (f.kind == K_PLACE) {
+            l.x = f.x0;
+            l.y = f.y0;
+        } else {
+            int best = -1;
+            for (int pi = 0; pi < f.nparts; pi++) {
+                int p0 = t.parts[(f.part0 + pi) * 2], pn = t.parts[(f.part0 + pi) * 2 + 1];
+                for (int q = 1; q < pn; q++) {
+                    int ax = t.pts[(p0 + q - 1) * 2], ay = t.pts[(p0 + q - 1) * 2 + 1];
+                    int bx = t.pts[(p0 + q) * 2], by = t.pts[(p0 + q) * 2 + 1];
+                    int d2 = (bx - ax) * (bx - ax) + (by - ay) * (by - ay);
+                    if (d2 > best) {
+                        best = d2;
+                        l.x = (short)((ax + bx) / 2);
+                        l.y = (short)((ay + by) / 2);
+                        l.dx = (short)(bx - ax);
+                        l.dy = (short)(by - ay);
+                    }
+                }
+            }
+            if (best <= 0)
+                continue;
+        }
+        if (l.x < 0 || l.y < 0 || l.x >= kExtent || l.y >= kExtent)
+            continue;
+        set->l[set->n++] = l;
+    }
+    set->key = t.key;
+    set->useTick = GetTickCount();
 }
 
 // The data tile parsed (from the recent ones, or now); NULL = bad data / out of memory.
@@ -327,6 +439,7 @@ static VTile* Parsed(const MapRequest& key, const unsigned char* data, int len)
     }
     t.key = key;
     t.useTick = GetTickCount();
+    LabelsFrom(t);
     return &t;
 }
 
@@ -455,14 +568,18 @@ static int LineWidth(int width, int z)
     return w < 1 ? 1 : w;
 }
 
-static void Draw(const VTile& t, const Xf& xf, int z, HDC dc, unsigned short* bits)
+static void Draw(const VTile& t, const Xf& xf, int z, bool night, HDC dc, unsigned short* bits)
 {
-    unsigned short bg = RGB565(0xf2, 0xef, 0xe9);
+    const Style* pal = kStyle[night ? 1 : 0];
+    const unsigned char* bc = kBg[night ? 1 : 0];
+    unsigned short bg = RGB565(bc[0], bc[1], bc[2]);
     for (int i = 0; i < TILE * TILE; i++)
         bits[i] = bg;
     // areas, kind by kind, then the lines with their casings, then the labels
     for (int k = 0; k < kFirstLine; k++) {
-        unsigned short c = RGB565(kStyle[k].r, kStyle[k].g, kStyle[k].b);
+        if (z < MinZoom(k))
+            continue;
+        unsigned short c = RGB565(pal[k].r, pal[k].g, pal[k].b);
         for (int fi = 0; fi < t.nf; fi++) {
             const Feat& f = t.f[fi];
             if (f.kind != k || !BoxVisible(xf, f, 0))
@@ -491,8 +608,8 @@ static void Draw(const VTile& t, const Xf& xf, int z, HDC dc, unsigned short* bi
 #endif
     for (int pass = 0; pass < 2; pass++)
         for (int k = kFirstLine; k < K_PLACE; k++) {
-            const Style& sty = kStyle[k];
-            if (pass == 0 && !sty.cr)
+            const Style& sty = pal[k];
+            if ((pass == 0 && !sty.cased) || z < MinZoom(k))
                 continue;
             int w = LineWidth(sty.width, z) + (pass == 0 ? 2 : 0);
             HPEN pen = CreatePen(PS_SOLID, w, pass == 0 ? RGB(sty.cr, sty.cg, sty.cb) : RGB(sty.r, sty.g, sty.b));
@@ -529,34 +646,6 @@ static void Draw(const VTile& t, const Xf& xf, int z, HDC dc, unsigned short* bi
             SelectObject(dc, op);
             DeleteObject(pen);
         }
-    // place names, centred on their point; a name across the tile's edge is drawn by both tiles (each its part)
-    static HFONT s_font;
-    if (!s_font) {
-        LOGFONT lf;
-        memset(&lf, 0, sizeof(lf));
-        lf.lfHeight = -15;
-        lf.lfWeight = FW_BOLD;
-        lf.lfCharSet = DEFAULT_CHARSET;
-        lf.lfQuality = NONANTIALIASED_QUALITY;   // (smoothed comes out as ClearType's fringes on the unit, see MakeFont)
-        wcscpy(lf.lfFaceName, MapFace());
-        s_font = CreateFontIndirect(&lf);
-    }
-    HGDIOBJ of = SelectObject(dc, s_font);
-    SetBkMode(dc, TRANSPARENT);
-    SetTextColor(dc, RGB(0x30, 0x30, 0x30));
-    for (int fi = 0; fi < t.nf; fi++) {
-        const Feat& f = t.f[fi];
-        if (f.kind != K_PLACE || f.name < 0 || !BoxVisible(xf, f, 160))
-            continue;
-        int x, y;
-        Apply(xf, f.x0, f.y0, &x, &y);
-        const wchar_t* s = t.names + f.name;
-        int n = (int)wcslen(s);
-        SIZE sz;
-        GetTextExtentPoint32(dc, s, n, &sz);
-        ExtTextOut(dc, (x >> 4) - sz.cx / 2, (y >> 4) - sz.cy / 2, 0, NULL, s, (UINT)n, NULL);
-    }
-    SelectObject(dc, of);
 #ifndef UNDER_CE
     GdiFlush();
 #endif
@@ -585,7 +674,7 @@ bool VTileRender(const MapRequest& r, const unsigned char* data, int len, Image*
         xf.oy = (r.y - (key.y << xf.dz)) * kExtent;
         HDC dc = CreateCompatibleDC(NULL);
         HGDIOBJ ob = SelectObject(dc, out->bmp);
-        Draw(*t, xf, r.z, dc, bits);
+        Draw(*t, xf, r.z, g_cfg.night != 0, dc, bits);
         SelectObject(dc, ob);
         DeleteDC(dc);
         ok = true;
@@ -599,4 +688,171 @@ bool VTileRender(const MapRequest& r, const unsigned char* data, int len, Image*
 void VTileInit()   // before the download thread starts
 {
     InitializeCriticalSection(&s_cs);
+}
+
+// ---------------------------------------------------------------- the labels over the frame
+
+static HFONT s_placeFont[3];    // by rank
+static HFONT s_streetFont[37];  // by angle: -90..90 degrees in 5 degree steps (lazily)
+
+static HFONT LabelFont(int height, int weight, int tenths)
+{
+    LOGFONT lf;
+    memset(&lf, 0, sizeof(lf));
+    lf.lfHeight = -height;
+    lf.lfWeight = weight;
+    lf.lfEscapement = lf.lfOrientation = tenths;
+    lf.lfCharSet = DEFAULT_CHARSET;
+    lf.lfQuality = NONANTIALIASED_QUALITY;   // (smoothed comes out as ClearType's fringes on the unit)
+    wcscpy(lf.lfFaceName, MapFace());
+    return CreateFontIndirect(&lf);
+}
+
+struct Placed { int l, t, r, b; const wchar_t* name; int cx, cy; };
+
+static bool Free(const Placed* p, int np, const Placed& box)
+{
+    for (int i = 0; i < np; i++)
+        if (box.l < p[i].r && box.r > p[i].l && box.t < p[i].b && box.b > p[i].t)
+            return false;
+    return true;
+}
+
+// Text with the halo of its palette: 8 copies 1 px around in the halo's colour, then the text.
+static void Halo(HDC dc, int x, int y, const wchar_t* s, int n, const Style& st)
+{
+    static const int kHalo[8][2] = { { -1, -1 }, { 0, -1 }, { 1, -1 }, { -1, 0 }, { 1, 0 }, { -1, 1 }, { 0, 1 }, { 1, 1 } };
+    SetTextColor(dc, RGB(st.cr, st.cg, st.cb));
+    for (int h = 0; h < 8; h++)
+        ExtTextOut(dc, x + kHalo[h][0], y + kHalo[h][1], 0, NULL, s, (UINT)n, NULL);
+    SetTextColor(dc, RGB(st.r, st.g, st.b));
+    ExtTextOut(dc, x, y, 0, NULL, s, (UINT)n, NULL);
+}
+
+// The names of the view's data tiles over the frame: (cx, cy) the screen point of the view's world point (vx, vy) at
+// zoom z, the map turned by angle (degrees, as DrawRoute). Places first (the biggest first), then streets along their
+// road, upright; none over another, a street's name once per 300 px.
+void VLabelsDraw(HDC dc, const RECT& mr, double cx, double cy, double vx, double vy, double angle, int z)
+{
+    int zd = z > VEC_MAXZ ? VEC_MAXZ : z;
+    if (zd < 10)
+        return;
+    DWORD t0 = GetTickCount();
+    const Style* pal = kStyle[g_cfg.night ? 1 : 0];
+    double ra = angle * M_PI / 180.0, rc = cos(ra), rs = sin(ra);
+    double unit = (double)(1 << (z - zd)) * TILE / kExtent;   // world px per tile unit
+    static Placed placed[160];
+    int np = 0;
+    SetBkMode(dc, TRANSPARENT);
+    HGDIOBJ of = NULL;
+    EnterCriticalSection(&s_cs);
+    for (int kind = 0; kind < 2; kind++)
+        for (int rank = 0; rank < 3; rank++) {
+            if (kind == 0 && rank == 2 && z < 14)
+                continue;   // neighbourhoods: close up only
+            if (kind == 1 && (z < 14 || (rank == 2 && z < 15)))
+                continue;   // streets: from z14, the small ones from z15
+            HFONT pf;
+            if (kind == 0) {
+                if (!s_placeFont[rank])
+                    s_placeFont[rank] = LabelFont(rank == 0 ? 17 : rank == 1 ? 15 : 13, rank < 2 ? FW_BOLD : FW_NORMAL, 0);
+                pf = s_placeFont[rank];
+            } else {
+                if (!s_streetFont[18])
+                    s_streetFont[18] = LabelFont(13, FW_NORMAL, 0);
+                pf = s_streetFont[18];
+            }
+            for (int si = 0; si < kLabelSets && np < 160; si++) {
+                const VLabelSet& set = s_labels[si];
+                if (!set.useTick || set.key.z != VEC_ZBASE + zd)
+                    continue;
+                double ox = (double)set.key.x * kExtent * unit, oy = (double)set.key.y * kExtent * unit;
+                for (int li = 0; li < set.n && np < 160; li++) {
+                    const VLabel& lb = set.l[li];
+                    if (lb.rank != rank || (lb.kind == K_PLACE) != (kind == 0))
+                        continue;
+                    double dx = ox + lb.x * unit - vx, dy = oy + lb.y * unit - vy;
+                    double x = cx + dx * rc + dy * rs, y = cy - dx * rs + dy * rc;
+                    if (x < mr.left - 60 || x > mr.right + 60 || y < mr.top - 20 || y > mr.bottom + 20)
+                        continue;
+                    const wchar_t* s = set.names + lb.name;
+                    int n = (int)wcslen(s);
+                    HGDIOBJ prev = SelectObject(dc, pf);
+                    if (!of)
+                        of = prev;
+                    SIZE sz;
+                    GetTextExtentPoint32(dc, s, n, &sz);
+                    Placed box;
+                    box.name = s;
+                    box.cx = (int)x;
+                    box.cy = (int)y;
+                    if (kind == 0) {
+                        box.l = (int)x - sz.cx / 2 - 2;
+                        box.t = (int)y - sz.cy / 2 - 1;
+                        box.r = box.l + sz.cx + 4;
+                        box.b = box.t + sz.cy + 2;
+                        if (!Free(placed, np, box))
+                            continue;
+                        Halo(dc, box.l + 2, box.t + 1, s, n, pal[K_PLACE]);
+                    } else {
+                        // the road's direction on the screen, upright (never upside down)
+                        double sx = lb.dx * rc + lb.dy * rs, sy = -lb.dx * rs + lb.dy * rc;
+                        double len = sqrt(sx * sx + sy * sy);
+                        if (len * unit < sz.cx + 12)
+                            continue;   // the segment is shorter than the name
+                        if (sx < 0 || (sx == 0 && sy > 0)) {
+                            sx = -sx;
+                            sy = -sy;
+                        }
+                        double th = atan2(-sy, sx) * 180.0 / M_PI;   // counterclockwise, -90..90
+                        int bucket = (int)floor(th / 5.0 + 0.5);
+                        bucket = bucket < -18 ? -18 : bucket > 18 ? 18 : bucket;
+                        double a = bucket * 5.0 * M_PI / 180.0, ca = cos(a), sa = sin(a);
+                        // the text's direction (ca, -sa), its "down" (sa, ca); the origin is its top left corner
+                        double w = sz.cx, h = sz.cy;
+                        double tx = x - ca * w / 2 - sa * h / 2, ty = y + sa * w / 2 - ca * h / 2;
+                        double xs[4] = { tx, tx + ca * w, tx + sa * h, tx + ca * w + sa * h };
+                        double ys[4] = { ty, ty - sa * w, ty + ca * h, ty - sa * w + ca * h };
+                        double l = xs[0], r = xs[0], t = ys[0], b = ys[0];
+                        for (int k = 1; k < 4; k++) {
+                            if (xs[k] < l) l = xs[k];
+                            if (xs[k] > r) r = xs[k];
+                            if (ys[k] < t) t = ys[k];
+                            if (ys[k] > b) b = ys[k];
+                        }
+                        box.l = (int)l - 1;
+                        box.t = (int)t - 1;
+                        box.r = (int)r + 1;
+                        box.b = (int)b + 1;
+                        bool again = false;   // the same street close by: once
+                        for (int k = 0; k < np && !again; k++)
+                            again = placed[k].name && !wcscmp(placed[k].name, s) &&
+                                    abs(placed[k].cx - box.cx) + abs(placed[k].cy - box.cy) < 300;
+                        if (again || !Free(placed, np, box))
+                            continue;
+                        int fi = bucket + 18;
+                        if (!s_streetFont[fi])
+                            s_streetFont[fi] = LabelFont(13, FW_NORMAL, bucket * 50);
+                        SelectObject(dc, s_streetFont[fi]);
+                        Halo(dc, (int)floor(tx + 0.5), (int)floor(ty + 0.5), s, n, pal[K_ROADNAME]);
+                    }
+                    placed[np++] = box;
+                }
+            }
+        }
+    LeaveCriticalSection(&s_cs);
+    if (of)
+        SelectObject(dc, of);
+    // the time, for the unit's log: turned text may be slow there (every 30 frames)
+    static DWORD s_ms, s_max;
+    static int s_frames, s_shown;
+    DWORD ms = GetTickCount() - t0;
+    s_ms += ms;
+    s_max = ms > s_max ? ms : s_max;
+    s_shown += np;
+    if (++s_frames == 30) {
+        Log("vtile: labels %d per frame, %lu ms avg, %lu max", s_shown / 30, s_ms / 30, s_max);
+        s_ms = s_max = 0;
+        s_frames = s_shown = 0;
+    }
 }
