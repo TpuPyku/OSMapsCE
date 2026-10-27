@@ -410,6 +410,15 @@ static void HouseNear(int lat, int lon, Hit* best)   // the nearest house within
     }
 }
 
+// A street or a settlement km away as the point's address: best when nearer than it.
+static void Nearer(Hit* best, int kind, int lat, int lon, DWORD name, DWORD city, double km)
+{
+    if (km < best->score) {
+        Hit x = { kind, lat, lon, name, 0xFFFFFFFF, 0, city, 0, km };
+        *best = x;
+    }
+}
+
 // The road under the point (the graph's, as a route's): of the streets of its name the nearest one - its settlement.
 static void RoadNear(int lat, int lon, Hit* best)
 {
@@ -418,11 +427,8 @@ static void RoadNear(int lat, int lon, Hit* best)
         return;
     for (DWORD i = 0; i < s_x.h.streets; i++) {
         const SStreet& s = s_x.streets[i];
-        double km = Km(lat, lon, s.lat, s.lon);
-        if (!strcmp(S(s.name), road) && km < best->score) {
-            Hit x = { H_STREET, lat, lon, s.name, 0xFFFFFFFF, 0, s.city, 0, km };
-            *best = x;
-        }
+        if (!strcmp(S(s.name), road))
+            Nearer(best, H_STREET, lat, lon, s.name, s.city, Km(lat, lon, s.lat, s.lon));
     }
 }
 
@@ -431,10 +437,8 @@ static void PlaceNear(int lat, int lon, Hit* best)   // the nearest settlement (
     for (DWORD i = 0; i < s_x.h.places; i++) {
         const SPlace& p = s_x.places[i];
         double km = Km(lat, lon, p.lat, p.lon);
-        if (p.rank <= 3 && km < 5 && km < best->score) {
-            Hit x = { H_PLACE, lat, lon, p.name, 0xFFFFFFFF, 0, 0, 0, km };
-            *best = x;
-        }
+        if (p.rank <= 3 && km < 5)
+            Nearer(best, H_PLACE, lat, lon, p.name, 0, km);
     }
 }
 

@@ -91,12 +91,17 @@ static double Num(const char* body, const char* key)
     return p ? atof(p + strlen(key)) : -1;
 }
 
-// The answer (UTF-8) holds the text (the source's Cyrillic: wide literals - VS2005 recodes narrow ones)
-static bool Has(const char* body, const wchar_t* text)
+// Where the answer (UTF-8) holds the text (the source's Cyrillic: wide literals - VS2005 recodes narrow ones)
+static const char* Find(const char* body, const wchar_t* text)
 {
     char u[300];
     WideCharToMultiByte(CP_UTF8, 0, text, -1, u, sizeof(u), NULL, NULL);
-    return body && strstr(body, u) != NULL;
+    return body ? strstr(body, u) : NULL;
+}
+
+static bool Has(const char* body, const wchar_t* text)
+{
+    return Find(body, text) != NULL;
 }
 
 static int Count(const char* body, const char* s)
@@ -199,6 +204,10 @@ int main()
     b = Ask("/api/?q=%D1%83%D0%BB%D0%B8%D1%86%D0%B0&limit=7&lat=53.0&lon=50.0");   // улица: a kind word only
     Check(!b, "search: the kind word alone - no answer", b);
     free(b);
+    b = Ask("/api/?q=%D1%82%D0%B5%D1%81%D1%82&limit=7&lat=53.0&lon=50.0");   // тест: the town and the station
+    const char* town = Find(b, L"\"name\":\"Тестовск\""), *fuel = Find(b, L"\"name\":\"Тест-АЗС (АЗС)\"");
+    Check(town && fuel && town < fuel, "search: both found, the town before the station", b);
+    free(b);
 
     // the address of a point: the house within 80 m
     b = Ask("/reverse?lon=50.00212&lat=53.00012&limit=1");
@@ -207,6 +216,10 @@ int main()
 
     b = Ask("/reverse?lon=50.0005&lat=53.0002&limit=1");   // no house within 80 m: the street
     Check(Has(b, L"\"name\":\"Главная улица\",\"street\":\"\""), "reverse: the street", b);
+    free(b);
+    b = Ask("/reverse?lon=50.012&lat=53.000&limit=1");     // in the roundabout: the road nearest has no name
+    Check(Has(b, L"\"name\":\"Тестовск\",\"street\":\"\",\"housenumber\":\"\",\"city\":\"\""),
+          "reverse: no house, no named road - the town", b);
     free(b);
     b = Ask("/reverse?lon=50.0&lat=53.05&limit=1");        // 5.5 km off: nothing
     Check(!b, "reverse: nothing near - no answer", b);
