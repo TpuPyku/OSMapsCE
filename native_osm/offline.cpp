@@ -261,6 +261,61 @@ struct Snap {
 static const int kPtsCap = 4096;
 static int s_pts[kPtsCap * 2];
 
+static double SegM(const int* p)   // a segment's metres (p: its two points' lat, lon)
+{
+    double ax = p[1] * s_kx, ay = p[0] * 0.111195;
+    double bx = p[3] * s_kx, by = p[2] * 0.111195;
+    return sqrt((bx - ax) * (bx - ax) + (by - ay) * (by - ay));
+}
+
+// The point's projection onto a segment (p: its two points): u = its share of the segment; returns the distance, m.
+static double Project(int lat, int lon, const int* p, double* u)
+{
+    double ax = p[1] * s_kx, ay = p[0] * 0.111195;
+    double bx = p[3] * s_kx, by = p[2] * 0.111195;
+    double px = lon * s_kx, py = lat * 0.111195;
+    double vx = bx - ax, vy = by - ay, l2 = vx * vx + vy * vy;
+    double t = l2 > 0 ? ((px - ax) * vx + (py - ay) * vy) / l2 : 0;
+    t = t < 0 ? 0 : t > 1 ? 1 : t;
+    double qx = ax + vx * t, qy = ay + vy * t;
+    *u = t;
+    return sqrt((px - qx) * (px - qx) + (py - qy) * (py - qy));
+}
+
+// The point onto an edge's nearest segment: best replaced when nearer.
+static void SnapEdge(int lat, int lon, DWORD e, Snap* best)
+{
+    DWORD from = FromNode(e);
+    int n = EdgePts(from, e, s_pts, kPtsCap);
+    double len = 0, total = 0;
+    for (int k = 0; k + 1 < n; k++)
+        total += SegM(s_pts + k * 2);
+    for (int k = 0; k + 1 < n; k++) {
+        const int* p = s_pts + k * 2;
+        double u, d = Project(lat, lon, p, &u), sl = SegM(p);
+        if (d < best->distM) {
+            best->distM = d;
+            best->e = e;
+            best->from = from;
+            best->seg = k;
+            best->lat = (int)(p[0] + (p[2] - p[0]) * u);
+            best->lon = (int)(p[1] + (p[3] - p[1]) * u);
+            best->t = total > 0 ? (len + sl * u) / total : 0;
+        }
+        len += sl;
+    }
+}
+
+static void SnapCell(int lat, int lon, int x, int y, Snap* best)   // the grid cell's edges (outside the grid: none)
+{
+    const GHead& h = s_g.h;
+    if (x < 0 || y < 0 || x >= (int)h.gw || y >= (int)h.gh)
+        return;
+    DWORD c = y * h.gw + x;
+    for (DWORD i = s_g.cstart[c]; i < s_g.cstart[c + 1]; i++)
+        SnapEdge(lat, lon, s_g.items[i], best);
+}
+
 static bool SnapTo(int lat, int lon, Snap* best)
 {
     const GHead& h = s_g.h;
@@ -268,41 +323,8 @@ static bool SnapTo(int lat, int lon, Snap* best)
     int cy = (lat - h.minLat) / h.cell, cx = (lon - h.minLon) / h.cell;
     for (int r = 1; r <= 4 && best->distM > 1e17; r += 3)   // 3 x 3 cells, else 9 x 9
         for (int y = cy - r; y <= cy + r; y++)
-            for (int x = cx - r; x <= cx + r; x++) {
-                if (x < 0 || y < 0 || x >= (int)h.gw || y >= (int)h.gh)
-                    continue;
-                DWORD c = y * h.gw + x;
-                for (DWORD i = s_g.cstart[c]; i < s_g.cstart[c + 1]; i++) {
-                    DWORD e = s_g.items[i], from = FromNode(e);
-                    int n = EdgePts(from, e, s_pts, kPtsCap);
-                    double len = 0, total = 0;
-                    for (int k = 0; k + 1 < n; k++) {
-                        double ax = s_pts[k * 2 + 1] * s_kx, ay = s_pts[k * 2] * 0.111195;
-                        double bx = s_pts[k * 2 + 3] * s_kx, by = s_pts[k * 2 + 2] * 0.111195;
-                        total += sqrt((bx - ax) * (bx - ax) + (by - ay) * (by - ay));
-                    }
-                    for (int k = 0; k + 1 < n; k++) {
-                        double ax = s_pts[k * 2 + 1] * s_kx, ay = s_pts[k * 2] * 0.111195;
-                        double bx = s_pts[k * 2 + 3] * s_kx, by = s_pts[k * 2 + 2] * 0.111195;
-                        double px = lon * s_kx, py = lat * 0.111195;
-                        double vx = bx - ax, vy = by - ay, l2 = vx * vx + vy * vy;
-                        double u = l2 > 0 ? ((px - ax) * vx + (py - ay) * vy) / l2 : 0;
-                        u = u < 0 ? 0 : u > 1 ? 1 : u;
-                        double qx = ax + vx * u, qy = ay + vy * u;
-                        double d = sqrt((px - qx) * (px - qx) + (py - qy) * (py - qy)), sl = sqrt(l2);
-                        if (d < best->distM) {
-                            best->distM = d;
-                            best->e = e;
-                            best->from = from;
-                            best->seg = k;
-                            best->lat = (int)(s_pts[k * 2] + (s_pts[k * 2 + 2] - s_pts[k * 2]) * u);
-                            best->lon = (int)(s_pts[k * 2 + 1] + (s_pts[k * 2 + 3] - s_pts[k * 2 + 1]) * u);
-                            best->t = total > 0 ? (len + sl * u) / total : 0;
-                        }
-                        len += sl;
-                    }
-                }
-            }
+            for (int x = cx - r; x <= cx + r; x++)
+                SnapCell(lat, lon, x, y, best);
     return best->distM < 1e17;
 }
 
