@@ -531,6 +531,92 @@ static void Twins()
     Close(g);
 }
 
+// A region's pack's z15 tiles (Protomaps: the house numbers, the car parks) drawn for z15 and up instead of the z14
+// tile; the z14 tile's names only in the quarters no z15 tile is drawn for. Tile (9500, 5000): its z14 data
+// (OpenMapTiles) has house numbers in each quarter, on the quarters' borders (128 px: the right, the lower one) and
+// just before them (100 px: still the top left);
+// its top left z15 child (Protomaps) a building, a street, the house number "34" and a car park, its bottom right one
+// the house number "90".
+struct Num { const char* nm; short x, y; };
+static const Num kNums14[] = { { "12", 40, 40 }, { "78", 192, 40 }, { "56", 192, 192 }, { "x2", 128, 200 },
+                               { "y2", 200, 128 }, { "x1", 100, 40 },
+                               { "y1", 40, 100 } };
+
+static int MakeDeep15(unsigned char* out, bool topLeft)
+{
+    unsigned int g[16];
+    Pbw t = { { 0 }, 0 };
+    static const char* kBKeys[] = { "kind", "name", "addr_housenumber" };
+    static const char* kHouse[2][3] = { { "address", NULL, "90" }, { "address", NULL, "34" } };
+    static const char* kBuilding[] = { "building", "Hall", NULL };   // (a name key in the layer: not the number's)
+    Keyed b;
+    BeginKeys(b, "buildings", kBKeys, 3);
+    AddVals(b, kBuilding, 3, g, Box(g, 0, 0, 64, 64));               // the z15 tile's pixels: 0..256
+    AddVals(b, kHouse[topLeft], 1, g, topLeft ? Point(g, 176, 176) : Point(g, 64, 64));
+    Bytes(t, 3, b.w.b, b.w.n);
+    if (topLeft) {
+        static const char* kKeys[] = { "kind", "name" };
+        static const char* kPark[] = { "parking", NULL };
+        static const char* kLane[] = { "minor_road", "Lane" };
+        Keyed p, r;
+        BeginKeys(p, "pois", kKeys, 2);
+        AddVals(p, kPark, 1, g, Point(g, 64, 176));
+        Bytes(t, 3, p.w.b, p.w.n);
+        BeginKeys(r, "roads", kKeys, 2);
+        AddVals(r, kLane, 2, g, HLine(g, 0, 256, 40));
+        Bytes(t, 3, r.w.b, r.w.n);
+    }
+    memcpy(out, t.b, t.n);
+    return t.n;
+}
+
+static void Deep()
+{
+    unsigned int g[16];
+    Pbw t14 = { { 0 }, 0 };
+    Layer l;
+    Begin(l, "housenumber", "housenumber");
+    for (int i = 0; i < (int)(sizeof(kNums14) / sizeof(kNums14[0])); i++)
+        Add(l, NULL, kNums14[i].nm, 1, g, Point(g, kNums14[i].x, kNums14[i].y));
+    End(t14, l);
+    static unsigned char tl[2048], br[2048];
+    int ntl = MakeDeep15(tl, true), nbr = MakeDeep15(br, false);
+
+    MapRequest r14 = { SRC_OSM, 14, 9500, 5000 }, r16 = { SRC_OSM, 16, 38000, 20000 };
+    MapRequest r16b = { SRC_OSM, 16, 38002, 20002 };
+    MapRequest d15 = { SRC_OSM, VEC_ZBASE + 15, 19000, 10000 }, d15b = { SRC_OSM, VEC_ZBASE + 15, 19001, 10001 };
+    Check(SameKey(VTileDataAt(r16, VEC_PACKZ), d15) && VTileDataAt(r16, VEC_MAXZ).z == VEC_ZBASE + 14,
+          "z16: drawn from its z15 ancestor in a pack, else from the z14 one");
+    Image im = { 0 };
+    Check(VTileRender(r14, t14.b, t14.n, &im), "deep: the z14 tile drawn");
+    ImageFree(&im);
+    Check(VTileRenderFrom(r16, d15, tl, ntl, &im) && Px(im, 100, 100) == RGB565(224, 217, 208)
+          && Px(im, 200, 200) != RGB565(224, 217, 208), "z16 from the z15 tile: its building, larger");
+    ImageFree(&im);
+    Check(VTileRenderFrom(r16b, d15b, br, nbr, &im), "z16 from the other z15 tile");
+    ImageFree(&im);
+    const unsigned short house = RGB565(120, 112, 104), blue = RGB565(46, 110, 190), white = RGB565(255, 255, 255);
+    Frame f;
+    Open(f);
+    RECT mr = { 0, 0, 800, 480 };
+    Labels(f, 9500, 5000, 64, 64, 15, 0, mr, NULL, 0);
+    Check(Count(f, 360, 142, 440, 162, white) > 20, "z15: the z15 tile's street name");
+    Labels(f, 9500, 5000, 64, 64, 17, 0, mr, NULL, 0);
+    Check(Count(f, 572, 422, 612, 442, house) > 3, "z17: the z15 tile's house number");
+    Check(Lit(f, 188, 38, 228, 58) == 0, "z17: not the z14 tile's in the z15 tile's quarter");
+    Check(Count(f, 134, 422, 155, 443, blue) > 100, "z17: the z15 tile's car park");
+    Labels(f, 9500, 5000, 192, 40, 17, 0, mr, NULL, 0);
+    Check(Count(f, 383, 230, 418, 250, house) > 3, "z17: the z14 tile's house number where no z15 tile is");
+    static const int kHidden[5][2] = { { 192, 192 }, { 128, 200 }, { 200, 128 }, { 100, 40 }, { 40, 100 } };
+    bool hidden = true;
+    for (int i = 0; i < 5; i++) {
+        Labels(f, 9500, 5000, kHidden[i][0], kHidden[i][1], 17, 0, mr, NULL, 0);
+        hidden = hidden && Lit(f, 380, 230, 420, 250) == 0;
+    }
+    Check(hidden, "z17: the z14 tile's numbers in the z15 tiles' quarters, at their borders too, not drawn");
+    Close(f);
+}
+
 int main()
 {
     VTileInit();
@@ -656,6 +742,7 @@ int main()
     PlacesByZoom(country, nc, 0, "OpenMapTiles");
     PlacesByZoom(pmCountry, npc, 3, "Protomaps");
     Twins();
+    Deep();
     RECT whole = { 0, 0, 800, 480 };
     // the Russian name when the tile has one (name:ru), else the local one: a frame named so equals one whose tile
     // holds that text as its plain name

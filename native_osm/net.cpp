@@ -200,17 +200,19 @@ static int VecVersion()
     return err;
 }
 
-// A shown tile from its data tile: the disk's .pbf, else downloaded (and kept) - then drawn.
+// A shown tile from its data tile: the region's pack's (z15 there: the house numbers), the disk's .pbf, else
+// downloaded (and kept) - then drawn.
 static void FetchVector(const MapRequest& r, MapResult* res)
 {
     res->look = MapLook();   // (read before drawing: a switch meanwhile drops this tile)
-    MapRequest d = VTileData(r);
+    MapRequest d = VTileData(r), p = VTileDataAt(r, VEC_PACKZ);
     wchar_t file[MAX_PATH];
     CachePath(file, d);
     unsigned char* body = NULL;
     int len = 0;
-    if (VPackTile(d, &body, &len) || ReadWholeFile(file, &body, &len)) {   // the region's pack, the cache's copy
-        if (!VTileRender(r, body, len, &res->img))
+    bool deep = VPackTile(p, &body, &len);
+    if (deep || VPackTile(d, &body, &len) || ReadWholeFile(file, &body, &len)) {   // the pack, the cache's copy
+        if (!VTileRenderFrom(r, deep ? p : d, body, len, &res->img))
             res->err = NET_DECODE;
         free(body);
         return;

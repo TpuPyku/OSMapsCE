@@ -168,7 +168,8 @@ static const KindRow kKinds[] = {
     { "roads", "minor_road", 2, K_MINOR, 2, 3 }, { "roads", "path", 2, K_PATH, 2 }, { "roads", "rail", 2, K_RAIL, 2 },
     { "places", "city", 1, K_PLACE, 0 }, { "places", "town", 1, K_PLACE, 0 }, { "places", "village", 1, K_PLACE, 1 },
     { "places", "suburb", 1, K_PLACE, 1 }, { "places", "quarter", 1, K_PLACE, 1 }, { "places", NULL, 1, K_PLACE, 2 },
-    { "pois", "fuel", 1, K_FUEL, 0 },
+    { "pois", "fuel", 1, K_FUEL, 0 }, { "pois", "parking", 1, K_PARKING, 1 },
+    { "buildings", "address", 1, K_HOUSENUM, 2 },   // (z15: the house numbers' points)
     { "water", NULL, 3, K_WATER, 2 }, { "building", NULL, 3, K_BUILDING, 2 }, { "park", NULL, 3, K_PARK, 2 },
     { "landcover", "wood", 3, K_WOOD, 2 }, { "landcover", NULL, 3, K_GRASS, 2 },
     { "landuse", "residential", 3, K_RESID, 2 }, { "landuse", "suburb", 3, K_RESID, 2 },
@@ -205,11 +206,12 @@ static const KindRow* Row(const Pb& layer, const Pb& cls, const Pb& detail, int 
 }
 
 // The tags read: a feature's class (Protomaps: "kind", its finer "kind_detail"), its name and the Russian one (when
-// there is one: "Киев", not "Київ") - strings; a place's rank, capital level and population - numbers (0: none)
-enum { T_CLASS, T_DETAIL, T_NAME, T_NAMERU, T_STRINGS, T_RANK = T_STRINGS, T_CAPITAL, T_POPULATION, T_COUNT };
-static const char* const kTagKeys[T_COUNT][2] = { { "class", "kind" }, { "kind_detail" },
-                                                   { "name", "housenumber" },   // (a house number's: its own key)
-                                                   { "name:ru" }, { "rank" }, { "capital" }, { "population" } };
+// there is one: "Киев", not "Київ"), a house number (its own key) - strings; a place's rank, capital level and
+// population - numbers (0: none)
+enum { T_CLASS, T_DETAIL, T_NAME, T_NAMERU, T_HOUSE, T_STRINGS, T_RANK = T_STRINGS, T_CAPITAL, T_POPULATION, T_COUNT };
+static const char* const kTagKeys[T_COUNT][2] = { { "class", "kind" }, { "kind_detail" }, { "name" }, { "name:ru" },
+                                                   { "housenumber", "addr_housenumber" }, { "rank" }, { "capital" },
+                                                   { "population" } };
 
 // A layer's name and the indexes of its keys of the tags read (-1 none); its values in s_vals (the strings) and
 // s_nums (as numbers)
@@ -477,7 +479,7 @@ static bool DecodeFeature(Pb f, const LayerHead& h, VTile& t)
     ft.minz = (unsigned char)(row->kind == K_PLACE ? PlaceMinZoom(tg, row->rank) : 0);
     if (!DecodeGeometry(geom, t, ft))
         return false;
-    if (!ft.nparts || !Named(t, ft, row->kind, tg.s[T_NAME]))
+    if (!ft.nparts || !Named(t, ft, row->kind, tg.s[row->kind == K_HOUSENUM ? T_HOUSE : T_NAME]))
         return true;
     return Push(t.f, t.nf, t.fcap, ft) && StreetName(t, ft, *row, tg.s[T_NAME]);
 }
@@ -913,17 +915,26 @@ static void Draw(const VTile& t, const Xf& xf, int z, bool night, HDC dc, unsign
 #endif
 }
 
-// The data tile a shown tile is drawn from: its own up to z14, else its z14 ancestor.
-MapRequest VTileData(const MapRequest& r)
+// The data tile a shown tile is drawn from: its own up to zoom maxz, else its ancestor of that zoom.
+MapRequest VTileDataAt(const MapRequest& r, int maxz)
 {
-    int dz = r.z > VEC_MAXZ ? r.z - VEC_MAXZ : 0;
+    int dz = r.z > maxz ? r.z - maxz : 0;
     MapRequest k = { SRC_OSM, VEC_ZBASE + r.z - dz, r.x >> dz, r.y >> dz };
     return k;
 }
 
+MapRequest VTileData(const MapRequest& r)   // OpenFreeMap's (and the cache's): up to z14
+{
+    return VTileDataAt(r, VEC_MAXZ);
+}
+
 bool VTileRender(const MapRequest& r, const unsigned char* data, int len, Image* out)
 {
-    MapRequest key = VTileData(r);
+    return VTileRenderFrom(r, VTileData(r), data, len, out);
+}
+
+bool VTileRenderFrom(const MapRequest& r, const MapRequest& key, const unsigned char* data, int len, Image* out)
+{
     DWORD t0 = GetTickCount();
     EnterCriticalSection(&s_cs);
     bool ok = false;
@@ -1248,12 +1259,23 @@ static void PlaceLabel(LabelView& v, int kind, HFONT pf, const VLabelSet& set, c
         s_placed[v.np++] = box;
 }
 
+// A z14 tile's label in a quarter a pack's z15 tile has its own labels for (drawn instead: no name twice)
+static bool Deeper(const VLabelSet& set, const VLabel& lb)
+{
+    if (set.key.z != VEC_ZBASE + VEC_PACKZ - 1)
+        return false;
+    MapRequest quarter = { SRC_OSM, VEC_ZBASE + VEC_PACKZ, set.key.x * 2 + (lb.x >= kExtent / 2),
+                           set.key.y * 2 + (lb.y >= kExtent / 2) };
+    VLabelSet* oldest;
+    return Recent(s_labels, kLabelSets, quarter, oldest) != NULL;
+}
+
 static void DrawSet(LabelView& v, const LabelPass& p, HFONT pf, const VLabelSet& set)   // one tile's labels of a pass
 {
     for (int li = 0; li < set.n && v.np < v.cap; li++) {
         const VLabel& lb = set.l[li];
         double x, y;
-        if (lb.rank == p.rank && lb.kind == p.kind && lb.minz <= v.z && OnScreen(v, set, lb, x, y))
+        if (lb.rank == p.rank && lb.kind == p.kind && lb.minz <= v.z && OnScreen(v, set, lb, x, y) && !Deeper(set, lb))
             PlaceLabel(v, p.kind, pf, set, lb, x, y);
     }
 }
@@ -1261,6 +1283,7 @@ static void DrawSet(LabelView& v, const LabelPass& p, HFONT pf, const VLabelSet&
 static void DrawPass(LabelView& v, const LabelPass& p, int zd)   // the labels of a pass, of all tiles of zoom zd
 {
     HFONT pf = PassFont(p.kind, p.rank);
+    v.unit = (double)(1 << (v.z - zd)) * TILE / kExtent;   // world px per tile unit
     for (int si = 0; si < kLabelSets && v.np < v.cap; si++) {
         const VLabelSet& set = s_labels[si];
         if (set.useTick && set.key.z == VEC_ZBASE + zd)
@@ -1300,7 +1323,6 @@ void VLabelsDraw(HDC dc, const RECT& mr, double cx, double cy, double vx, double
     v.vy = vy;
     v.rc = cos(ra);
     v.rs = sin(ra);
-    v.unit = (double)(1 << (z - zd)) * TILE / kExtent;   // world px per tile unit
     v.z = z;
     v.pal = kStyle[g_cfg.night ? 1 : 0];
     v.font0 = NULL;
@@ -1310,8 +1332,11 @@ void VLabelsDraw(HDC dc, const RECT& mr, double cx, double cy, double vx, double
     SetBkMode(dc, TRANSPARENT);
     EnterCriticalSection(&s_cs);
     for (int i = 0; i < (int)(sizeof(kPasses) / sizeof(kPasses[0])); i++)
-        if (z >= kPasses[i].minZoom)
+        if (z >= kPasses[i].minZoom) {
+            if (z >= VEC_PACKZ)
+                DrawPass(v, kPasses[i], VEC_PACKZ);   // a pack's z15 tiles first (Deeper: their quarters theirs)
             DrawPass(v, kPasses[i], zd);
+        }
     LeaveCriticalSection(&s_cs);
     if (v.font0)
         SelectObject(dc, v.font0);

@@ -7,8 +7,9 @@ file with a sorted index and the tiles ungzipped. The file (little endian):
 
     header  'OSMT' u32 version, u32 count, i32 minLat, minLon, maxLat, maxLon (1e-6 degrees, the deepest zoom's
             tiles), u32 the index's offset
-    index   count x (u32 key = z << 28 | x << 14 | y, u32 offset, u32 length), sorted by key (XYZ rows, as OSMapsCE
-            names tiles; MBTiles keeps TMS rows)
+    index   count x (u64 key = z << 32 | x << 16 | y, u32 offset, u32 length), sorted by key (XYZ rows, as OSMapsCE
+            names tiles; MBTiles keeps TMS rows). Version 2: z15 (Protomaps' deepest, the house numbers) needs 15 bits
+            for x and y, version 1's u32 key had 14.
     tiles   the Mapbox Vector Tiles
 """
 import gzip
@@ -17,7 +18,7 @@ import sqlite3
 import struct
 import sys
 
-VERSION = 1
+VERSION = 2
 HEADER = '<4sII4iI'
 
 
@@ -31,16 +32,16 @@ def lat_of(z, y):
 
 def bbox(keys):
     """The deepest zoom's tiles' bounds, 1e-6 degrees."""
-    z = max(k >> 28 for k in keys)
-    xs = [(k >> 14) & 0x3FFF for k in keys if k >> 28 == z]
-    ys = [k & 0x3FFF for k in keys if k >> 28 == z]
+    z = max(k >> 32 for k in keys)
+    xs = [(k >> 16) & 0xFFFF for k in keys if k >> 32 == z]
+    ys = [k & 0xFFFF for k in keys if k >> 32 == z]
     n = 1 << z
     return (int(lat_of(z, max(ys) + 1) * 1e6), int((min(xs) / n * 360 - 180) * 1e6),
             int(lat_of(z, min(ys)) * 1e6), int(((max(xs) + 1) / n * 360 - 180) * 1e6))
 
 
 def key(z, x, y):
-    return z << 28 | x << 14 | y
+    return z << 32 | x << 16 | y
 
 
 def build(src, out):
@@ -54,11 +55,11 @@ def write_pack(out, items):
     """tiles.vtp from (key, MVT bytes) pairs (any order)."""
     tiles = sorted(items)
     head = struct.calcsize(HEADER)
-    offset = head + len(tiles) * 12
+    offset = head + len(tiles) * 16
     with open(out, 'wb') as f:
         f.write(struct.pack(HEADER, b'OSMT', VERSION, len(tiles), *bbox([k for k, _ in tiles]), head))
         for key, data in tiles:
-            f.write(struct.pack('<III', key, offset, len(data)))
+            f.write(struct.pack('<QII', key, offset, len(data)))
             offset += len(data)
         for _, data in tiles:
             f.write(data)

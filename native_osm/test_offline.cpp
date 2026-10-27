@@ -225,7 +225,7 @@ int main()
     Check(!b, "reverse: nothing near - no answer", b);
     free(b);
 
-    // the region's vector tiles (offline/test/make_test_tiles.py: the town's z14 tile and its z13 parent)
+    // the region's vector tiles (offline/test/make_test_tiles.py: the town's z14 tile, its z13 parent, a z15 child)
     int tx = (int)((50.003 + 180) / 360 * 16384);
     double la = 53.001 * M_PI / 180;
     int ty = (int)((1 - log(tan(la) + 1 / cos(la)) / M_PI) / 2 * 16384);
@@ -239,8 +239,13 @@ int main()
     Check(VPackTile(t13, &data, &len) && len == 7 && !memcmp(data, "tile 13", 7), "pack: its z13 parent", NULL);
     free(data);
     data = NULL;
+    MapRequest t15 = { SRC_OSM, VEC_ZBASE + 15, 2 * tx, 2 * ty };
+    Check(VPackTile(t15, &data, &len) && len == 7 && !memcmp(data, "tile 15", 7), "pack: its z15 child", NULL);
+    free(data);
+    data = NULL;
     Check(!VPackTile(next, &data, &len), "pack: a tile not in it - no answer (OpenFreeMap is asked)", NULL);
-    Check(!VPackTile(moscow, &data, &len), "pack: outside every region's pack - no answer", NULL);
+    Check(!VPackTile(moscow, &data, &len), "pack: outside every region's pack (an old pack's not read) - no answer",
+          NULL);
 
     printf("%d checks, %d failed\n", s_checks, s_failed);
     return s_failed;

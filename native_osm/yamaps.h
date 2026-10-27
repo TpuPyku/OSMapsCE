@@ -143,7 +143,7 @@ struct ApiResult {
 };
 DWORD NetApi(int kind, const char* host, bool https, const char* path);   // returns sequence number
 void  ApiFree(ApiResult* r);
-// offline.cpp - routes from a region's road graph (OSMapsData\<region>oute.grf), answered as OSRM's JSON
+// offline.cpp - routes from a region's road graph (OSMapsData\<region>\route.grf), answered as OSRM's JSON
 bool  OfflineRoute(const char* osrmPath, char** body, int* len);   // false: no region / no way - ask OSRM
 bool  OfflineDir(const int* latLon, int n, wchar_t* dir);          // the region's folder holding the points
 bool  OfflineRoadAt(int lat, int lon, double maxM, char* name, int cap);   // the nearest road's name (1e-6 degrees)
@@ -215,9 +215,12 @@ bool OnApiResult(ApiResult* r);     // frees it; true = redraw
 // vtile.cpp - vector tiles drawn into TILE x TILE images; their .pbf on disk as Cache\<VEC_ZBASE + z>\...
 #define VEC_ZBASE 100
 #define VEC_MAXZ  14        // OpenFreeMap's deepest: z15 and up are parts of the z14 tile drawn larger
+#define VEC_PACKZ 15        // a region's pack's deepest (Protomaps' z15: the house numbers, the car parks)
 void       VTileInit();     // before the download thread starts
 MapRequest VTileData(const MapRequest& r);   // the data tile (VEC_ZBASE + z) a shown tile is drawn from
+MapRequest VTileDataAt(const MapRequest& r, int maxz);   // ... with data tiles up to zoom maxz (a pack: VEC_PACKZ)
 bool       VTileRender(const MapRequest& r, const unsigned char* data, int len, Image* out);   // data NULL: parsed already
+bool       VTileRenderFrom(const MapRequest& r, const MapRequest& d, const unsigned char* data, int len, Image* out);   // from data tile d
 void       VLabelsDraw(HDC dc, const RECT& mr, double cx, double cy, double vx, double vy, double angle, int z,
                        const RECT* avoid, int navoid);   // avoid: the controls over the map, no names under them
 const wchar_t* MapFace();   // main.cpp: the text's face (Golos Text, else Tahoma)

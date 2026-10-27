@@ -1,8 +1,8 @@
 #include "yamaps.h"
 
 // A region's vector tiles without the internet (2026-10-27, the user: a full offline mode): OSMapsData\<region>\
-// tiles.vtp, made by offline/make_tiles.py from planetiler's MBTiles - the OpenMapTiles schema OpenFreeMap serves, so
-// vtile.cpp draws them alike. The index (sorted keys) stays in memory, a tile is read from the file when asked. The
+// tiles.vtp, cut out of Protomaps' planet build by offline/pmextract.py (z0-15) or made by offline/make_tiles.py from
+// planetiler's MBTiles (z0-14) - vtile.cpp draws both schemas. The index (sorted keys) stays in memory, a tile is read from the file when asked. The
 // region: the one whose pack's bounds hold the tile's middle. Asked by the download thread only (net.cpp).
 
 #pragma pack(push, 1)
@@ -12,7 +12,7 @@ struct PHead {
     int   minLat, minLon, maxLat, maxLon;   // 1e-6 degrees
     DWORD offIndex;
 };
-struct PEntry { DWORD key, off, len; };   // key = z << 28 | x << 14 | y
+struct PEntry { unsigned __int64 key; DWORD off, len; };   // key = z << 32 | x << 16 | y (version 2: z15's x, y)
 #pragma pack(pop)
 
 struct Pack {
@@ -28,7 +28,7 @@ static bool PackHolds(const wchar_t* path, void* ctx)   // OffRegion's test: a p
 {
     OffFile f;
     PHead h;
-    bool ok = OffOpen(&f, path, &h, sizeof(h)) && !memcmp(h.magic, "OSMT", 4) && h.version == 1 &&
+    bool ok = OffOpen(&f, path, &h, sizeof(h)) && !memcmp(h.magic, "OSMT", 4) && h.version == 2 &&
               OffInside(&h.minLat, ((const LatLon*)ctx)->lat, ((const LatLon*)ctx)->lon);
     OffClose(&f);
     return ok;
@@ -58,7 +58,7 @@ static bool Open(const LatLon& p)
     return true;
 }
 
-static const PEntry* Find(DWORD key)
+static const PEntry* Find(unsigned __int64 key)
 {
     DWORD lo = 0, hi = s_p.h.count;
     while (lo < hi) {
@@ -81,9 +81,9 @@ static LatLon Middle(int z, int x, int y)   // the tile's middle, 1e-6 degrees
 bool VPackTile(const MapRequest& d, unsigned char** data, int* len)
 {
     int z = d.z - VEC_ZBASE;
-    if (z < 0 || z > VEC_MAXZ || !Open(Middle(z, d.x, d.y)))
+    if ((unsigned)z > VEC_PACKZ || !Open(Middle(z, d.x, d.y)))
         return false;
-    const PEntry* e = Find((DWORD)z << 28 | (DWORD)d.x << 14 | (DWORD)d.y);
+    const PEntry* e = Find((unsigned __int64)z << 32 | (unsigned __int64)d.x << 16 | (DWORD)d.y);
     if (!e)
         return false;
     *data = (unsigned char*)malloc(e->len ? e->len : 1);

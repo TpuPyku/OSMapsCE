@@ -47,9 +47,9 @@ def pack_tiles(path):
     magic, version, count, *_bbox, off_index = struct.unpack_from(make_tiles.HEADER, d, 0)
     out, keys = {}, []
     for i in range(count):
-        key, off, length = struct.unpack_from('<III', d, off_index + i * 12)
+        key, off, length = struct.unpack_from('<QII', d, off_index + i * 16)
         keys.append(key)
-        out[(key >> 28, (key >> 14) & 0x3FFF, key & 0x3FFF)] = d[off:off + length]
+        out[(key >> 32, (key >> 16) & 0xFFFF, key & 0xFFFF)] = d[off:off + length]
     return magic, keys, out
 
 
@@ -96,7 +96,8 @@ class Tools(unittest.TestCase):
 
     def test_tile_pack_from_mbtiles(self):
         src, out = os.path.join(self.tmp, 'r.mbtiles'), os.path.join(self.tmp, 'tiles.vtp')
-        tiles = {(14, 9907, 5118): b'samara z14', (14, 9908, 5118): b'east', (0, 0, 0): b'world'}
+        tiles = {(14, 9907, 5118): b'samara z14', (14, 9908, 5118): b'east', (0, 0, 0): b'world',
+                 (15, 19815, 10237): b'z15: x past 14 bits'}
         make_mbtiles(src, tiles)
         make_tiles.build(src, out)
         magic, keys, got = pack_tiles(out)

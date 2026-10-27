@@ -16,7 +16,8 @@ if not exist %MAP% mkdir %MAP%
 if not "%1"=="build" (
   python ..\offline\make_graph.py ..\offline\test\tiny.osm %MAP%\route.grf >nul || exit /b 1
   python ..\offline\make_search.py ..\offline\test\tiny.osm %MAP%\search.idx >nul || exit /b 1
-  python ..\offline\test\make_test_tiles.py %MAP%\tiles.vtp >nul || exit /b 1
+  if not exist obj\test\OSMapsData\old mkdir obj\test\OSMapsData\old
+  python ..\offline\test\make_test_tiles.py %MAP%\tiles.vtp obj\test\OSMapsData\old\tiles.vtp >nul || exit /b 1
 )
 set OPT=/O2
 if "%COVER%"=="1" set OPT=/Od /Zi
