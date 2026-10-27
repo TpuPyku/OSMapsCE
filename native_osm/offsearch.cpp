@@ -109,8 +109,8 @@ static void Norm(const wchar_t* s, wchar_t* out, int cap)
 }
 
 // The street's kind words: not needed to find it ("ул ленина" = "ленина")
-static const wchar_t* kStop[] = { L"ул", L"улица", L"пр", L"пр-т", L"проспект", L"пер", L"переулок", L"ш", L"шоссе",
-                                  L"б-р", L"бульвар", L"пл", L"площадь", L"проезд", L"д", L"дом", L"г", L"город",
+static const wchar_t* kStop[] = { L"ул", L"улица", L"пр", L"проспект", L"пер", L"переулок", L"ш", L"шоссе",
+                                  L"бульвар", L"пл", L"площадь", L"проезд", L"д", L"дом", L"г", L"город",
                                   L"с", L"село", L"п", L"пос", L"поселок", L"наб", L"набережная", L"мкр" };
 
 enum { kTok = 8 };
