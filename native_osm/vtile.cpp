@@ -167,157 +167,233 @@ static int Kind(const Pb& layer, const Pb& cls, int geomType)
     return -1;
 }
 
-static bool DecodeLayer(Pb b, VTile& t)
+// The names' rank by kind and class (NULL: any; first match wins, none: 2); -1: a street not named (service roads,
+// paths).
+struct RankRow { unsigned char kind; const char* cls; signed char rank; };
+static const RankRow kRanks[] = {
+    { K_PLACE, "city", 0 }, { K_PLACE, "town", 0 },
+    { K_PLACE, "suburb", 1 }, { K_PLACE, "village", 1 }, { K_PLACE, "quarter", 1 },
+    { K_FUEL, NULL, 0 }, { K_PARKING, NULL, 1 },
+    { K_ROADNAME, "motorway", 0 }, { K_ROADNAME, "trunk", 0 }, { K_ROADNAME, "primary", 0 },
+    { K_ROADNAME, "secondary", 1 }, { K_ROADNAME, "tertiary", 1 }, { K_ROADNAME, "minor", 2 },
+    { K_ROADNAME, NULL, -1 },
+};
+
+static int Rank(int kind, const Pb& cls)
 {
-    // first pass: the name, keys, values (only strings matter here)
-    Pb name = { 0, 0 };
-    static Pb keys[512], vals[2048];   // (not on the stack: CE threads have little; s_cs held)
-    int nk = 0, nv = 0;
-    Pb scan = b;
+    for (int i = 0; i < (int)(sizeof(kRanks) / sizeof(kRanks[0])); i++) {
+        const RankRow& r = kRanks[i];
+        if (r.kind == kind && (!r.cls || StrEq(cls, r.cls)))
+            return r.rank;
+    }
+    return 2;
+}
+
+// A layer's name and the indexes of its "class" and name keys; its values in s_vals (only strings matter here)
+struct LayerHead { Pb name; int nv, kClass, kName; };
+static Pb s_keys[512], s_vals[2048];   // (not on the stack: CE threads have little; s_cs held)
+
+static void Keep(Pb* a, int& n, int cap, const Pb& v)
+{
+    if (n < cap)
+        a[n++] = v;
+}
+
+static Pb StringValue(Pb v)
+{
+    Pb sv = { 0, 0 };
+    while (v.p < v.end) {
+        unsigned int vt = Varint(v);
+        if ((vt >> 3) == 1 && (vt & 7) == 2)
+            sv = Sub(v);
+        else
+            Skip(v, vt & 7);
+    }
+    return sv;
+}
+
+static void ReadLayerHead(Pb scan, LayerHead& h)
+{
+    Pb none = { 0, 0 };
+    int nk = 0;
+    h.name = none;
+    h.nv = 0;
     while (scan.p < scan.end) {
         unsigned int tag = Varint(scan);
-        int field = tag >> 3, wire = tag & 7;
-        if (field == 1 && wire == 2)
-            name = Sub(scan);
-        else if (field == 3 && wire == 2) {
-            Pb k = Sub(scan);
-            if (nk < 512)
-                keys[nk++] = k;
-        } else if (field == 4 && wire == 2) {
-            Pb v = Sub(scan), sv = { 0, 0 };
-            while (v.p < v.end) {
-                unsigned int vt = Varint(v);
-                if ((vt >> 3) == 1 && (vt & 7) == 2)
-                    sv = Sub(v);
-                else
-                    Skip(v, vt & 7);
-            }
-            if (nv < 2048)
-                vals[nv++] = sv;
-        } else
-            Skip(scan, wire);
+        if ((tag & 7) != 2) {
+            Skip(scan, tag & 7);
+            continue;
+        }
+        Pb s = Sub(scan);
+        int field = tag >> 3;
+        if (field == 1)
+            h.name = s;
+        else if (field == 3)
+            Keep(s_keys, nk, 512, s);
+        else if (field == 4)
+            Keep(s_vals, h.nv, 2048, StringValue(s));
     }
-    int kClass = -1, kName = -1;
+    const char* nameKey = StrEq(h.name, "housenumber") ? "housenumber" : "name";
+    h.kClass = h.kName = -1;
     for (int i = 0; i < nk; i++) {
-        if (StrEq(keys[i], "class"))
-            kClass = i;
-        else if (StrEq(keys[i], StrEq(name, "housenumber") ? "housenumber" : "name"))
-            kName = i;
+        if (StrEq(s_keys[i], "class"))
+            h.kClass = i;
+        else if (StrEq(s_keys[i], nameKey))
+            h.kName = i;
     }
-    // features
-    while (b.p < b.end) {
+}
+
+// A feature's fields: its tags, geometry type, geometry
+static void ReadFeature(Pb f, Pb& tags, int& type, Pb& geom)
+{
+    while (f.p < f.end) {
+        unsigned int ft = Varint(f);
+        int field = ft >> 3;
+        if (field == 2 && (ft & 7) == 2)
+            tags = Sub(f);
+        else if (field == 3)
+            type = (int)Varint(f);
+        else if (field == 4 && (ft & 7) == 2)
+            geom = Sub(f);
+        else
+            Skip(f, ft & 7);
+    }
+}
+
+static void ReadTags(Pb tags, const LayerHead& h, Pb& cls, Pb& nm)
+{
+    while (tags.p < tags.end) {
+        unsigned int k = Varint(tags), v = Varint(tags);
+        if ((int)k == h.kClass && v < (unsigned)h.nv)
+            cls = s_vals[v];
+        else if ((int)k == h.kName && v < (unsigned)h.nv)
+            nm = s_vals[v];
+    }
+}
+
+// ---- geometry: MoveTo starts a part, LineTo adds points; false = out of memory
+
+static void Grow(Feat& ft, short x, short y)   // the bounding box
+{
+    if (x < ft.x0) ft.x0 = x;
+    if (x > ft.x1) ft.x1 = x;
+    if (y < ft.y0) ft.y0 = y;
+    if (y > ft.y1) ft.y1 = y;
+}
+
+static bool EndPart(VTile& t, Feat& ft, int start)
+{
+    bool ok = true;
+    if (start >= 0 && t.npts / 2 - start > 0) {
+        ok &= Push(t.parts, t.nparts, t.pcap, start);
+        ok &= Push(t.parts, t.nparts, t.pcap, t.npts / 2 - start);
+        ft.nparts++;
+    }
+    return ok;
+}
+
+static int Zigzag(unsigned int v)
+{
+    return (int)((v >> 1) ^ (0 - (v & 1)));
+}
+
+static bool DecodeGeometry(Pb geom, VTile& t, Feat& ft)
+{
+    int x = 0, y = 0, start = -1;
+    bool ok = true;
+    while (geom.p < geom.end) {
+        unsigned int ci = Varint(geom);
+        int cmd = ci & 7, count = ci >> 3;
+        if (cmd == 7)
+            continue;   // ClosePath: the filler closes rings itself
+        for (int i = 0; i < count && geom.p < geom.end; i++) {
+            x += Zigzag(Varint(geom));
+            y += Zigzag(Varint(geom));
+            if (cmd == 1) {   // MoveTo: a new part
+                ok &= EndPart(t, ft, start);
+                start = t.npts / 2;
+            }
+            short sx = (short)x, sy = (short)y;
+            ok &= Push(t.pts, t.npts, t.ptcap, sx);
+            ok &= Push(t.pts, t.npts, t.ptcap, sy);
+            Grow(ft, sx, sy);
+        }
+    }
+    ok &= EndPart(t, ft, start);
+    return ok;
+}
+
+// ---- names
+
+static void AddName(VTile& t, Feat& ft, const Pb& nm)   // UTF-8 -> the tile's names, with its terminating 0
+{
+    wchar_t w[64];
+    char u[128];
+    int n = (int)(nm.end - nm.p);
+    n = n > 127 ? 127 : n;
+    memcpy(u, nm.p, n);
+    u[n] = 0;
+    if (MultiByteToWideChar(CP_UTF8, 0, u, -1, w, 64)) {
+        w[63] = 0;
+        ft.name = t.nnames;
+        for (int i = 0; i == 0 || w[i - 1]; i++)
+            Push(t.names, t.nnames, t.ncap, w[i]);
+    }
+}
+
+// The feature's name (a sign without one: an empty one); false = a street or house number without a name: dropped.
+static bool Named(VTile& t, Feat& ft, int kind, const Pb& nm)
+{
+    if (kind < K_PLACE)
+        return true;
+    if (nm.p)
+        AddName(t, ft, nm);
+    else if (kind >= K_FUEL) {
+        ft.name = t.nnames;
+        Push(t.names, t.nnames, t.ncap, (wchar_t)0);
+    }
+    return ft.name >= 0 || (kind != K_ROADNAME && kind != K_HOUSENUM);
+}
+
+// One feature into the tile (or skipped); false = out of memory
+static bool DecodeFeature(Pb f, const LayerHead& h, VTile& t)
+{
+    Pb tags = { 0, 0 }, geom = { 0, 0 }, cls = { 0, 0 }, nm = { 0, 0 };
+    int type = 0;
+    ReadFeature(f, tags, type, geom);
+    ReadTags(tags, h, cls, nm);
+    int kind = Kind(h.name, cls, type);
+    int rank = kind < 0 ? -1 : Rank(kind, cls);
+    if (rank < 0)
+        return true;
+    Feat ft;
+    ft.kind = (unsigned char)kind;
+    ft.nparts = 0;
+    ft.part0 = t.nparts / 2;
+    ft.x0 = ft.y0 = 32767;
+    ft.x1 = ft.y1 = -32768;
+    ft.name = -1;
+    ft.rank = (unsigned char)rank;
+    if (!DecodeGeometry(geom, t, ft))
+        return false;
+    if (!ft.nparts || !Named(t, ft, kind, nm))
+        return true;
+    return Push(t.f, t.nf, t.fcap, ft);
+}
+
+static bool DecodeLayer(Pb b, VTile& t)
+{
+    LayerHead h;
+    ReadLayerHead(b, h);
+    bool ok = true;
+    while (ok && b.p < b.end) {
         unsigned int tag = Varint(b);
-        if ((tag >> 3) != 2 || (tag & 7) != 2) {
+        if ((tag >> 3) == 2 && (tag & 7) == 2)
+            ok = DecodeFeature(Sub(b), h, t);
+        else
             Skip(b, tag & 7);
-            continue;
-        }
-        Pb f = Sub(b), tags = { 0, 0 }, geom = { 0, 0 };
-        int type = 0;
-        while (f.p < f.end) {
-            unsigned int ft = Varint(f);
-            int field = ft >> 3;
-            if (field == 2 && (ft & 7) == 2)
-                tags = Sub(f);
-            else if (field == 3)
-                type = (int)Varint(f);
-            else if (field == 4 && (ft & 7) == 2)
-                geom = Sub(f);
-            else
-                Skip(f, ft & 7);
-        }
-        Pb cls = { 0, 0 }, nm = { 0, 0 };
-        while (tags.p < tags.end) {
-            unsigned int k = Varint(tags), v = Varint(tags);
-            if ((int)k == kClass && v < (unsigned)nv)
-                cls = vals[v];
-            else if ((int)k == kName && v < (unsigned)nv)
-                nm = vals[v];
-        }
-        int kind = Kind(name, cls, type);
-        if (kind < 0)
-            continue;
-        Feat ft;
-        ft.kind = (unsigned char)kind;
-        ft.nparts = 0;
-        ft.part0 = t.nparts / 2;
-        ft.x0 = ft.y0 = 32767;
-        ft.x1 = ft.y1 = -32768;
-        ft.name = -1;
-        ft.rank = 2;
-        if (kind == K_PLACE)
-            ft.rank = StrEq(cls, "city") || StrEq(cls, "town") ? 0 :
-                      StrEq(cls, "suburb") || StrEq(cls, "village") || StrEq(cls, "quarter") ? 1 : 2;
-        else if (kind == K_FUEL || kind == K_PARKING)
-            ft.rank = kind == K_FUEL ? 0 : 1;
-        else if (kind == K_ROADNAME) {
-            if (StrEq(cls, "motorway") || StrEq(cls, "trunk") || StrEq(cls, "primary"))
-                ft.rank = 0;
-            else if (StrEq(cls, "secondary") || StrEq(cls, "tertiary"))
-                ft.rank = 1;
-            else if (!StrEq(cls, "minor"))
-                continue;   // (service roads, paths: no names)
-        }
-        int x = 0, y = 0, start = -1;
-        bool ok = true;
-        while (geom.p < geom.end) {
-            unsigned int ci = Varint(geom);
-            int cmd = ci & 7, count = ci >> 3;
-            if (cmd == 7)
-                continue;   // ClosePath: the filler closes rings itself
-            for (int i = 0; i < count && geom.p < geom.end; i++) {
-                unsigned int dx = Varint(geom), dy = Varint(geom);
-                x += (int)((dx >> 1) ^ (0 - (dx & 1)));
-                y += (int)((dy >> 1) ^ (0 - (dy & 1)));
-                if (cmd == 1) {   // MoveTo: a new part
-                    if (start >= 0 && t.npts / 2 - start > 0) {
-                        ok &= Push(t.parts, t.nparts, t.pcap, start);
-                        ok &= Push(t.parts, t.nparts, t.pcap, t.npts / 2 - start);
-                        ft.nparts++;
-                    }
-                    start = t.npts / 2;
-                }
-                short sx = (short)x, sy = (short)y;
-                ok &= Push(t.pts, t.npts, t.ptcap, sx);
-                ok &= Push(t.pts, t.npts, t.ptcap, sy);
-                if (sx < ft.x0) ft.x0 = sx;
-                if (sx > ft.x1) ft.x1 = sx;
-                if (sy < ft.y0) ft.y0 = sy;
-                if (sy > ft.y1) ft.y1 = sy;
-            }
-        }
-        if (start >= 0 && t.npts / 2 - start > 0) {
-            ok &= Push(t.parts, t.nparts, t.pcap, start);
-            ok &= Push(t.parts, t.nparts, t.pcap, t.npts / 2 - start);
-            ft.nparts++;
-        }
-        if (!ok)
-            return false;
-        if (!ft.nparts)
-            continue;
-        if (kind >= K_FUEL && !nm.p) {   // a sign without a name: an empty one
-            ft.name = t.nnames;
-            Push(t.names, t.nnames, t.ncap, (wchar_t)0);
-        }
-        if (kind >= K_PLACE && nm.p) {
-            wchar_t w[64];
-            char u[128];
-            int n = (int)(nm.end - nm.p);
-            n = n > 127 ? 127 : n;
-            memcpy(u, nm.p, n);
-            u[n] = 0;
-            if (MultiByteToWideChar(CP_UTF8, 0, u, -1, w, 64)) {
-                w[63] = 0;
-                ft.name = t.nnames;
-                for (int i = 0; i == 0 || w[i - 1]; i++)   // with its terminating 0
-                    Push(t.names, t.nnames, t.ncap, w[i]);
-            }
-        }
-        if ((kind == K_ROADNAME || kind == K_HOUSENUM) && ft.name < 0)
-            continue;
-        if (!Push(t.f, t.nf, t.fcap, ft))
-            return false;
     }
-    return true;
+    return ok;
 }
 
 static void FreeParsed(VTile& t)
