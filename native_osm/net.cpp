@@ -354,7 +354,8 @@ static DWORD WINAPI NetThread(LPVOID)
                 ar->kind = job.kind;
                 ar->seq = apiSeq;
                 DWORD t0 = GetTickCount();
-                if (job.kind == API_ROUTE && OfflineRoute(job.path, &ar->body, &ar->len)) {   // a region's graph
+                if ((job.kind == API_ROUTE && OfflineRoute(job.path, &ar->body, &ar->len)) ||   // a region's data
+                    ((job.kind == API_SEARCH || job.kind == API_REVERSE) && OfflineSearch(job.path, &ar->body, &ar->len))) {
                     ar->err = NET_OK;
                     ar->httpStatus = 200;
                 } else

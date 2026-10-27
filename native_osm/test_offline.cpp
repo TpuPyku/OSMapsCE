@@ -28,6 +28,36 @@ int main(int argc, char** argv)
     wchar_t* s = wcsrchr(g_dir, L'\\');
     if (s)   // as if it ran from the program's folder: native_osm\obj\test -> OSMapsCE\ (its ..\OSMapsData)
         wcscpy(s + 1, L"..\\..\\..\\OSMapsCE\\");
+    if (argc > 2 && !strcmp(argv[1], "/s")) {   // the search: the queries from a UTF-8 file, one per line
+        FILE* f = fopen(argv[2], "rb");
+        char line[300];
+        while (f && fgets(line, sizeof(line), f)) {
+            char* e = line + strlen(line);
+            while (e > line && (e[-1] == '\n' || e[-1] == '\r'))
+                *--e = 0;
+            if (!line[0])
+                continue;
+            char path[700], *body;
+            int len;
+            double lon = 0, lat = 0;
+            if (line[0] == '@' && sscanf(line + 1, "%lf,%lf", &lon, &lat) == 2)   // "@lon,lat": the address of a point
+                _snprintf(path, sizeof(path), "/reverse?lon=%.6f&lat=%.6f&limit=1", lon, lat);
+            else
+                _snprintf(path, sizeof(path), "/api/?q=%s&limit=7&lat=53.1959&lon=50.1006", line);
+            path[sizeof(path) - 1] = 0;
+            for (char* p = path; *p; p++)
+                if (*p == ' ')
+                    *p = '+';
+            printf("== %s\n", line);
+            if (OfflineSearch(path, &body, &len)) {
+                printf("%s\n", body);
+                free(body);
+            }
+        }
+        if (f)
+            fclose(f);
+        return 0;
+    }
     const char* pts = argc > 1 ? argv[1] : "50.1006,53.1959;50.2210,53.2415";   // Samara: centre -> north-east
     char path[600];
     _snprintf(path, sizeof(path), "/routed-car/route/v1/driving/%s?overview=full&geometries=polyline6&steps=true%s%s",

@@ -9,7 +9,7 @@ set CORE=%~dp0..\..\VestaCore
 if not exist "%CORE%\vgps.h" set CORE=%~dp0..\core
 cd /d "%~dp0"
 if not exist obj\test mkdir obj\test
-"%VC%\bin\cl.exe" /nologo /O2 /W3 /MT /TP test_offline.cpp offline.cpp /Foobj\test\ /Feobj\test\test_offline.exe ^
+"%VC%\bin\cl.exe" /nologo /O2 /W3 /MT /TP test_offline.cpp offline.cpp offsearch.cpp /Foobj\test\ /Feobj\test\test_offline.exe ^
   /DUNICODE /D_UNICODE /DWIN32 /DNDEBUG /D_CRT_SECURE_NO_WARNINGS ^
   /I"%CORE%" /I"%VC%\include" /I"%VC%\PlatformSDK\Include" /link /LIBPATH:"%VC%\lib" /LIBPATH:"%VC%\PlatformSDK\Lib" kernel32.lib
 if errorlevel 1 exit /b 1

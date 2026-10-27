@@ -120,16 +120,10 @@ static bool Inside(const GHead& h, int lat, int lon)
     return lat >= h.minLat && lat <= h.maxLat && lon >= h.minLon && lon <= h.maxLon;
 }
 
-// The region whose graph holds all the points (lat, lon pairs, 1e-6 degrees): loaded; false = none.
-static bool Region(const int* pts, int n)
+// The folder of the region whose graph holds all the points (lat, lon pairs, 1e-6 degrees): dir = its folder, with
+// route.grf (the graph), search.idx (offsearch.cpp); false = none.
+bool OfflineDir(const int* pts, int n, wchar_t* dir)
 {
-    if (s_g.nodes) {
-        int i = 0;
-        while (i < n && Inside(s_g.h, pts[i * 2], pts[i * 2 + 1]))
-            i++;
-        if (i == n)
-            return true;
-    }
     wchar_t dirs[4][MAX_PATH];
     int nd = 0;
     for (int i = 0; i < 2; i++)
@@ -159,12 +153,32 @@ static bool Region(const int* pts, int n)
                 i++;
             if (i == n) {
                 FindClose(ff);
-                return Load(path);
+                _snwprintf(dir, MAX_PATH, L"%s\\%s", dirs[d], fd.cFileName);
+                dir[MAX_PATH - 1] = 0;
+                return true;
             }
         } while (FindNextFile(ff, &fd));
         FindClose(ff);
     }
     return false;
+}
+
+// The region whose graph holds all the points: loaded; false = none.
+static bool Region(const int* pts, int n)
+{
+    if (s_g.nodes) {
+        int i = 0;
+        while (i < n && Inside(s_g.h, pts[i * 2], pts[i * 2 + 1]))
+            i++;
+        if (i == n)
+            return true;
+    }
+    wchar_t dir[MAX_PATH], path[MAX_PATH];
+    if (!OfflineDir(pts, n, dir))
+        return false;
+    _snwprintf(path, MAX_PATH, L"%s\\route.grf", dir);
+    path[MAX_PATH - 1] = 0;
+    return Load(path);
 }
 
 // ---------------------------------------------------------------- geometry
