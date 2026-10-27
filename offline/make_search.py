@@ -104,16 +104,25 @@ class Reader(osmium.SimpleHandler):
             mid = pts[len(pts) // 2]
             self.streets.setdefault(name, []).append((mid[0], mid[1], length))
 
+    def outline(self, w):
+        """A building or an area (not a street): its address, place to go or settlement at its nodes' centre."""
+        c = center(w)
+        if c:
+            (la, lo), _ = c
+            self.place(w.tags, la, lo)
+            self.common(w.tags, la, lo)
+
     def way(self, w):
         t = w.tags
-        if t.get('highway') and t.get('name') and t.get('area') != 'yes':
+        if is_street(t):
             self.street(w, t['name'])
         elif 'addr:housenumber' in t or poi_kind(t) or 'place' in t:
-            c = center(w)
-            if c:
-                (la, lo), _ = c
-                self.place(t, la, lo)
-                self.common(t, la, lo)
+            self.outline(w)
+
+
+def is_street(tags):
+    """A named road (not a square drawn as an area)."""
+    return tags.get('highway') and tags.get('name') and tags.get('area') != 'yes'
 
 
 def poi_kind(tags):

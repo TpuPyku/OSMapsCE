@@ -166,6 +166,16 @@ def segments(ids, junction):
             start = i
 
 
+def make_piece(w, seg, nm, loc, signals, nodes):
+    """The way's run seg (junction to junction) as a piece of road."""
+    pts = [loc[n] for n in seg]
+    length = sum(dist_m(pts[k], pts[k + 1]) for k in range(len(pts) - 1))
+    # a light: its wait on the piece that ends at it (the start node's: the previous piece's)
+    sig = sum(1 for n in seg[1:] if n in signals)
+    return Piece(nodes.index(seg[0]), nodes.index(seg[-1]), pts[1:-1], length, w.cls, w.oneway, w.rb, w.speed, nm,
+                 sig)
+
+
 def make_pieces(ways, loc, signals, junction):
     nodes, names, pieces = Nodes(loc), Names(), []
     for w in ways:
@@ -173,13 +183,7 @@ def make_pieces(ways, loc, signals, junction):
         if len(ids) < 2:
             continue
         nm = names.add(w.name, w.ref)
-        for seg in segments(ids, junction):
-            pts = [loc[n] for n in seg]
-            length = sum(dist_m(pts[k], pts[k + 1]) for k in range(len(pts) - 1))
-            # a light: its wait on the piece that ends at it (the start node's: the previous piece's)
-            sig = sum(1 for n in seg[1:] if n in signals)
-            pieces.append(Piece(nodes.index(seg[0]), nodes.index(seg[-1]), pts[1:-1], length, w.cls, w.oneway, w.rb,
-                                w.speed, nm, sig))
+        pieces += [make_piece(w, seg, nm, loc, signals, nodes) for seg in segments(ids, junction)]
     return nodes.pts, names.data, pieces
 
 

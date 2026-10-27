@@ -111,11 +111,17 @@ def update(names, known, card=None, work=WORK, data=DATA):
         print('%s: %s' % (name, copy_to(folder, card, name) if card else folder))
 
 
-def main(argv):
+def args(argv):
+    """The command line: (the region names, the card or None, the list of regions asked or no name given)."""
     card = argv[argv.index('--card') + 1] if '--card' in argv else None
     names = [a for a in argv if a not in ('--card', card, '--list')]
+    return names, card, '--list' in argv or not names
+
+
+def main(argv):
+    names, card, listing = args(argv)
     known = regions()
-    if '--list' in argv or not names:
+    if listing:
         print('\n'.join(sorted(known)))
     else:
         update(names, known, card)

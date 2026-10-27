@@ -74,6 +74,31 @@ class Tools(unittest.TestCase):
         self.assertEqual(h[2:6], (1, 9, 2, 1))        # places, streets (the ring has no name), houses, places to go
         self.assertEqual(make_search.norm('Улица 22-го Партсъезда, ё'), 'улица 22 го партсъезда е')
 
+    def test_search_building_address(self):
+        """A building's address (a way, not a node): its house at the building's centre."""
+        osm = os.path.join(self.tmp, 'building.osm')
+        with open(osm, 'w', encoding='utf-8') as f:
+            f.write('<?xml version="1.0" encoding="UTF-8"?><osm version="0.6">'
+                    '<node id="1" lat="53.000" lon="50.000" version="1"/>'
+                    '<node id="2" lat="53.000" lon="50.002" version="1"/>'
+                    '<node id="3" lat="53.002" lon="50.002" version="1"/>'
+                    '<way id="1" version="1"><nd ref="1"/><nd ref="2"/><nd ref="3"/>'
+                    '<tag k="building" v="yes"/><tag k="addr:street" v="Главная улица"/>'
+                    '<tag k="addr:housenumber" v="3"/></way></osm>')
+        r = make_search.Reader()
+        r.apply_file(osm, locations=True)
+        self.assertEqual(len(r.addrs), 1)
+        la, lo, street, number, city = r.addrs[0]
+        self.assertAlmostEqual(la, 53.000667, places=5)
+        self.assertAlmostEqual(lo, 50.001333, places=5)
+        self.assertEqual((street, number, city), ('Главная улица', '3', ''))
+
+    def test_region_command_line(self):
+        self.assertEqual(make_region.args(['samara_oblast', '--card', 'E:']), (['samara_oblast'], 'E:', False))
+        self.assertEqual(make_region.args(['a', 'b']), (['a', 'b'], None, False))
+        self.assertEqual(make_region.args(['--list']), ([], None, True))
+        self.assertEqual(make_region.args([]), ([], None, True))
+
     def test_region_update_is_repeatable(self):
         url = pathlib.Path(TINY).as_uri()
         known = {'tiny': url}
