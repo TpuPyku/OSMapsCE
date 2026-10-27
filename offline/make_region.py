@@ -28,6 +28,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 WORK = os.path.join(HERE, 'work')
 DATA = os.path.join(HERE, '..', 'OSMapsData')
 BASE = 'http://download.openstreetmap.fr/extracts/russia/'
+# russia/'s copies of these two are nearly empty (their bounds in OSM: 258 KB, 94 KB, 2026-10-27); the same land whole:
+FULL = {name: 'http://download.openstreetmap.fr/extracts/europe/ukraine/%s-latest.osm.pbf' % f
+        for name, f in (('crimea_republic', 'crimea'), ('sevastopol', 'sevastopol'))}
 UA = {'User-Agent': 'OSMapsCE-make_region (+https://github.com/TpuPyku/OSMapsCE)'}
 
 
@@ -49,7 +52,7 @@ def regions(get=get):
     out = {}
     for d in district_links(get(BASE)):
         out.update(region_links(get(BASE + d + '/'), BASE + d + '/'))
-    return out
+    return {n: FULL.get(n, u) for n, u in out.items()}
 
 
 def fetch(url, path):

@@ -212,6 +212,9 @@ class Tools(unittest.TestCase):
         pages = {make_region.BASE: top, make_region.BASE + 'volga_federal_district/': page,
                  make_region.BASE + 'ural_federal_district/': ''}
         self.assertEqual(list(make_region.regions(get=pages.get)), ['samara_oblast'])
+        pages[make_region.BASE + 'ural_federal_district/'] = '<a href="crimea_republic-latest.osm.pbf">c</a>'
+        self.assertEqual(make_region.regions(get=pages.get)['crimea_republic'],   # (russia/'s copy: nearly empty)
+                         make_region.FULL['crimea_republic'])
 
 
 if __name__ == '__main__':
