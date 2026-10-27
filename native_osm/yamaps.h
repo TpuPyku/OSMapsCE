@@ -146,6 +146,7 @@ void  ApiFree(ApiResult* r);
 // offline.cpp - routes from a region's road graph (OSMapsData\<region>oute.grf), answered as OSRM's JSON
 bool  OfflineRoute(const char* osrmPath, char** body, int* len);   // false: no region / no way - ask OSRM
 bool  OfflineDir(const int* latLon, int n, wchar_t* dir);          // the region's folder holding the points
+bool  OfflineRoadAt(int lat, int lon, double maxM, char* name, int cap);   // the nearest road's name (1e-6 degrees)
 // offsearch.cpp - the search and the address of a point from a region's index (search.idx), answered as Photon's
 bool  OfflineSearch(const char* photonPath, char** body, int* len);   // false: no region / nothing - ask Photon
 

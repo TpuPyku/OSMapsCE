@@ -50,8 +50,11 @@ class Tools(unittest.TestCase):
         out = os.path.join(self.tmp, 'route.grf')
         make_graph.build(TINY, out)
         nodes, edges = graph(out)
-        self.assertEqual(len(nodes), 6)               # the junctions and the ends
-        self.assertEqual(len(edges), 11)              # 5 two-way pieces, 1 one-way
+        self.assertEqual(len(nodes), 14)              # the junctions and the ends (not the curve's inner points)
+        self.assertEqual(len(edges), 25)              # 10 two-way pieces, the one-way, the roundabout's 4
+        self.assertEqual(struct.unpack_from(make_graph.HEADER, read(out), 0)[4], 2)   # the curve's inner points
+        ring = [(a, b) for a, b, _, _, n in edges if n == '']
+        self.assertEqual(len(ring), 4)                # the roundabout: one way round
         one = [(a, b) for a, b, _, _, n in edges if n == 'Односторонняя улица']
         self.assertEqual(one, [((53000000, 50004000), (53002000, 50004000))])   # north only
         main = [dm for a, b, dm, _, n in edges if n == 'Главная улица' and a == (53000000, 50000000)]
@@ -68,7 +71,7 @@ class Tools(unittest.TestCase):
         out = os.path.join(self.tmp, 'search.idx')
         make_search.build(TINY, out)
         h = struct.unpack_from(make_search.HEADER, read(out), 0)
-        self.assertEqual(h[2:6], (1, 4, 1, 1))        # places, streets, houses, places to go
+        self.assertEqual(h[2:6], (1, 9, 2, 1))        # places, streets (the ring has no name), houses, places to go
         self.assertEqual(make_search.norm('Улица 22-го Партсъезда, ё'), 'улица 22 го партсъезда е')
 
     def test_region_update_is_repeatable(self):

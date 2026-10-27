@@ -583,16 +583,22 @@ static void PutName(Buf& b, DWORD name)   // "name":..,"ref":..
     PutStr(b, r, (int)strlen(r));
 }
 
-static void PolyNum(Buf& b, int v)   // Google's polyline, one value
+// Google's polyline, one value, inside a JSON string: its characters (63..126) include the backslash, written "\\"
+// as OSRM writes it (route.cpp's JSON reader takes a lone one for an escape)
+static void PolyNum(Buf& b, int v)
 {
     unsigned int u = v < 0 ? ~((unsigned int)v << 1) : (unsigned int)v << 1;
-    char t[8];
+    char t[16];
     int n = 0;
-    while (u >= 0x20) {
-        t[n++] = (char)((0x20 | (u & 0x1f)) + 63);
+    for (;;) {
+        char c = (char)((u >= 0x20 ? 0x20 | (u & 0x1f) : u) + 63);
+        if (c == '\\')
+            t[n++] = '\\';
+        t[n++] = c;
+        if (u < 0x20)
+            break;
         u >>= 5;
     }
-    t[n++] = (char)(u + 63);
     Put(b, t, n);
 }
 
@@ -786,6 +792,26 @@ static void FreeWay(Way& w)
     free(w.e);
     free(w.from);
     w.e = w.from = NULL;
+}
+
+// The name of the road nearest to a point within maxM (the region's graph, as a route's snapping): false = no
+// region, no road that near, or a road without a name.
+bool OfflineRoadAt(int lat, int lon, double maxM, char* name, int cap)
+{
+    int pt[2] = { lat, lon };
+    if (!Region(pt, 1))
+        return false;
+    s_kx = 0.111195 * cos(lat / 1e6 * M_PI / 180);
+    Snap s;
+    if (!SnapTo(lat, lon, &s) || s.distM > maxM)
+        return false;
+    const char* n = s_g.names + s_g.edges[s.e].name;   // "name\tref"
+    int len = (int)(strchr(n, '\t') ? strchr(n, '\t') - n : strlen(n));
+    if (!len || len >= cap)
+        return false;
+    memcpy(name, n, len);
+    name[len] = 0;
+    return true;
 }
 
 // "/routed-car/route/v1/driving/lon,lat;lon,lat...?...&bearings=deg,60;..." -> an OSRM answer, or false (no region

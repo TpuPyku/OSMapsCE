@@ -397,11 +397,12 @@ static bool Reverse(int lat, int lon, char** body, int* len)
             }
         }
     }
-    if (best.kind < 0)
+    char road[200];   // no house: the road under the point (the graph's, as a route's), its settlement from here
+    if (best.kind < 0 && OfflineRoadAt(lat, lon, 400, road, sizeof(road)))
         for (DWORD i = 0; i < h.streets; i++) {
             const SStreet& s = s_x.streets[i];
             double km = Km(lat, lon, s.lat, s.lon);
-            if (km < 0.4 && km < best.score) {
+            if (!strcmp(S(s.name), road) && km < best.score) {   // of that name, the nearest one
                 Hit x = { H_STREET, lat, lon, s.name, 0xFFFFFFFF, 0, s.city, 0, km };
                 best = x;
             }

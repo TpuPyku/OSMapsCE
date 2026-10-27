@@ -11,3 +11,4 @@ VTileTest/*.txt
 VTileTest/tiles/
 offline/work/
 OSMapsData/
+__pycache__/
