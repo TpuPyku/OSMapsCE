@@ -54,6 +54,7 @@ struct Feat {
     short x0, y0, x1, y1;       // bounding box, tile units
     int name;                   // K_PLACE, K_ROADNAME, K_HOUSENUM: into VTile::names, -1 none
     unsigned char rank;         // the names: 0 the biggest (a city, a main road) .. 2
+    unsigned char minz;         // the name shown from this zoom (places: by their size, PlaceMinZoom)
 };
 
 struct VTile {
@@ -188,9 +189,11 @@ static int Kind(const Pb& layer, const Pb& cls, int geomType, int& rank)
     return -1;
 }
 
-// A layer's name and the indexes of its "class" and name keys; its values in s_vals (only strings matter here)
-struct LayerHead { Pb name; int nv, kClass, kName; };
+// A layer's name and the indexes of its keys "class", the name, "rank" and "capital" (places); its values in s_vals
+// (the strings) and s_nums (the numbers: OpenMapTiles' place rank and capital level)
+struct LayerHead { Pb name; int nv, kClass, kName, kNameRu, kRank, kCapital; };
 static Pb s_keys[512], s_vals[2048];   // (not on the stack: CE threads have little; s_cs held)
+static int s_nums[2048];
 
 static void Keep(Pb* a, int& n, int cap, const Pb& v)
 {
@@ -207,15 +210,40 @@ static Pb StringValue(Pb v)
     return sv;
 }
 
+static int NumberValue(Pb v)   // int (field 4), uint (5), sint (6); else 0
+{
+    int n = 0;
+    while (v.p < v.end) {
+        unsigned int tag = Varint(v);
+        int field = tag >> 3;
+        if ((tag & 7) != 0) {
+            Skip(v, tag & 7);
+            continue;
+        }
+        unsigned int x = Varint(v);
+        if (field == 4 || field == 5)
+            n = (int)x;
+        else if (field == 6)
+            n = (int)((x >> 1) ^ (0 - (x & 1)));
+    }
+    return n;
+}
+
 static void KeyIndexes(LayerHead& h, int nk)   // of the keys "class" and the name (a house number's own)
 {
     const char* nameKey = StrEq(h.name, "housenumber") ? "housenumber" : "name";
-    h.kClass = h.kName = -1;
+    h.kClass = h.kName = h.kNameRu = h.kRank = h.kCapital = -1;
     for (int i = 0; i < nk; i++) {
         if (StrEq(s_keys[i], "class"))
             h.kClass = i;
         else if (StrEq(s_keys[i], nameKey))
             h.kName = i;
+        else if (StrEq(s_keys[i], "name:ru"))   // (the Russian name, when there is one: "Киев", not "Київ")
+            h.kNameRu = i;
+        else if (StrEq(s_keys[i], "rank"))
+            h.kRank = i;
+        else if (StrEq(s_keys[i], "capital"))
+            h.kCapital = i;
     }
 }
 
@@ -237,8 +265,10 @@ static void ReadLayerHead(Pb scan, LayerHead& h)
             h.name = s;
         else if (field == 3)
             Keep(s_keys, nk, 512, s);
-        else if (field == 4)
+        else if (field == 4 && h.nv < 2048) {
+            s_nums[h.nv] = NumberValue(s);
             Keep(s_vals, h.nv, 2048, StringValue(s));
+        }
     }
     KeyIndexes(h, nk);
 }
@@ -260,15 +290,40 @@ static void ReadFeature(Pb f, Pb& tags, int& type, Pb& geom)
     }
 }
 
-static void ReadTags(Pb tags, const LayerHead& h, Pb& cls, Pb& nm)
+// A feature's class and name (the Russian one when it has one); a place's rank and capital level (0: none)
+struct Tags { Pb cls, nm, nmRu; int rank, capital; };
+
+static void ReadTags(Pb tags, const LayerHead& h, Tags& t)
 {
     while (tags.p < tags.end) {
         unsigned int k = Varint(tags), v = Varint(tags);
-        if ((int)k == h.kClass && v < (unsigned)h.nv)
-            cls = s_vals[v];
-        else if ((int)k == h.kName && v < (unsigned)h.nv)
-            nm = s_vals[v];
+        if (v >= (unsigned)h.nv)
+            continue;
+        if ((int)k == h.kClass)
+            t.cls = s_vals[v];
+        else if ((int)k == h.kName)
+            t.nm = s_vals[v];
+        else if ((int)k == h.kNameRu)
+            t.nmRu = s_vals[v];
+        else if ((int)k == h.kRank)
+            t.rank = s_nums[v];
+        else if ((int)k == h.kCapital)
+            t.capital = s_nums[v];
     }
+    if (t.nmRu.p)
+        t.nm = t.nmRu;
+}
+
+// The zoom a place's name shows from (the user 2026-10-27; OpenMapTiles has no population, its rank and capital stand
+// for it): a country's capital from z3, a region's centre or a city of rank 7 or bigger (~240 000 people and up) from
+// z7, other cities, towns, villages, suburbs from z10, the rest from z14.
+static int PlaceMinZoom(const Tags& t, int nameRank)
+{
+    if (t.capital == 2)
+        return 3;
+    if (StrEq(t.cls, "city") && ((t.rank > 0 && t.rank <= 7) || t.capital == 3 || t.capital == 4))
+        return 7;
+    return nameRank < 2 ? 10 : 14;
 }
 
 // ---- geometry: MoveTo starts a part, LineTo adds points; false = out of memory
@@ -358,11 +413,12 @@ static bool Named(VTile& t, Feat& ft, int kind, const Pb& nm)
 // One feature into the tile (or skipped); false = out of memory
 static bool DecodeFeature(Pb f, const LayerHead& h, VTile& t)
 {
-    Pb tags = { 0, 0 }, geom = { 0, 0 }, cls = { 0, 0 }, nm = { 0, 0 };
+    Pb tags = { 0, 0 }, geom = { 0, 0 };
+    Tags tg = { { 0, 0 }, { 0, 0 }, { 0, 0 }, 0, 0 };
     int type = 0;
     ReadFeature(f, tags, type, geom);
-    ReadTags(tags, h, cls, nm);
-    int rank = 2, kind = Kind(h.name, cls, type, rank);
+    ReadTags(tags, h, tg);
+    int rank = 2, kind = Kind(h.name, tg.cls, type, rank);
     if (kind < 0)
         return true;
     Feat ft;
@@ -373,9 +429,10 @@ static bool DecodeFeature(Pb f, const LayerHead& h, VTile& t)
     ft.x1 = ft.y1 = -32768;
     ft.name = -1;
     ft.rank = (unsigned char)rank;
+    ft.minz = (unsigned char)(kind == K_PLACE ? PlaceMinZoom(tg, rank) : 0);
     if (!DecodeGeometry(geom, t, ft))
         return false;
-    if (!ft.nparts || !Named(t, ft, kind, nm))
+    if (!ft.nparts || !Named(t, ft, kind, tg.nm))
         return true;
     return Push(t.f, t.nf, t.fcap, ft);
 }
@@ -405,7 +462,7 @@ static void FreeParsed(VTile& t)
 
 // A tile's names: places at their point, streets at the middle of their longest segment (dx, dy: the segment).
 // Only the ones whose point is inside the tile: the tiles' buffers repeat their neighbours' names.
-struct VLabel { unsigned char kind, rank; short x, y, dx, dy; int name; };
+struct VLabel { unsigned char kind, rank, minz; short x, y, dx, dy; int name; };
 struct VLabelSet { MapRequest key; VLabel* l; int n; wchar_t* names; int nn; DWORD useTick; };
 enum { kLabelSets = 48 };       // a z13 view needs ~24 data tiles
 static VLabelSet s_labels[kLabelSets];
@@ -482,6 +539,7 @@ static bool LabelOf(const VTile& t, const Feat& f, VLabel& l)
 {
     l.kind = f.kind;
     l.rank = f.rank;
+    l.minz = f.minz;
     l.name = f.name;
     l.dx = l.dy = 0;
     l.x = f.x0;
@@ -954,7 +1012,7 @@ static void PoiSign(HDC dc, int x, int y, int kind, const Style& st)
 // (car parks from z17: PC 2026-10-27, many at z16; neighbourhoods and the small streets close up only)
 struct LabelPass { unsigned char kind, rank, minZoom; };
 static const LabelPass kPasses[] = {
-    { K_PLACE, 0, 0 }, { K_PLACE, 1, 0 }, { K_PLACE, 2, 14 },
+    { K_PLACE, 0, 0 }, { K_PLACE, 1, 0 }, { K_PLACE, 2, 0 },   // (each place from its own zoom: PlaceMinZoom)
     { K_FUEL, 0, 14 }, { K_PARKING, 1, 17 },
     { K_ROADNAME, 0, 14 }, { K_ROADNAME, 1, 14 }, { K_ROADNAME, 2, 15 },
     { K_HOUSENUM, 2, 17 },
@@ -1150,7 +1208,7 @@ static void DrawSet(LabelView& v, const LabelPass& p, HFONT pf, const VLabelSet&
     for (int li = 0; li < set.n && v.np < v.cap; li++) {
         const VLabel& lb = set.l[li];
         double x, y;
-        if (lb.rank == p.rank && lb.kind == p.kind && OnScreen(v, set, lb, x, y))
+        if (lb.rank == p.rank && lb.kind == p.kind && lb.minz <= v.z && OnScreen(v, set, lb, x, y))
             PlaceLabel(v, p.kind, pf, set, lb, x, y);
     }
 }
@@ -1186,8 +1244,6 @@ void VLabelsDraw(HDC dc, const RECT& mr, double cx, double cy, double vx, double
                  const RECT* avoid, int navoid)
 {
     int zd = z > VEC_MAXZ ? VEC_MAXZ : z;
-    if (zd < 10)
-        return;
     DWORD t0 = GetTickCount();
     double ra = angle * M_PI / 180.0;
     LabelView v;

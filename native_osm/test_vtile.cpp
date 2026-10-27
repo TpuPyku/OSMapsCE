@@ -225,6 +225,47 @@ static int MakeCity(unsigned char* out, bool village)
     return tile.n;
 }
 
+// A small-scale tile's places along the middle row (x 30, 80, 130, 180, 230): a country's capital (rank 1,
+// capital 2), a region's centre (rank 5, capital 4), a big city (rank 7), a middle one (rank 9), a town (rank 8) -
+// OpenMapTiles' place attributes, rank and capital as numbers.
+static int MakeCountry(unsigned char* out)
+{
+    static const char* kName[5] = { "Cap", "Reg", "Big", "Mid", "Twn" };
+    static const char* kClass[5] = { "city", "city", "city", "city", "town" };
+    static const unsigned int kRank[5] = { 1, 5, 7, 9, 8 }, kCapital[5] = { 2, 4, 0, 0, 0 };
+    Pbw tile = { { 0 }, 0 }, l = { { 0 }, 0 };
+    Str(l, 1, "place");
+    Str(l, 3, "class");
+    Str(l, 3, "name");
+    Str(l, 3, "rank");
+    Str(l, 3, "capital");
+    int nv = 0;
+    for (int i = 0; i < 5; i++) {
+        Value(l, kClass[i]);
+        Value(l, kName[i]);
+        Pbw v = { { 0 }, 0 };   // the rank: a uint value (field 5)
+        Var(v, 5 << 3);
+        Var(v, kRank[i]);
+        Bytes(l, 4, v.b, v.n);
+        unsigned int tags[8] = { 0, nv, 1, nv + 1, 2, nv + 2, 3, nv + 3 };
+        int nt = 6;
+        if (kCapital[i]) {
+            Pbw c = { { 0 }, 0 };
+            Var(c, 5 << 3);
+            Var(c, kCapital[i]);
+            Bytes(l, 4, c.b, c.n);
+            nt = 8;
+        }
+        nv += nt / 2;
+        unsigned int g[3];
+        Point(g, 30 + i * 50, 128);
+        Feature(l, tags, nt, 1, g, 3);
+    }
+    Bytes(tile, 3, l.b, l.n);
+    memcpy(out, tile.b, tile.n);
+    return tile.n;
+}
+
 // ---- the frame the labels are drawn on (800 x 480, black)
 struct Frame { Image im; unsigned short* bits; HDC dc; HGDIOBJ old; };
 
@@ -393,6 +434,72 @@ int main()
     Check(Count(f, 255, 230, 290, 250, RGB565(120, 112, 104)) > 3, "z17: the house number");
     Close(f);
     Close(g);
+
+    // the places' names by zoom (the user 2026-10-27): capitals from z3, regions' centres and big cities from z7,
+    // every city and town from z10
+    unsigned char country[4096];
+    int nc = MakeCountry(country);
+    static const int kZoom[3] = { 3, 7, 10 };
+    static const bool kShown[3][5] = { { true, false, false, false, false }, { true, true, true, false, false },
+                                       { true, true, true, true, true } };
+    static const char* kWhat[3] = { "z3: the capital only", "z7: the capital, the region's centre, the big city",
+                                    "z10: every city and town" };
+    Frame h;
+    Open(h);
+    RECT whole = { 0, 0, 800, 480 };
+    for (int k = 0; k < 3; k++) {
+        int n = 1 << (kZoom[k] - 1);   // a tile in the middle of the world
+        MapRequest q = { SRC_OSM, kZoom[k], n, n };
+        Image ti = { 0 };
+        bool ok = VTileRender(q, country, nc, &ti);
+        ImageFree(&ti);
+        memset(h.bits, 0, 800 * 480 * 2);
+        VLabelsDraw(h.dc, whole, 400, 240, n * 256.0 + 128, n * 256.0 + 128, 0, kZoom[k], NULL, 0);
+        GdiFlush();
+        for (int i = 0; i < 5; i++) {
+            int sx = 302 + i * 50;
+            ok = ok && (kShown[k][i] ? Count(h, sx - 20, 228, sx + 20, 252, white) > 10 : Lit(h, sx - 12, 228, sx + 12, 252) == 0);
+        }
+        Check(ok, kWhat[k]);
+    }
+    // the Russian name when the tile has one (name:ru), else the local one: a frame named so equals one whose tile
+    // holds that text as its plain name
+    Frame r1, r2;
+    Open(r1);
+    Open(r2);
+    for (int k = 0; k < 2; k++) {
+        Pbw tile = { { 0 }, 0 }, l = { { 0 }, 0 };
+        Str(l, 1, "place");
+        Str(l, 3, "class");
+        Str(l, 3, "name");
+        Str(l, 3, "name:ru");
+        Str(l, 3, "capital");
+        Value(l, "city");
+        Value(l, k ? "Kiev" : "Kyiv");
+        Value(l, "Kiev");
+        Pbw c = { { 0 }, 0 };
+        Var(c, 5 << 3);
+        Var(c, 2);
+        Bytes(l, 4, c.b, c.n);
+        unsigned int tags[8] = { 0, 0, 1, 1, 2, 2, 3, 3 }, g[3];
+        Point(g, 128, 128);
+        Feature(l, tags, k ? 4 : 8, 1, g, 3);   // the second: only the class and the plain name "Kiev" - not a capital,
+        Bytes(tile, 3, l.b, l.n);              // shown at z10
+        MapRequest q = { SRC_OSM, 10, 600 + k, 300 };
+        Image ti = { 0 };
+        VTileRender(q, tile.b, tile.n, &ti);
+        ImageFree(&ti);
+        Frame& fr = k ? r2 : r1;
+        VLabelsDraw(fr.dc, whole, 400, 240, (600 + k) * 256.0 + 128, 300 * 256.0 + 128, 0, 10, NULL, 0);
+        GdiFlush();
+    }
+    bool same = true;   // around the name (the second view also sees the first tile, 256 px left)
+    for (int y = 220; y < 260; y++)
+        same = same && !memcmp(r1.bits + (479 - y) * 800 + 300, r2.bits + (479 - y) * 800 + 300, 200 * 2);
+    Check(Count(r1, 360, 228, 440, 252, white) > 10 && same, "the place's Russian name when it has one");
+    Close(r1);
+    Close(r2);
+    Close(h);
 
     printf("%d checks, %d failed\n", s_checks, s_failed);
     return s_failed;
