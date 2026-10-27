@@ -414,20 +414,31 @@ struct VLabelSet { MapRequest key; VLabel* l; int n; wchar_t* names; int nn; DWO
 enum { kLabelSets = 48 };       // a z13 view needs ~24 data tiles
 static VLabelSet s_labels[kLabelSets];
 
-static void LabelsFrom(const VTile& t)
+// A recent entry (s_parsed, s_labels) of this key, its use time renewed; NULL: none, oldest = the one to reuse.
+template <class T> static T* Recent(T* a, int n, const MapRequest& key, T*& oldest)
 {
-    VLabelSet* set = &s_labels[0];
-    for (int i = 0; i < kLabelSets; i++) {
-        if (s_labels[i].useTick && SameKey(s_labels[i].key, t.key)) {
-            s_labels[i].useTick = GetTickCount();
-            return;
+    oldest = &a[0];
+    for (int i = 0; i < n; i++) {
+        if (a[i].useTick && SameKey(a[i].key, key)) {
+            a[i].useTick = GetTickCount();
+            return &a[i];
         }
-        if (s_labels[i].useTick < set->useTick)
-            set = &s_labels[i];
+        if (a[i].useTick < oldest->useTick)
+            oldest = &a[i];
     }
+    return NULL;
+}
+
+static void ClearSet(VLabelSet* set)
+{
     free(set->l);
     free(set->names);
     memset(set, 0, sizeof(*set));
+}
+
+// Room for the tile's named features and a copy of its names; false = out of memory (the set left empty)
+static bool AllocSet(VLabelSet* set, const VTile& t)
+{
     int n = 0;
     for (int i = 0; i < t.nf; i++)
         if (t.f[i].name >= 0)
@@ -435,69 +446,74 @@ static void LabelsFrom(const VTile& t)
     set->l = (VLabel*)malloc((n ? n : 1) * sizeof(VLabel));
     set->names = (wchar_t*)malloc((t.nnames ? t.nnames : 1) * sizeof(wchar_t));
     if (!set->l || !set->names) {
-        free(set->l);
-        free(set->names);
-        memset(set, 0, sizeof(*set));
-        return;
+        ClearSet(set);
+        return false;
     }
     memcpy(set->names, t.names, t.nnames * sizeof(wchar_t));
     set->nn = t.nnames;
-    for (int i = 0; i < t.nf; i++) {
-        const Feat& f = t.f[i];
-        if (f.name < 0)
-            continue;
-        VLabel l;
-        l.kind = f.kind;
-        l.rank = f.rank;
-        l.name = f.name;
-        l.dx = l.dy = 0;
-        if (f.kind != K_ROADNAME) {   // a point
-            l.x = f.x0;
-            l.y = f.y0;
-        } else {
-            int best = -1;
-            for (int pi = 0; pi < f.nparts; pi++) {
-                int p0 = t.parts[(f.part0 + pi) * 2], pn = t.parts[(f.part0 + pi) * 2 + 1];
-                for (int q = 1; q < pn; q++) {
-                    int ax = t.pts[(p0 + q - 1) * 2], ay = t.pts[(p0 + q - 1) * 2 + 1];
-                    int bx = t.pts[(p0 + q) * 2], by = t.pts[(p0 + q) * 2 + 1];
-                    int d2 = (bx - ax) * (bx - ax) + (by - ay) * (by - ay);
-                    if (d2 > best) {
-                        best = d2;
-                        l.x = (short)((ax + bx) / 2);
-                        l.y = (short)((ay + by) / 2);
-                        l.dx = (short)(bx - ax);
-                        l.dy = (short)(by - ay);
-                    }
-                }
+    return true;
+}
+
+// A street's label at the middle of its longest segment; false = no segment
+static bool LongestSegment(const VTile& t, const Feat& f, VLabel& l)
+{
+    int best = -1;
+    for (int pi = 0; pi < f.nparts; pi++) {
+        int p0 = t.parts[(f.part0 + pi) * 2], pn = t.parts[(f.part0 + pi) * 2 + 1];
+        for (int q = 1; q < pn; q++) {
+            int ax = t.pts[(p0 + q - 1) * 2], ay = t.pts[(p0 + q - 1) * 2 + 1];
+            int bx = t.pts[(p0 + q) * 2], by = t.pts[(p0 + q) * 2 + 1];
+            int d2 = (bx - ax) * (bx - ax) + (by - ay) * (by - ay);
+            if (d2 > best) {
+                best = d2;
+                l.x = (short)((ax + bx) / 2);
+                l.y = (short)((ay + by) / 2);
+                l.dx = (short)(bx - ax);
+                l.dy = (short)(by - ay);
             }
-            if (best <= 0)
-                continue;
         }
-        if (l.x < 0 || l.y < 0 || l.x >= kExtent || l.y >= kExtent)
-            continue;
-        set->l[set->n++] = l;
+    }
+    return best > 0;
+}
+
+static bool InTile(const VLabel& l)
+{
+    return l.x >= 0 && l.y >= 0 && l.x < kExtent && l.y < kExtent;
+}
+
+// A named feature's label: a place or a sign at its point, a street along its longest segment; false = none here
+static bool LabelOf(const VTile& t, const Feat& f, VLabel& l)
+{
+    l.kind = f.kind;
+    l.rank = f.rank;
+    l.name = f.name;
+    l.dx = l.dy = 0;
+    l.x = f.x0;
+    l.y = f.y0;
+    if (f.kind == K_ROADNAME && !LongestSegment(t, f, l))
+        return false;
+    return InTile(l);
+}
+
+static void LabelsFrom(const VTile& t)
+{
+    VLabelSet* set;
+    if (Recent(s_labels, kLabelSets, t.key, set))
+        return;
+    ClearSet(set);
+    if (!AllocSet(set, t))
+        return;
+    for (int i = 0; i < t.nf; i++) {
+        VLabel l;
+        if (t.f[i].name >= 0 && LabelOf(t, t.f[i], l))
+            set->l[set->n++] = l;
     }
     set->key = t.key;
     set->useTick = GetTickCount();
 }
 
-// The data tile parsed (from the recent ones, or now); NULL = bad data / out of memory.
-static VTile* Parsed(const MapRequest& key, const unsigned char* data, int len)
+static bool DecodeTile(VTile& t, const unsigned char* data, int len)   // false = out of memory
 {
-    VTile* slot = &s_parsed[0];
-    for (int i = 0; i < kParsed; i++) {
-        if (s_parsed[i].useTick && SameKey(s_parsed[i].key, key)) {
-            s_parsed[i].useTick = GetTickCount();
-            return &s_parsed[i];
-        }
-        if (s_parsed[i].useTick < slot->useTick)
-            slot = &s_parsed[i];
-    }
-    if (!data)
-        return NULL;
-    FreeParsed(*slot);
-    VTile& t = *slot;
     Pb b = { data, data + len };
     bool ok = true;
     while (ok && b.p < b.end) {
@@ -507,15 +523,26 @@ static VTile* Parsed(const MapRequest& key, const unsigned char* data, int len)
         else
             Skip(b, tag & 7);
     }
-    if (!ok) {
+    return ok;
+}
+
+// The data tile parsed (from the recent ones, or now); NULL = bad data / out of memory.
+static VTile* Parsed(const MapRequest& key, const unsigned char* data, int len)
+{
+    VTile* slot;
+    VTile* t = Recent(s_parsed, kParsed, key, slot);
+    if (t || !data)
+        return t;
+    FreeParsed(*slot);
+    if (!DecodeTile(*slot, data, len)) {
         Log("vtile: out of memory parsing %d/%d/%d", key.z - VEC_ZBASE, key.x, key.y);
-        FreeParsed(t);
+        FreeParsed(*slot);
         return NULL;
     }
-    t.key = key;
-    t.useTick = GetTickCount();
-    LabelsFrom(t);
-    return &t;
+    slot->key = key;
+    slot->useTick = GetTickCount();
+    LabelsFrom(*slot);
+    return slot;
 }
 
 // ---------------------------------------------------------------- drawing one tile
