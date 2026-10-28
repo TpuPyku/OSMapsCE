@@ -225,6 +225,28 @@ int main()
     Check(!b, "reverse: nothing near - no answer", b);
     free(b);
 
+    // the other regions on the card (the user 2026-10-29: a town of Samara's region asked from Moscow - "no network")
+    b = Ask("/api/?q=%D0%B4%D1%80%D1%83%D0%B3%D0%BE%D0%B3%D1%80%D0%B0%D0%B4&limit=7&lat=53.0&lon=50.0");   // другоград
+    Check(Has(b, L"\"name\":\"Другоград\"") && Num(b, "\"coordinates\":[50.") > 0 && Has(b, L",58."),
+          "search: a town of another region (twin, 5 degrees north) when this one has none", b);
+    free(b);
+    b = Ask("/api/?q=%D0%A2%D0%B5%D1%81%D1%82%D0%BE%D0%B2%D1%81%D0%BA&limit=7&lat=10.0&lon=10.0");   // Тестовск
+    Check(Has(b, L"\"name\":\"Тестовск\""), "search: from where no region is - the regions on the card", b);
+    free(b);
+    b = Ask("/api/?q=%D0%A2%D0%B5%D1%81%D1%82%D0%BE%D0%B2%D1%81%D0%BA&limit=7&lat=53.0&lon=50.0");   // Тестовск again
+    Check(Has(b, L"\"name\":\"Тестовск\"") && !Has(b, L"Другоград"), "search: this region's first, the others not mixed in", b);
+    free(b);
+    b = Ask("/reverse?lon=10.0&lat=10.0&limit=1");
+    Check(!b, "reverse: only the point's own region", b);
+    free(b);
+    b = Ask("/api/?q=%D0%BD%D0%B5%D1%82%D1%82%D0%B0%D0%BA%D0%BE%D0%B9&limit=7&lat=10.0&lon=10.0");   // неттакой
+    Check(!b, "search: nothing in any region - no answer (then the network)", b);
+    free(b);
+    char* nb = NULL;
+    int nl = 0;
+    Check(!OfflineSearch("/api/?q=%D0%BD%D0%B5%D1%82%D1%82%D0%B0%D0%BA%D0%BE%D0%B9&limit=7&lat=10.0&lon=10.0", &nb, &nl),
+          "search: nothing in any region - not answered (the network asked)", nb);
+
     // the region's vector tiles (offline/test/make_test_tiles.py: the town's z14 tile, its z13 parent, a z15 child)
     int tx = (int)((50.003 + 180) / 360 * 16384);
     double la = 53.001 * M_PI / 180;

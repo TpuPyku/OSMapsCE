@@ -43,12 +43,9 @@ static bool ReadAt(DWORD off, void* to, DWORD bytes)
 }
 
 // The index of the region at a point: loaded; false = none.
-static bool Load(int lat, int lon)
+static bool LoadDir(const wchar_t* dir)
 {
-    int pt[2] = { lat, lon };
-    wchar_t dir[MAX_PATH], path[MAX_PATH];
-    if (!OfflineDir(pt, 1, dir))
-        return false;
+    wchar_t path[MAX_PATH];
     if (s_x.str && !wcscmp(s_x.dir, dir))
         return true;
     Unload();
@@ -71,6 +68,28 @@ static bool Load(int lat, int lon)
     wcscpy(s_x.dir, dir);
     Log("offsearch: %S: %lu places, %lu streets, %lu houses, %lu pois", path, h.places, h.streets, h.houses, h.pois);
     return true;
+}
+
+static bool Load(int lat, int lon)   // the index of the region the point is in
+{
+    int pt[2] = { lat, lon };
+    wchar_t dir[MAX_PATH];
+    return OfflineDir(pt, 1, dir) && LoadDir(dir);
+}
+
+// The regions on the card with a search index: OffRegion's walk, each one taken (the test never "holds")
+enum { kRegions = 32 };
+struct Regions { wchar_t dir[kRegions][MAX_PATH]; int n; };
+
+static bool Collect(const wchar_t* path, void* ctx)
+{
+    Regions* r = (Regions*)ctx;
+    if (r->n < kRegions && GetFileAttributes(path) != INVALID_FILE_ATTRIBUTES) {
+        wcscpy(r->dir[r->n], path);
+        *wcsrchr(r->dir[r->n], L'\\') = 0;
+        r->n++;
+    }
+    return false;
 }
 
 // ---------------------------------------------------------------- the query
@@ -349,6 +368,22 @@ static void FindPois(const Query& q, int lat, int lon, Hit* hits, int* n)   // p
     }
 }
 
+static bool Search(const char* q8, int lat, int lon, char** body, int* len);
+
+// The query in the card's other regions (the user 2026-10-29: Togliatti asked from Moscow - "no network"): the first
+// that has it answers
+static bool SearchOthers(const char* q8, const wchar_t* tried, int lat, int lon, char** body, int* len)
+{
+    static Regions r;
+    wchar_t unused[MAX_PATH];
+    r.n = 0;
+    OffRegion(L"search.idx", Collect, &r, unused);
+    for (int i = 0; i < r.n; i++)
+        if (wcscmp(r.dir[i], tried) && LoadDir(r.dir[i]) && Search(q8, lat, lon, body, len))
+            return true;
+    return false;
+}
+
 static bool Search(const char* q8, int lat, int lon, char** body, int* len)
 {
     Query q;
@@ -482,6 +517,15 @@ static double Arg(const char* path, const char* key, double def)
 
 // "/api/?q=...&limit=7&lat=..&lon=.." or "/reverse?lon=..&lat=..&limit=1": answered from the region's index, as
 // Photon's; false: no region there, or nothing found - Photon is asked.
+// A search: in the point's region (here: its index loaded), else in the card's others
+static bool Forward(const char* path, bool here, int la, int lo, char** body, int* len)
+{
+    const char* q = strstr(path, "q=");
+    char text[300];
+    UrlDecode(q ? q + 2 : "", text, sizeof(text));
+    return (here && Search(text, la, lo, body, len)) || SearchOthers(text, here ? s_x.dir : L"", la, lo, body, len);
+}
+
 bool OfflineSearch(const char* path, char** body, int* len)
 {
     DWORD t0 = GetTickCount();
@@ -493,17 +537,9 @@ bool OfflineSearch(const char* path, char** body, int* len)
     } else
         lon = Arg(path, "&lon=", 0);
     int la = (int)(lat * 1e6), lo = (int)(lon * 1e6);
-    if (!Load(la, lo))
-        return false;
-    bool ok;
-    if (rev)
-        ok = Reverse(la, lo, body, len);
-    else {
-        const char* q = strstr(path, "q=");
-        char text[300];
-        UrlDecode(q ? q + 2 : "", text, sizeof(text));
-        ok = Search(text, la, lo, body, len);
-    }
+    bool here = Load(la, lo);
+    bool ok = rev ? here && Reverse(la, lo, body, len)   // (an address: only the point's own region)
+                  : Forward(path, here, la, lo, body, len);
     Log("offsearch: %s -> %s (%lu ms)", rev ? "reverse" : "search", ok ? "found" : "nothing", GetTickCount() - t0);
     return ok;
 }
