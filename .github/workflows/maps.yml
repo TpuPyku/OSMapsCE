@@ -74,12 +74,13 @@ jobs:
       - run: gh release upload maps dist/*.zip dist/catalog.json --clobber
       - name: The zips no longer in the catalog (regions merged or gone) removed
         run: |
-          keep=" catalog.json OSMapsCE-Maps.exe $(python -c "import json; print(' '.join(r['zip'] for r in json.load(open('dist/catalog.json'))['regions']))") "
+          keep=" catalog.json $(python -c "import json; print(' '.join(r['zip'] for r in json.load(open('dist/catalog.json'))['regions']))") "
           for a in $(gh release view maps --json assets --jq '.assets[].name'); do
             case "$keep" in *" $a "*) ;; *) gh release delete-asset maps "$a" -y ;; esac
           done
 
-  app:   # the PC app that writes the maps to a flash drive, for users without Python (offline/build_app.bat)
+  app:   # the PC app that writes the maps to a flash drive, for users without Python (offline/build_app.bat) - in a
+         # release of its own, maps-app (the user 2026-10-28: lost among the maps' zips), never the program's latest
     needs: publish
     if: ${{ !cancelled() }}
     runs-on: windows-latest
@@ -90,7 +91,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: pip install pyinstaller pmtiles osmium
+      - run: pip install pyinstaller pmtiles osmium pillow
       - run: offline\build_app.bat
         shell: cmd
-      - run: gh release upload maps offline/app/OSMapsCE-Maps.exe --clobber
+      - name: The app's release (once)
+        shell: bash
+        run: |
+          gh release view maps-app >/dev/null 2>&1 || gh release create maps-app --latest=false --title "Карты OSMapsCE — программа для ПК"             --notes "Записывает карты областей для OSMapsCE на флешку или SD-карту: распакуйте архив, запустите OSMapsCE-Maps.exe, отметьте области щелчком, нажмите «Записать выбранные». Карты — в релизе maps. Данные © участники OpenStreetMap, ODbL."
+      - run: gh release upload maps-app offline/app/OSMapsCE-Maps.zip --clobber
+        shell: bash

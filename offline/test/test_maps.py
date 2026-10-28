@@ -123,6 +123,34 @@ class Maps(unittest.TestCase):
         have = {'a': '2026-10-27', 'b': '2026-10-20'}
         self.assertEqual(maps_app.states(cat, have), {'a': 'ok', 'b': 'update', 'c': 'new'})
 
+    def test_app_choosing(self):
+        """The list's logic (the user 2026-10-28: a click picks a region, no Ctrl): a click toggles one, all / none /
+        the outdated ones, the search by the Russian name or the latin one, the size chosen."""
+        cat = {'regions': [{'name': 'samara_oblast', 'title': 'Самарская область', 'size': 17, 'date': 'd2'},
+                           {'name': 'moscow_oblast', 'title': 'Москва и Московская область', 'size': 58, 'date': 'd2'},
+                           {'name': 'crimea', 'title': 'Крым и Севастополь', 'size': 11, 'date': 'd2'}]}
+        self.assertEqual(maps_app.toggled(set(), 'crimea'), {'crimea'})
+        self.assertEqual(maps_app.toggled({'crimea', 'samara_oblast'}, 'crimea'), {'samara_oblast'})
+        self.assertEqual(maps_app.chosen_size(cat, {'crimea', 'moscow_oblast'}), 69)
+        self.assertEqual(maps_app.chosen_size(cat, set()), 0)
+        self.assertEqual([r['name'] for r in maps_app.matching(cat, '')],
+                         ['crimea', 'moscow_oblast', 'samara_oblast'])                    # by the title
+        self.assertEqual([r['name'] for r in maps_app.matching(cat, 'мос')], ['moscow_oblast'])
+        self.assertEqual([r['name'] for r in maps_app.matching(cat, 'SAMARA')], ['samara_oblast'])
+        self.assertEqual(maps_app.outdated(cat, {'crimea': 'd1', 'samara_oblast': 'd2'}), {'crimea'})
+
+    def test_app_icon(self):
+        """The icon: every Windows size, a dark floppy disk with the green tag on its label."""
+        import make_icon
+        from PIL import Image
+        out = make_icon.main(os.path.join(self.tmp, 'app.ico'))
+        with Image.open(out) as ico:
+            self.assertEqual(sorted(ico.info['sizes']), [(n, n) for n in make_icon.SIZES])
+        im = make_icon.draw(256)
+        self.assertEqual(im.getpixel((100, 170))[:3], make_icon.TAG)      # the tag on the label
+        self.assertEqual(im.getpixel((30, 100))[:3], make_icon.DISK)       # the disk
+        self.assertEqual(im.getpixel((250, 5))[3], 0)                      # the cut corner: see-through
+
     def test_app_finds_the_removable_drives(self):
         kinds = {'C:\\': 3, 'E:\\': 2, 'F:\\': 2}                          # 2: removable (a card, a flash drive)
         mask = 1 << 2 | 1 << 4 | 1 << 5                                    # C:, E:, F:
