@@ -84,7 +84,7 @@ struct Regions { wchar_t dir[kRegions][MAX_PATH]; int n; };
 static bool Collect(const wchar_t* path, void* ctx)
 {
     Regions* r = (Regions*)ctx;
-    if (r->n < kRegions && GetFileAttributes(path) != INVALID_FILE_ATTRIBUTES) {
+    if (r->n < kRegions && GetFileAttributes(path) != 0xFFFFFFFF) {   // (CE: no INVALID_FILE_ATTRIBUTES)
         wcscpy(r->dir[r->n], path);
         *wcsrchr(r->dir[r->n], L'\\') = 0;
         r->n++;
