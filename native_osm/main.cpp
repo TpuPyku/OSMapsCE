@@ -1113,16 +1113,12 @@ static void Hairline(HDC dc, const RECT& r, int radius)
     DeleteObject(pen);
 }
 
-// A card over the map (design v3): VestaHome's tile colour, solid (the user 2026-10-26: the panels and the bar as
-// VestaHome's), round corners, no border; at night the 1 px edge.
+// A card over the map (design v3): the map under it at an eighth of its brightness - see-through (the user
+// 2026-10-28: back as the design had it, solid since 2026-10-26 by a misunderstanding), round corners, no border; at
+// night the 1 px edge.
 static void Card(HDC dc, const RECT& r, int radius)
 {
-    HBRUSH b = CreateSolidBrush(kPanel2);
-    HGDIOBJ ob = SelectObject(dc, b), op = SelectObject(dc, GetStockObject(NULL_PEN));
-    RoundRect(dc, r.left, r.top, r.right + 1, r.bottom + 1, radius * 2, radius * 2);
-    SelectObject(dc, op);
-    SelectObject(dc, ob);
-    DeleteObject(b);
+    Darken(dc, r, radius, 3);
     Hairline(dc, r, radius);
 }
 
@@ -3345,14 +3341,16 @@ static void DrawButtons(HDC dc)
     RECT r;
     if (s_dockShown && !s_settings && !s_search) {
         int y = kDockY + s_dockOff;   // sliding in / out
-        RECT bar = { 0, y, s_cw, s_ch };
-        // as VestaHome's bar: solid; the accent's line on its top shrinks to the moment it goes down
+        RECT bar = { 0, y, s_cw, s_ch }, line = { 0, y, s_cw, y + 2 };
+        // see-through again (the user 2026-10-28, as the design had it); the orange part of the line shrinks to the
+        // moment the bar goes down
         DWORD el = GetTickCount() - s_dockTick;
         RECT left = { 0, y, el >= (DWORD)kDockMs ? 0 : (int)(s_cw * (kDockMs - el) / kDockMs), y + 2 };
-        HBRUSH ib = CreateSolidBrush(kInk), o = CreateSolidBrush(kOrange);
-        FillRect(dc, &bar, ib);
+        Darken(dc, bar, 0);
+        HBRUSH l = CreateSolidBrush(kLine), o = CreateSolidBrush(kOrange);
+        FillRect(dc, &line, l);
         FillRect(dc, &left, o);
-        DeleteObject(ib);
+        DeleteObject(l);
         DeleteObject(o);
     }
     for (int i = 0; i < B_COUNT; i++) {
