@@ -236,6 +236,16 @@ bool TiltRow(const Tilt& t, double sy, double* fy, double* k, double* fade);   /
 void TiltFog(const Tilt& t, double sy, bool night, unsigned char rgb[3]);   // the fog's colour at a screen row
 bool TiltClip(const Tilt& t, double* x0, double* y0, double* x1, double* y1);   // a flat line cut to the seen part
 
+// junction.cpp: the junction card (the user 2026-10-28, on in the settings) - the route round a complex maneuver on the
+// map turned so the way in points up
+bool JunctionComplex(const char* osrmType);   // a fork, a ramp, a roundabout, a merge
+bool JunctionShown(bool on, bool complex, int nextM, bool off);
+int  JunctionSlice(const double* ll, int np, int at, double beforeM, double afterM, double* out, int cap, int* outAt,
+                   double* course);   // lon, lat pairs; outAt: the maneuver's point in out; course: the way in's, degrees
+void JunctionTurn(const unsigned short* src, int sw, int sh, int sstride, double scx, double scy, unsigned short* dst,
+                  int dw, int dh, int dstride, double dcx, double dcy, double courseDeg, unsigned short bg);
+                                // src, dst: their top rows; strides in pixels (a DIB's bottom-up rows: negative)
+
 // cache.cpp - decoded images in memory + OSM tiles on disk in <exe>\Cache
 struct CacheEntry {
     MapRequest     req;

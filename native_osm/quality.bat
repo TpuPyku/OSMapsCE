@@ -43,12 +43,12 @@ if "%1"=="offline" exit /b %BAD%
 set COVER=1
 call .\test_vtile.bat >obj\test_vtile.log 2>&1 || (type obj\test_vtile.log & echo === the vector tile tests fail & exit /b 1)
 set COVER=
-"%OCC%" --quiet --sources "%CD%\vtile.cpp" --sources "%CD%\tilt.cpp" --export_type cobertura:obj\vtest\cov.xml -- obj\vtest\test_vtile.exe >nul
+"%OCC%" --quiet --sources "%CD%\vtile.cpp" --sources "%CD%\tilt.cpp" --sources "%CD%\junction.cpp" --export_type cobertura:obj\vtest\cov.xml -- obj\vtest\test_vtile.exe >nul
 echo === crapper: vtile
-python %TOOLS%\crapper.py --cobertura obj\vtest\cov.xml vtile.cpp tilt.cpp
+python %TOOLS%\crapper.py --cobertura obj\vtest\cov.xml vtile.cpp tilt.cpp junction.cpp
 set /a BAD=%BAD%+%errorlevel%
 echo === dryer: vtile
-python %TOOLS%\dryer.py vtile.cpp tilt.cpp
+python %TOOLS%\dryer.py vtile.cpp tilt.cpp junction.cpp
 set /a BAD=%BAD%+%errorlevel%
 if "%2"=="mutate" (
   echo === mutator: vtile

@@ -816,6 +816,76 @@ static void Joints()
     ImageFree(&im);
 }
 
+// The junction card (the user 2026-10-28, on in the settings): the route round a complex maneuver - 110 m before it,
+// 70 m after - on the map turned so the way in points up
+static void JunctionChecks()
+{
+    Check(JunctionComplex("fork") && JunctionComplex("off ramp") && JunctionComplex("on ramp") &&
+          JunctionComplex("roundabout") && JunctionComplex("rotary") && JunctionComplex("exit roundabout") &&
+          JunctionComplex("merge") && !JunctionComplex("turn") && !JunctionComplex("new name") &&
+          !JunctionComplex("arrive") && !JunctionComplex("depart"), "junction: only the complex maneuvers");
+    Check(JunctionShown(true, true, 300, false) && !JunctionShown(true, true, 301, false) &&
+          !JunctionShown(false, true, 100, false) && !JunctionShown(true, false, 100, false) &&
+          !JunctionShown(true, true, 100, true), "junction: on in the settings, complex, within 300 m, on the route");
+    // a line north 300 m then east 300 m (at 53 N), the maneuver at the corner (point 3)
+    const double la = 53.0, dla = 100 / 110540.0, dlo = 100 / (111320.0 * cos(la * M_PI / 180));
+    double ll[] = { 50, la, 50, la + dla, 50, la + 2 * dla, 50, la + 3 * dla, 50 + dlo, la + 3 * dla,
+                    50 + 2 * dlo, la + 3 * dla, 50 + 3 * dlo, la + 3 * dla };
+    double out[32], course;
+    int at, n = JunctionSlice(ll, 7, 3, 110, 70, out, 16, &at, &course);
+    Check(n == 4 && at == 2 && fabs(out[1] - (la + 1.9 * dla)) < 1e-7 && fabs(out[0] - 50) < 1e-9 &&
+          fabs(out[6] - (50 + 0.7 * dlo)) < 1e-7 && fabs(out[7] - (la + 3 * dla)) < 1e-9,
+          "junction: the route from 110 m before the maneuver to 70 m after, its ends cut on the line");
+    Check(fabs(course) < 0.01, "junction: the way in's course (north: 0)");
+    double want[8] = { 50, la + 1.9 * dla, 50, la + 2 * dla, 50, la + 3 * dla, 50 + 0.7 * dlo, la + 3 * dla };
+    bool same = true;
+    for (int i = 0; i < 8; i++)
+        same = same && fabs(out[i] - want[i]) < 1e-7;
+    Check(same, "junction: every point of the piece");
+    for (int i = 0; i < 32; i++)
+        out[i] = -1;
+    n = JunctionSlice(ll, 7, 3, 110, 70, out, 2, &at, &course);
+    Check(n == 2 && out[4] == -1 && out[5] == -1, "junction: no more points than room for");
+    n = JunctionSlice(ll, 7, 1, 110, 70, out, 16, &at, &course);
+    Check(n == 3 && at == 1 && out[0] == 50 && out[1] == la && fabs(course) < 0.01,
+          "junction: less than 110 m from the line's start: from the start");
+    n = JunctionSlice(ll, 7, 4, 110, 70, out, 16, &at, &course);
+    Check(fabs(course - 90) < 0.01 && n == 4 && at == 2, "junction: the way in the piece before the maneuver (east)");
+    n = JunctionSlice(ll + 4, 5, 0, 110, 70, out, 16, &at, &course);   // from the corner's point before: north, then east
+    Check(fabs(course) < 0.01, "junction: at the start the course of the first piece, not of the next");
+    double one[2] = { 50, la };
+    n = JunctionSlice(one, 1, 0, 110, 70, out, 16, &at, &course);
+    Check(n == 1 && at == 0 && course == 0, "junction: a line of one point");
+    n = JunctionSlice(ll, 7, 6, 110, 70, out, 16, &at, &course);
+    Check(n == 3 && at == 2 && fabs(course - 90) < 0.01, "junction: at the line's end no after, the course east 90");
+    n = JunctionSlice(ll, 7, 0, 110, 70, out, 16, &at, &course);
+    Check(n == 2 && at == 0 && fabs(course) < 0.01, "junction: at the line's start the course of its first piece");
+    // the turned map: a 4 x 4 canvas, the card 2 x 2 turned 90 degrees round their centres
+    unsigned short src[16], dst[4];
+    for (int i = 0; i < 16; i++)
+        src[i] = (unsigned short)i;
+    JunctionTurn(src, 4, 4, 4, 2, 2, dst, 2, 2, 2, 1, 1, 90, 0xFFFF);   // up-left on the card: north-east on the map
+    Check(dst[0] == src[1 * 4 + 3] && dst[1] == src[2 * 4 + 3] && dst[2] == src[1 * 4 + 2] && dst[3] == src[2 * 4 + 2],
+          "junction: the canvas turned into the card (a course of 90: east up)");
+    unsigned short flip[16], up[4];                                        // rows bottom-up (a DIB's): negative strides
+    for (int i = 0; i < 16; i++)
+        flip[i] = src[(3 - i / 4) * 4 + i % 4];
+    JunctionTurn(flip + 12, 4, 4, -4, 2, 2, up + 2, 2, 2, -2, 1, 1, 90, 0xFFFF);
+    Check(up[2] == dst[0] && up[3] == dst[1] && up[0] == dst[2] && up[1] == dst[3], "junction: bottom-up rows too");
+    JunctionTurn(src, 4, 4, 4, 0, 0, dst, 2, 2, 2, 1, 1, 0, 0xFFFF);
+    Check(dst[0] == 0xFFFF && dst[1] == 0xFFFF && dst[2] == 0xFFFF && dst[3] == src[0],
+          "junction: off the canvas the background (left, above)");
+    JunctionTurn(src, 4, 4, 4, 3, 3, dst, 2, 2, 2, 0, 0, 0, 0xFFFF);
+    Check(dst[0] == src[15] && dst[1] == 0xFFFF && dst[2] == 0xFFFF && dst[3] == 0xFFFF,
+          "junction: off the canvas the background (right, below)");
+    static unsigned short big[64 * 64];
+    for (int i = 0; i < 64 * 64; i++)
+        big[i] = (unsigned short)i;
+    unsigned short far1;
+    JunctionTurn(big, 64, 64, 64, 32, 62, &far1, 1, 1, 1, 60, 0, 90, 0xFFFF);   // 60 px left on the card: 60 north
+    Check(far1 == big[2 * 64 + 32], "junction: the turn exact 60 px away");
+}
+
 int main()
 {
     VTileInit();
@@ -949,6 +1019,7 @@ int main()
     Deep();
     Levels();
     Joints();
+    JunctionChecks();
     RECT whole = { 0, 0, 800, 480 };
     // the Russian name when the tile has one (name:ru), else the local one: a frame named so equals one whose tile
     // holds that text as its plain name
