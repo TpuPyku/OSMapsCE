@@ -813,10 +813,10 @@ int main()
     Check(VTileRender(c, city, clen, &im), "town z14 drawn");
     Check(Px(im, 48, 48) == land, "z14: no buildings yet");
     Check(Px(im, 160, 48) == RGB565(206, 232, 196), "z14: the park");
-    Check(Px(im, 224, 48) == RGB565(198, 222, 186), "z14: the wood");
+    Check(Px(im, 224, 48) == land, "z14: the wood not drawn (the user 2026-10-28: no greenery, Skoda Flow's map)");
     Check(Px(im, 32, 112) == RGB565(236, 232, 226), "z14: the residential area");
     Check(Px(im, 96, 112) == RGB565(234, 228, 232), "z14: the shops' area");
-    Check(Px(im, 160, 112) == RGB565(216, 234, 202), "z14: the grass");
+    Check(Px(im, 160, 112) == land, "z14: the grass not drawn");
     Check(Px(im, 224, 112) == land, "z14: farmland not drawn");
     Check(Px(im, 96, 48) == land, "z14: farmland's landcover not drawn");
     Check(Px(im, 128, 144) == RGB565(255, 206, 150), "z14: the trunk road");

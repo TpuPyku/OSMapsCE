@@ -13,7 +13,7 @@
 static const int kExtent = 4096;
 
 // What is drawn, in drawing order: areas, then lines, then points.
-enum { K_RESID, K_INDUSTRIAL, K_GRASS, K_WOOD, K_PARK, K_WATER, K_BUILDING,
+enum { K_RESID, K_INDUSTRIAL, K_PARK, K_WATER, K_BUILDING,
        K_WATERWAY, K_RAIL, K_PATH, K_SERVICE, K_MINOR, K_SECONDARY, K_PRIMARY, K_MAJOR, K_PLACE, K_ROADNAME, K_HOUSENUM, K_FUEL, K_PARKING, K_COUNT };
 static const int kFirstLine = K_WATERWAY;
 
@@ -22,7 +22,7 @@ static const int kFirstLine = K_WATERWAY;
 // the text, c* its halo; K_FUEL, K_PARKING: the sign's colour.
 struct Style { unsigned char r, g, b; int width; bool cased; unsigned char cr, cg, cb; };   // width 0: area
 static const Style kStyle[2][K_COUNT] = { {
-    { 236, 232, 226, 0 }, { 234, 228, 232, 0 }, { 216, 234, 202, 0 }, { 198, 222, 186, 0 },
+    { 236, 232, 226, 0 }, { 234, 228, 232, 0 },
     { 206, 232, 196, 0 }, { 168, 204, 226, 0 }, { 224, 217, 208, 0 },
     { 168, 204, 226, 2 }, { 184, 180, 174, 2 }, { 206, 196, 184, 1 },
     { 255, 255, 255, 2, true, 214, 208, 200 }, { 255, 255, 255, 5, true, 214, 208, 200 },
@@ -32,7 +32,7 @@ static const Style kStyle[2][K_COUNT] = { {
     { 120, 112, 104, 0, true, 243, 240, 235 },
     { 46, 110, 190, 0, true, 255, 255, 255 }, { 46, 110, 190, 0, true, 255, 255, 255 },
 }, {
-    { 22, 25, 30, 0 }, { 25, 25, 31, 0 }, { 20, 31, 25, 0 }, { 18, 33, 25, 0 },
+    { 22, 25, 30, 0 }, { 25, 25, 31, 0 },
     { 21, 37, 29, 0 }, { 13, 34, 50, 0 }, { 31, 35, 42, 0 },
     { 13, 34, 50, 2 }, { 48, 52, 58, 2 }, { 32, 36, 42, 1 },
     { 38, 43, 50, 2 }, { 44, 50, 58, 5 }, { 62, 70, 80, 7 }, { 84, 80, 68, 8 }, { 112, 88, 58, 9 },
@@ -157,9 +157,8 @@ template <class T> static bool Push(T*& a, int& n, int& cap, const T& v)
 struct KindRow { const char* layer; const char* cls; unsigned char type; signed char kind, rank; unsigned char street; };
 static const KindRow kKinds[] = {
     { "buildings", NULL, 3, K_BUILDING, 2 },
-    { "landuse", "park", 3, K_PARK, 2 }, { "landuse", "wood", 3, K_WOOD, 2 }, { "landuse", "forest", 3, K_WOOD, 2 },
-    { "landuse", "grass", 3, K_GRASS, 2 }, { "landcover", "forest", 3, K_WOOD, 2 },
-    { "landcover", "urban_area", 3, K_RESID, 2 }, { "landcover", "farmland", 3, -1, 2 },   // (fields: not drawn)
+    { "landuse", "park", 3, K_PARK, 2 },   // (no woods, fields, grass: the user 2026-10-28, Skoda Flow's map)
+    { "landcover", "urban_area", 3, K_RESID, 2 },
     { "water", NULL, 2, K_WATERWAY, 2 },
     { "roads", "highway", 2, K_MAJOR, 2, 1 }, { "roads", "trunk", 2, K_MAJOR, 2, 1 },
     { "roads", "trunk_link", 2, K_MAJOR, 2, 1 }, { "roads", "primary", 2, K_PRIMARY, 2, 1 },
@@ -172,7 +171,6 @@ static const KindRow kKinds[] = {
     { "pois", "fuel", 1, K_FUEL, 0 }, { "pois", "parking", 1, K_PARKING, 1 },
     { "buildings", "address", 1, K_HOUSENUM, 2 },   // (z15: the house numbers' points)
     { "water", NULL, 3, K_WATER, 2 }, { "building", NULL, 3, K_BUILDING, 2 }, { "park", NULL, 3, K_PARK, 2 },
-    { "landcover", "wood", 3, K_WOOD, 2 }, { "landcover", NULL, 3, K_GRASS, 2 },
     { "landuse", "residential", 3, K_RESID, 2 }, { "landuse", "suburb", 3, K_RESID, 2 },
     { "landuse", "neighbourhood", 3, K_RESID, 2 },
     { "landuse", "industrial", 3, K_INDUSTRIAL, 2 }, { "landuse", "commercial", 3, K_INDUSTRIAL, 2 },
