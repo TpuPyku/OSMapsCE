@@ -184,6 +184,15 @@ class Maps(unittest.TestCase):
                 app.chosen = {'a_oblast'}
                 app.write_chosen()
                 self.assertEqual(thread.call_args[1]['args'][1], [cat['regions'][0]])
+                self.assertEqual(app.go['text'], 'Идёт запись…')                     # the button tells it is busy
+                self.assertEqual(str(app.go['style']), 'Busy.TButton')
+                self.assertTrue(app.go.instate(['disabled']))
+                app.write_chosen()
+                self.assertEqual(thread.call_count, 1)                              # not twice at once
+                app.on_done(None)
+                self.assertEqual(app.go['text'], 'Записать выбранные')
+                self.assertEqual(str(app.go['style']), 'Go.TButton')
+                self.assertFalse(app.go.instate(['disabled']))
         finally:
             app.root.destroy()
 

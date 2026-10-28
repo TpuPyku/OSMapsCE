@@ -90,6 +90,7 @@ def removable_drives(mask=None, kind=None):
 
 # OSMapsCE's colours (VestaHome's tokens): the background, the panel, the rows, the text, the dim text, the accent
 INK, PANEL, ROW, TEXT, DIM, ACCENT = '#0E1013', '#1A1D22', '#23272E', '#F5F3EE', '#AAB0B8', '#FF6B1A'
+GO, BUSY = 'Записать выбранные', 'Идёт запись…'   # the button, and while it writes (the user 2026-10-29)
 
 
 class App:
@@ -119,6 +120,8 @@ class App:
         st.map('TButton', background=[('active', PANEL)])
         st.configure('Go.TButton', background=ACCENT, foreground=INK, font=(font[0], 11, 'bold'))
         st.map('Go.TButton', background=[('active', '#FF8A47')])
+        st.configure('Busy.TButton', background=ROW, foreground=ACCENT, font=(font[0], 11, 'bold'))   # writing: dim
+        st.map('Busy.TButton', background=[('disabled', ROW)], foreground=[('disabled', ACCENT)])
         st.configure('Treeview', background=PANEL, fieldbackground=PANEL, foreground=TEXT, rowheight=30, borderwidth=0)
         st.configure('Treeview.Heading', background=INK, foreground=DIM, borderwidth=0)
         st.map('Treeview', background=[('selected', PANEL)], foreground=[('selected', TEXT)])
@@ -158,13 +161,15 @@ class App:
         ttk.Label(self.root, textvariable=self.status, style='Dim.TLabel').pack(fill='x', padx=12, pady=4)
         bottom = ttk.Frame(self.root)
         bottom.pack(fill='x', padx=12, pady=(0, 12))
-        ttk.Button(bottom, text='Записать выбранные', style='Go.TButton', command=self.write_chosen).pack(side='left')
+        self.go = ttk.Button(bottom, text=GO, style='Go.TButton', command=self.write_chosen)
+        self.go.pack(side='left')
 
-    def work(self, job, *args):   # (in the thread: an error shown, not lost)
+    def work(self, job, *args):   # (in the thread: an error shown, not lost; then the button back)
         try:
             job(*args)
         except Exception as e:    # noqa: BLE001 - the user sees it
             self.news.put(('status', 'Ошибка: %s' % e))
+        self.news.put(('done', None))
 
     def fetch_catalog(self):
         self.news.put(('catalog', load_catalog()))
@@ -228,8 +233,14 @@ class App:
 
     def write_chosen(self):
         entries = [r for r in self.cat['regions'] if r['name'] in self.chosen]
-        if entries:
+        if entries and not self.go.instate(['disabled']):   # (once at a time)
+            self.go.configure(text=BUSY, style='Busy.TButton')
+            self.go.state(['disabled'])
             threading.Thread(target=self.work, args=(self.write_all, entries, self.drive.get()), daemon=True).start()
+
+    def on_done(self, _):   # the writing over (or failed): the button back
+        self.go.configure(text=GO, style='Go.TButton')
+        self.go.state(['!disabled'])
 
     def tell(self, head, part, text):   # (from the writing thread: through the queue)
         self.news.put(('progress', part))
