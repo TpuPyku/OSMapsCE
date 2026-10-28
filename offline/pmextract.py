@@ -135,7 +135,7 @@ def spans(b):
             v, i = b[i:i + n], i + n
         else:   # (a double: 8 bytes, a float: 4)
             n = 8 if wire == 1 else 4
-            v, i = b[i:i + n], i - n
+            v, i = b[i:i + n], i + n
         yield tag >> 3, v, b[start:i]
 
 
