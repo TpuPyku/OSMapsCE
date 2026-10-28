@@ -74,7 +74,23 @@ jobs:
       - run: gh release upload maps dist/*.zip dist/catalog.json --clobber
       - name: The zips no longer in the catalog (regions merged or gone) removed
         run: |
-          keep=" catalog.json $(python -c "import json; print(' '.join(r['zip'] for r in json.load(open('dist/catalog.json'))['regions']))") "
+          keep=" catalog.json OSMapsCE-Maps.exe $(python -c "import json; print(' '.join(r['zip'] for r in json.load(open('dist/catalog.json'))['regions']))") "
           for a in $(gh release view maps --json assets --jq '.assets[].name'); do
             case "$keep" in *" $a "*) ;; *) gh release delete-asset maps "$a" -y ;; esac
           done
+
+  app:   # the PC app that writes the maps to a flash drive, for users without Python (offline/build_app.bat)
+    needs: publish
+    if: ${{ !cancelled() }}
+    runs-on: windows-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install pyinstaller pmtiles osmium
+      - run: offline\build_app.bat
+        shell: cmd
+      - run: gh release upload maps offline/app/OSMapsCE-Maps.exe --clobber
