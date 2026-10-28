@@ -50,7 +50,7 @@ def install(entry, drive, get_file, get_bytes, maxzoom, progress=None, tiles_dat
     dst = os.path.join(drive, 'OSMapsData', entry['name'])
     os.makedirs(dst, exist_ok=True)
     tiles = os.path.join(dst, 'tiles.vtp')
-    pmextract.extract(get_bytes, entry['bbox'], maxzoom, tiles + '.part', progress)
+    pmextract.extract(get_bytes, entry['bbox'], maxzoom, tiles + '.part', progress, pmextract.slim)
     os.replace(tiles + '.part', tiles)
     with zipfile.ZipFile(io.BytesIO(get_file(release_regions.ASSETS + entry['zip']))) as z:
         for f in release_regions.FILES:   # (only these: the zip's own names never chose a path)

@@ -4,7 +4,7 @@
 
 Only the bytes the region needs are fetched (HTTP Range): the header, the directories met on the way (each once), the
 tiles' data in merged ranges (neighbours in the archive's Hilbert order lie close). Nothing of the planet is stored.
-The tiles come out ungzipped, keyed as OSMapsCE names them (make_tiles' tiles.vtp).
+The tiles come out ungzipped, keyed as OSMapsCE names them (make_tiles' tiles.vtp), slim: only what OSMapsCE draws.
 """
 import gzip
 import json
@@ -85,7 +85,8 @@ def fetch(archive, located, progress=None):
     return data
 
 
-def extract(get_bytes, bbox, maxzoom, out, progress=None):
+def extract(get_bytes, bbox, maxzoom, out, progress=None, keep=lambda tile: tile):
+    """The region's tiles into the pack out; keep: what of a tile is kept (slim)."""
     archive = Archive(get_bytes)
     located = {}
     for z in range(0, maxzoom + 1):
@@ -97,8 +98,102 @@ def extract(get_bytes, bbox, maxzoom, out, progress=None):
                     located[(z, x, y)] = span
     data = fetch(archive, located, progress)
     unzip = archive.h['tile_compression'] == Compression.GZIP
-    make_tiles.write_pack(out, ((make_tiles.key(*t), gzip.decompress(data[s]) if unzip else data[s])
+    make_tiles.write_pack(out, ((make_tiles.key(*t), keep(gzip.decompress(data[s]) if unzip else data[s]))
                                 for t, s in located.items()))
+
+
+# ---- slim tiles: only what OSMapsCE draws (native_osm/vtile.cpp's kKinds) - no layers it never draws, no greenery
+# (the user 2026-10-28, as Skoda Flow's map: woods, fields... a quarter of a pack), of the pois only its signs
+DROP_LAYERS = {b'earth', b'boundaries'}
+GREEN = {b'wood', b'forest', b'farmland', b'grassland', b'grass', b'meadow', b'scrub', b'wetland', b'heath',
+         b'orchard', b'vineyard', b'allotments', b'nature_reserve', b'barren', b'glacier', b'sand'}
+SIGNS = {b'fuel', b'parking'}
+
+
+def varint(b, i):
+    v = s = 0
+    while True:
+        c = b[i]
+        i += 1
+        v |= (c & 0x7f) << s
+        s += 7
+        if c < 0x80:
+            return v, i
+
+
+def spans(b):
+    """A protobuf message's fields: (field, value - an int or bytes, the field's own bytes)."""
+    i = 0
+    while i < len(b):
+        start = i
+        tag, i = varint(b, i)
+        wire = tag & 7
+        if wire == 0:
+            v, i = varint(b, i)
+        elif wire == 2:
+            n, i = varint(b, i)
+            v, i = b[i:i + n], i + n
+        else:   # (a double: 8 bytes, a float: 4)
+            n = 8 if wire == 1 else 4
+            v, i = b[i:i + n], i + n
+        yield tag >> 3, v, b[start:i]
+
+
+def fields(b):
+    return ((f, v) for f, v, _ in spans(b))
+
+
+def length_field(field, payload):
+    out, v = bytearray(), len(payload)
+    while v >= 0x80:
+        out.append(v & 0x7f | 0x80)
+        v >>= 7
+    return bytes([field << 3 | 2]) + bytes(out) + bytes([v]) + payload
+
+
+def unwanted(layer):
+    """A layer's test of a feature's kinds (None: the layer kept whole)."""
+    if layer in (b'landuse', b'landcover'):
+        return lambda kinds: bool(kinds & GREEN)
+    if layer == b'pois':
+        return lambda kinds: not kinds & SIGNS
+    return None
+
+
+def feature_kinds(feature, keys, vals):
+    tags, kinds = dict(fields(feature)).get(2, b''), set()
+    i, pairs = 0, []
+    while i < len(tags):
+        v, i = varint(tags, i)
+        pairs.append(v)
+    for k, v in zip(pairs[::2], pairs[1::2]):
+        if keys[k] in (b'kind', b'kind_detail'):
+            kinds.add(vals[v])
+    return kinds
+
+
+def layer_head(layer):
+    """A layer's name, keys and string values (a number's: None)."""
+    fl = list(fields(layer))
+    name = next((v for f, v in fl if f == 1), None)
+    return name, [v for f, v in fl if f == 3], [dict(fields(v)).get(1) for f, v in fl if f == 4]
+
+
+def slim_layer(layer, raw):
+    """The layer's bytes slim (b'': none left)."""
+    name, keys, vals = layer_head(layer)
+    drop = unwanted(name)
+    if name in DROP_LAYERS:
+        return b''
+    if not drop:
+        return raw
+    kept = [r for f, v, r in spans(layer) if f != 2 or not drop(feature_kinds(v, keys, vals))]
+    left = any(f == 2 for f, _, _ in spans(b''.join(kept)))
+    return length_field(3, b''.join(kept)) if left else b''
+
+
+def slim(tile):
+    return b''.join(slim_layer(v, r) if f == 3 else r for f, v, r in spans(tile))
 
 
 def http_bytes(url):
@@ -120,6 +215,9 @@ def latest_build(get=http_get):
     return SERVER + json.loads(get(BUILDS))[-1]['key']
 
 
+def main(a):
+    extract(http_bytes(a[6] if len(a) > 6 else latest_build()), tuple(map(float, a[0:4])), int(a[4]), a[5], keep=slim)
+
+
 if __name__ == '__main__':
-    a = sys.argv[1:]
-    extract(http_bytes(a[6] if len(a) > 6 else latest_build()), tuple(map(float, a[0:4])), int(a[4]), a[5])
+    main(sys.argv[1:])

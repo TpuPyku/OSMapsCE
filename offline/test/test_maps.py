@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.dirname(HERE))
 sys.path.insert(0, HERE)
 import maps_app          # noqa: E402
 import release_regions   # noqa: E402
-from test_tools import TINY, make_pmtiles, pack_tiles, read   # noqa: E402
+from test_tools import TINY, make_pmtiles, mvt, mvt_kinds, pack_tiles, read   # noqa: E402
 
 
 class Maps(unittest.TestCase):
@@ -100,7 +100,8 @@ class Maps(unittest.TestCase):
         zips = {release_regions.ASSETS + 'tiny.zip': read(os.path.join(self.dist, 'tiny.zip'))}
         planet = os.path.join(self.tmp, 'planet.pmtiles')
         town, far = (14, 10467, 5336), (14, 100, 100)             # the town's z14 tile; one far off
-        make_pmtiles(planet, {town: b'town', far: b'far', (0, 0, 0): b'world'})
+        tile = mvt({'roads': ['major_road'], 'landuse': ['wood', 'park']})
+        make_pmtiles(planet, {town: tile, far: b'far', (0, 0, 0): mvt({'earth': ['earth'], 'water': ['ocean']})})
         data = read(planet)
         drive = os.path.join(self.tmp, 'E')
         steps = []
@@ -108,7 +109,9 @@ class Maps(unittest.TestCase):
         folder = os.path.join(drive, 'OSMapsData', 'tiny')
         self.assertEqual(sorted(os.listdir(folder)), ['region.txt', 'route.grf', 'search.idx', 'tiles.vtp'])
         _, _, got = pack_tiles(os.path.join(folder, 'tiles.vtp'))
-        self.assertEqual(got, {town: b'town', (0, 0, 0): b'world'})        # the region's tiles only
+        self.assertEqual(sorted(got), sorted([town, (0, 0, 0)]))           # the region's tiles only,
+        self.assertEqual(mvt_kinds(got[town]), {'roads': ['major_road'], 'landuse': ['park']})   # slim (no wood)
+        self.assertEqual(mvt_kinds(got[(0, 0, 0)]), {'water': ['ocean']})
         self.assertEqual(maps_app.installed(drive), {'tiny': entry['date']})
         info = release_regions.region_info(os.path.join(folder, 'region.txt'))
         self.assertEqual(info['tiles'], '20261027')                        # the tiles' build: newer online ones refresh them

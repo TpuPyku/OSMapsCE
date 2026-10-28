@@ -81,6 +81,50 @@ def make_pmtiles(path, tiles):
                     'center_zoom': 0, 'center_lon_e7': 0, 'center_lat_e7': 0}, {})
 
 
+def pb(field, payload):
+    """A protobuf length-delimited field (a varint field: payload an int)."""
+    def var(v):
+        out = b''
+        while v >= 0x80:
+            out += bytes([v & 0x7f | 0x80])
+            v >>= 7
+        return out + bytes([v])
+    if isinstance(payload, int):
+        return var(field << 3) + var(payload)
+    return var(field << 3 | 2) + var(len(payload)) + payload
+
+
+def mvt(layers):
+    """A Mapbox Vector Tile: {layer: [kind, ...]} - each feature a point with its "kind" (Protomaps' class key)."""
+    out = b''
+    for name, kinds in layers.items():
+        body = pb(1, name.encode()) + pb(3, b'kind')
+        for i, k in enumerate(kinds):
+            body += pb(4, pb(1, k.encode()))
+        for i in range(len(kinds)):
+            body += pb(2, pb(2, bytes([0, i])) + pb(3, 1) + pb(4, bytes([9, 2, 2])))
+        out += pb(3, body + pb(15, 2))
+    return out
+
+
+def mvt_kinds(tile):
+    """{layer: [kind, ...]} of a tile mvt() made (read back through pmextract's protobuf reader)."""
+    import pmextract
+    got = {}
+    for f, layer in pmextract.fields(tile):
+        name, vals, kinds = None, [], []
+        for g, v in pmextract.fields(layer):
+            if g == 1:
+                name = v.decode()
+            elif g == 4:
+                vals.append(dict(pmextract.fields(v)).get(1, b'').decode())   # (a number: '')
+            elif g == 2:
+                tags = dict(pmextract.fields(v))[2]
+                kinds.append(vals[tags[1]])
+        got[name] = kinds
+    return got
+
+
 class Tools(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
@@ -119,6 +163,60 @@ class Tools(unittest.TestCase):
         self.assertEqual(magic, b'OSMT')
         self.assertEqual(keys, sorted(keys))          # the unit finds a tile by binary search
         self.assertEqual(got, tiles)                  # XYZ rows (not TMS), data ungzipped
+
+    def test_slim_tiles(self):
+        """Only what OSMapsCE draws (vtile.cpp): no layers it never draws (earth, boundaries), no greenery (the user
+        2026-10-28: woods, fields - a quarter of a pack), of the pois only filling stations and car parks."""
+        tile = mvt({'earth': ['earth'], 'landuse': ['wood', 'park', 'farmland', 'residential'],
+                    'boundaries': ['country'], 'pois': ['cafe', 'fuel', 'parking'], 'roads': ['major_road'],
+                    'landcover': ['forest', 'urban_area']})
+        self.assertEqual(mvt_kinds(pmextract.slim(tile)), {'landuse': ['park', 'residential'], 'pois': ['fuel', 'parking'],
+                                                          'roads': ['major_road'], 'landcover': ['urban_area']})
+        roads = mvt({'roads': ['major_road']})
+        self.assertEqual(pmextract.slim(roads), roads)              # nothing to drop: the same bytes
+        self.assertEqual(pmextract.slim(mvt({'earth': ['earth']})), b'')
+        import struct                                         # a height as a double, an area as a float (Protomaps)
+        numbers = pb(4, bytes([3 << 3 | 1]) + struct.pack('<d', 12.5)) + pb(4, bytes([2 << 3 | 5]) + struct.pack('<f', 1.5))
+        body = dict(pmextract.fields(mvt({'pois': ['cafe', 'fuel']})))[3]
+        tile = pb(3, body[:-2] + numbers + body[-2:])   # (before the version, the layer's last 2 bytes)
+        self.assertEqual(mvt_kinds(pmextract.slim(tile)), {'pois': ['fuel']})
+
+    def test_slim_exact_bytes(self):
+        """The slim layer byte for byte: the kept features as they were, the layer's length again (a long one: a
+        varint of 2 bytes), "kind" found among other keys; a layer all dropped: gone."""
+        def layer(kinds, keep):   # keys: name, kind; each feature: its name (value 0) and its kind
+            body = pb(1, b'landuse') + pb(3, b'name') + pb(3, b'kind') + pb(4, pb(1, b'x' * 3))
+            body += b''.join(pb(4, pb(1, k.encode())) for k in kinds)
+            for i in keep:
+                body += pb(2, pb(2, bytes([0, 0, 1, i + 1])) + pb(3, 3) + pb(4, bytes([9, 2, 2])))
+            return pb(3, body + pb(15, 2))
+        kinds = ['wood', 'park'] * 40                      # 80 features, the layer > 127 bytes
+        got = pmextract.slim(layer(kinds, range(80)))
+        self.assertEqual(got, layer(kinds, range(1, 80, 2)))
+        self.assertGreater(len(got), 300)
+        self.assertEqual(pmextract.slim(layer(['wood'], [0])), b'')
+        self.assertEqual(pmextract.slim(mvt({'landuse': ['wood', 'farmland']})), b'')
+
+    def test_protobuf_fields(self):
+        import struct
+        msg = (bytes([3 << 3 | 1]) + struct.pack('<d', 2.5) + bytes([4 << 3 | 5]) + struct.pack('<f', 1.5) +
+               pb(5, 300) + pb(6, b'ab'))
+        self.assertEqual(list(pmextract.fields(msg)), [(3, struct.pack('<d', 2.5)), (4, struct.pack('<f', 1.5)),
+                                                        (5, 300), (6, b'ab')])
+        self.assertEqual(pmextract.length_field(3, b'z' * 200), bytes([26, 200, 1]) + b'z' * 200)
+        self.assertEqual(list(pmextract.fields(pb(7, 128))), [(7, 128)])                     # (0x80 0x01: 128 itself)
+        self.assertEqual(pmextract.length_field(3, b'z' * 128), bytes([26, 0x80, 1]) + b'z' * 128)
+
+    def test_pmextract_command_line(self):
+        import unittest.mock
+        asked = []
+        patch = unittest.mock.patch.object
+        with patch(pmextract, 'extract', lambda *a, **k: asked.append((a, k))), \
+                patch(pmextract, 'http_bytes', lambda url: url), patch(pmextract, 'latest_build', lambda: 'newest'):
+            pmextract.main(['1', '2', '3', '4', '15', 'out.vtp'])
+            pmextract.main(['1', '2', '3', '4', '15', 'out.vtp', 'archive'])
+        self.assertEqual(asked[0], (('newest', (1.0, 2.0, 3.0, 4.0), 15, 'out.vtp'), {'keep': pmextract.slim}))
+        self.assertEqual(asked[1][0][0], 'archive')
 
     def test_pmtiles_extract_by_bbox(self):
         src = os.path.join(self.tmp, 'planet.pmtiles')
