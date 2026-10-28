@@ -14,3 +14,4 @@ OSMapsData/
 __pycache__/
 offline/app/
 *.mutator-orig
+offline/app.ico
