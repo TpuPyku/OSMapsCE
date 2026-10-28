@@ -35,14 +35,18 @@ void TiltFog(const Tilt& t, double sy, bool night, unsigned char rgb[3])
         rgb[i] = night ? 0 : (unsigned char)(kCream[i] + (kSky[i] - kCream[i]) * a + 0.5);
 }
 
-bool TiltPoint(const Tilt& t, double fx, double fy, double* sx, double* sy)
+void TiltProject(const Tilt& t, double fx, double fy, double* sx, double* sy)
 {
-    double v = t.cf - fy;
-    if (fabs(v) >= t.fog)
-        return false;
-    double r = t.rc * t.f / (v + t.f);
+    double v = t.cf - fy, r = t.rc * t.f / (v + t.f);
     *sx = fx * r / t.rc;
     *sy = t.cs - t.rc + r;
+}
+
+bool TiltPoint(const Tilt& t, double fx, double fy, double* sx, double* sy)
+{
+    if (fabs(t.cf - fy) >= t.fog)
+        return false;
+    TiltProject(t, fx, fy, sx, sy);
     return true;
 }
 

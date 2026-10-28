@@ -12,7 +12,7 @@ static const wchar_t* const kRelease = L"1.03";   // raise by hand: minor - sign
 // pictures with alpha blended by hand (CE GDI has no usable alpha on a 16-bit screen). Pictures: make_images.py.
 
 enum { B_SETTINGS, B_NIGHT, B_EXIT, B_TRF, B_TSRC, B_GPS, B_LEFT, B_RIGHT, B_UP, B_DOWN, B_MINUS, B_PLUS,
-       B_HOME, B_SEARCH, B_ROUTEOFF, B_COUNT };
+       B_HOME, B_SEARCH, B_ROUTEOFF, B_TILT, B_COUNT };
 
 enum { kTile = 72, kRound = 60, kSign = 48, kStatusH = 44, kDockY = 404, kDockMs = 6000, kDockH = 76, kDockStep = 16,
        kDockAnimMs = 30 };   // the bar slides in / out by kDockStep px every kDockAnimMs
@@ -39,6 +39,7 @@ static Button s_btn[B_COUNT] = {
     { 0, 0, { L"Bhome" } },
     { 0, 0, { L"Bsearch" } },   // search a place, a route to it (route.cpp)
     { 0, 0, { L"Broff" } },     // the route off, only while there is one
+    { 724, 82, { NULL } },      // the third person's view on / off: heading-up from z15 (the user 2026-10-28)
 };
 static const int kDockOrder[] = { B_HOME, B_TRF, B_TSRC, B_SEARCH, B_ROUTEOFF, B_NIGHT, B_SETTINGS };
 static const int kDockCount = sizeof(kDockOrder) / sizeof(kDockOrder[0]);
@@ -68,6 +69,13 @@ static const UINT kUserDelayMs = 900;    // wait for the user to stop pressing b
 // GPS button modes (g_cfg.follow)
 enum { FOLLOW_OFF, FOLLOW_NORTH, FOLLOW_HEADING };
 static const double kCarAhead        = 0.25; // heading-up: view center this part of map height ahead of the car
+// The third person's view (tilt.cpp, ring.cpp; the user 2026-10-27..28): heading-up from z15, the camera's angle from
+// straight down by the zoom, the fog this far ahead; the near ring loaded +-kNearHalf round the view's centre, the far
+// one (two zooms out) +-kFarHalf of its own px
+static const int    kTiltMinZ        = 15;
+static const double kTiltFog         = 1150;
+static const double kNearHalf        = 380;  // (5 slots: 2 x 380 + the 256 px the centre moves in its tile < 1280)
+static const double kFarHalf         = 384;
                                              // (0.25 of 480: the car stays above the bottom bar)
 static const double kHeadingMinSpeed = 5;    // km/h: below it the course is noise, keep the last heading
 static const int    kMaxKeys         = 32;   // tiles one view can need from one source
@@ -261,6 +269,42 @@ static int TrafficSource()
     return kTrafficSrc[g_cfg.trafficSrc];
 }
 
+static bool Tilted()
+{
+    return g_cfg.tilt && g_cfg.follow == FOLLOW_HEADING && g_cfg.z >= kTiltMinZ;
+}
+
+// The view's tilt while the third person's view is on (else NULL): the car keeps its place on the screen; the camera
+// 45 degrees from straight down at z15, 55 at z16, 65 closer (the user 2026-10-27)
+static const Tilt* ViewTilt()
+{
+    static Tilt t;
+    if (!Tilted())
+        return NULL;
+    double car = g_cfg.mapH * kCarAhead;
+    TiltMake(&t, car, car, kTiltFog, g_cfg.z >= 17 ? 65 : g_cfg.z == 16 ? 55 : 45);
+    return &t;
+}
+
+static bool ScreenOf(double gx, double gy, double vx, double vy, double cx, double cy, double angle, double* x, double* y);
+
+// The far ring's tiles (two zooms out round the view's centre) while the third person's view is on; their count
+static int FarKeys(MapRequest* out, int max)
+{
+    if (!Tilted())
+        return 0;
+    double vx, vy;
+    ViewWorld(&vx, &vy);
+    int z = g_cfg.z - 2, n = 0, tiles = 1 << z;
+    for (int j = (int)floor((vy / 4 - kFarHalf) / TILE); j <= (int)floor((vy / 4 + kFarHalf) / TILE); j++)
+        for (int i = (int)floor((vx / 4 - kFarHalf) / TILE); i <= (int)floor((vx / 4 + kFarHalf) / TILE); i++)
+            if (n < max && i >= 0 && j >= 0 && i < tiles && j < tiles) {
+                MapRequest k = { SRC_OSM, z, i, j };
+                out[n++] = k;
+            }
+    return n;
+}
+
 // Tiles of a source that touch the (rotated) map window, nearest to the view center first
 // (heading-up: the center is ahead of the car, so the road ahead comes first).
 // OSM and 2GIS: 256 px tiles; Yandex: 600x450 images in Yandex world pixels.
@@ -276,6 +320,12 @@ static int NeededKeys(int src, MapRequest* out, int max)
         ViewWorld(&vx, &vy);
     double a = ViewAngle() * M_PI / 180.0, c = cos(a), s = sin(a);
     double hw = g_cfg.mapW / 2.0, hh = g_cfg.mapH / 2.0;
+    if (Tilted() && !ya) {   // the near ring's square round the view's centre (its own axes: the world's)
+        a = 0;
+        c = 1;
+        s = 0;
+        hw = hh = kNearHalf;
+    }
     // world bounding box of the (rotated) window
     double ex = hw * fabs(c) + hh * fabs(s), ey = hw * fabs(s) + hh * fabs(c);
     double world = 256.0 * pow(2.0, g_cfg.z);
@@ -466,6 +516,10 @@ static void Ensure(int mode)
             parentLoaded = true;
         }
     }
+    n = FarKeys(keys, kMaxKeys);   // the far ring's, after the view's
+    LoadFromDisk(keys, n, 4);
+    for (int i = 0; i < n; i++)
+        Request(REQ_AUTO, keys[i], CacheFind(keys[i], false));
     double mx, my;   // the junction card's tiles: after the view's (one request at a time: theirs first)
     n = JunctionKeys(keys, &mx, &my);
     LoadFromDisk(keys, n, 2);
@@ -763,6 +817,7 @@ static void OnButton(int b)
     case B_DOWN:   PanBy(0, g_cfg.mapH / 3.0); break;
     case B_MINUS:  Zoom(-1); break;
     case B_PLUS:   Zoom(1); break;
+    case B_TILT:   g_cfg.tilt = !g_cfg.tilt; break;
     }
     UserChanged();
 }
@@ -782,7 +837,9 @@ static bool ButtonRect(int b, RECT* r)
 {
     if (s_settings || s_search || s_plan)
         return false;
-    if (b == B_GPS || b == B_MINUS || b == B_PLUS) {   // round, on the right (design v3)
+    if (b == B_TILT && (g_cfg.follow != FOLLOW_HEADING || g_cfg.z < kTiltMinZ))
+        return false;
+    if (b == B_GPS || b == B_MINUS || b == B_PLUS || b == B_TILT) {   // round, on the right (design v3)
         SetRect(r, s_btn[b].x, s_btn[b].y, s_btn[b].x + kRound, s_btn[b].y + kRound);
         return true;
     }
@@ -1162,12 +1219,11 @@ static void DrawGpsMarker(HDC dc, double cx, double cy, double vx, double vy, do
 {
     if (!s_gps.fixTick)
         return;
-    double gx, gy;
+    double gx, gy, sx, sy;
     GeoToWorld(s_gps.lon, s_gps.lat, g_cfg.z, &gx, &gy);
-    double ra = angle * M_PI / 180.0, rc = cos(ra), rs = sin(ra);
-    double dx = gx - vx, dy = gy - vy;
-    int px = (int)floor(cx + dx * rc + dy * rs + 0.5);
-    int py = (int)floor(cy - dx * rs + dy * rc + 0.5);
+    if (!ScreenOf(gx, gy, vx, vy, cx, cy, angle, &sx, &sy))
+        return;
+    int px = (int)floor(sx + 0.5), py = (int)floor(sy + 0.5);
 
     bool fresh = s_gps.valid && GetTickCount() - s_gps.fixTick < 5000;
     if (fresh)
@@ -1210,13 +1266,20 @@ static int Round(double v)
 // slot's signature). 5 tiles: any rotation of 800 x 480 fits a circle of 933 px, plus the 256 px the view
 // center moves within its tile. Traffic and night are put into the slot once, not on every frame; a frame is
 // then only the rotation (heading-up, and only when the view, the angle or a slot changed) or 1-4 blits.
+// The third person's view (ring.cpp) adds a far ring of the same size two zooms out, only while it is on.
 static const int kRing = 5, kRingPx = kRing * TILE;   // 1280 x 1280, 3.2 MB
-static Image     s_ring;
-static unsigned short* s_ringBits;
 struct RingSlot { int x, y; DWORD sig; bool used; };
-static RingSlot  s_slot[kRing][kRing];
+struct Ring {
+    Image img;
+    unsigned short* bits;
+    int z;                            // its zoom (the far ring's: the view's - 2)
+    RingSlot slot[kRing][kRing];
+    int i0, j0, i1, j1;               // the tiles last brought up to date (the part loaded)
+};
+static Ring      s_near, s_far;
 static DWORD     s_ringStamp;         // grows when a slot was drawn: the rotated frame is out of date
 static DWORD     s_rotStamp = 0xFFFFFFFF;
+static int       s_rotTilt = -1;      // the zoom the frame was tilted at (-1: flat)
 static double    s_rotVx, s_rotVy, s_rotAngle;
 static int       s_statSlots;         // slots drawn since the last stat line
 
@@ -1299,9 +1362,9 @@ static int OverlayPlaces(CacheEntry** list, int n, OvPlace* out)
 
 // OSM tiles in memory that cover tile (tx, ty) of the view's zoom: the exact one alone when it is here, otherwise
 // the other levels (coarser scaled up, finer scaled down), the farthest levels first so the nearest end on top.
-static int BaseCandidates(CacheEntry** list, int n, int tx, int ty, const CacheEntry** out)
+static int BaseCandidates(CacheEntry** list, int n, int z, int tx, int ty, const CacheEntry** out)
 {
-    MapRequest k = { SRC_OSM, g_cfg.z, tx, ty };
+    MapRequest k = { SRC_OSM, z, tx, ty };
     CacheEntry* exact = CacheFind(k, false);
     if (exact) {
         out[0] = exact;
@@ -1310,7 +1373,7 @@ static int BaseCandidates(CacheEntry** list, int n, int tx, int ty, const CacheE
     int m = 0;
     for (int i = 0; i < n && m < CACHE_MEM; i++) {
         const CacheEntry* e = list[i];
-        int dz = g_cfg.z - e->req.z;
+        int dz = z - e->req.z;
         if (e->req.src != SRC_OSM || abs(dz) > kMaxParentLevels)
             continue;
         double f = pow(2.0, dz), l = e->req.x * TILE * f, t = e->req.y * TILE * f, sz = TILE * f;
@@ -1319,7 +1382,7 @@ static int BaseCandidates(CacheEntry** list, int n, int tx, int ty, const CacheE
         out[m++] = e;
     }
     for (int i = 1; i < m; i++)
-        for (int j = i; j > 0 && abs(out[j]->req.z - g_cfg.z) > abs(out[j - 1]->req.z - g_cfg.z); j--) {
+        for (int j = i; j > 0 && abs(out[j]->req.z - z) > abs(out[j - 1]->req.z - z); j--) {
             const CacheEntry* t = out[j];
             out[j] = out[j - 1];
             out[j - 1] = t;
@@ -1328,9 +1391,9 @@ static int BaseCandidates(CacheEntry** list, int n, int tx, int ty, const CacheE
 }
 
 // What slot (tx, ty) would show now: when it differs from the slot's, the slot is drawn again.
-static DWORD SlotSig(int tx, int ty, bool inWorld, const CacheEntry** base, int nb, const OvPlace* ov, int no)
+static DWORD SlotSig(int z, int tx, int ty, bool inWorld, const CacheEntry** base, int nb, const OvPlace* ov, int no)
 {
-    DWORD h = Mix(Mix(Mix(2166136261u, g_cfg.z), tx), ty);
+    DWORD h = Mix(Mix(Mix(2166136261u, z), tx), ty);
     h = Mix(Mix(h, inWorld), g_cfg.night);
     for (int i = 0; i < nb; i++)
         h = Mix(Mix(Mix(Mix(Mix(h, base[i]->req.z), base[i]->req.x), base[i]->req.y), base[i]->fetchTick),
@@ -1347,7 +1410,7 @@ static DWORD SlotSig(int tx, int ty, bool inWorld, const CacheEntry** base, int 
 
 // A traffic image blended into the ring, clipped to `clip` (ring pixels); (left, top) its ring position, sy ring
 // px per image row, 1 px per image px horizontally.
-static void BlendRing(const Overlay* ov, double left, double top, double sy, const RECT& clip)
+static void BlendRing(unsigned short* bits, const Overlay* ov, double left, double top, double sy, const RECT& clip)
 {
     int ix = (int)ceil(left);
     int y0 = (int)ceil(top), y1 = (int)floor(top + ov->h * sy);
@@ -1360,7 +1423,7 @@ static void BlendRing(const Overlay* ov, double left, double top, double sy, con
         const unsigned char* p = (const unsigned char*)ov + ov->rowOfs[oy];
         int runs = *(const unsigned short*)p;
         p += 4;
-        unsigned short* drow = s_ringBits + (kRingPx - 1 - y) * kRingPx;
+        unsigned short* drow = bits + (kRingPx - 1 - y) * kRingPx;
         int x = ix;
         for (int r = 0; r < runs; r++) {
             const unsigned short* rh = (const unsigned short*)p;
@@ -1384,7 +1447,7 @@ static void BlendRing(const Overlay* ov, double left, double top, double sy, con
 }
 
 // Draws slot (tx, ty): the background, the base map, the traffic, night.
-static void DrawSlot(HDC rdc, HDC src, int tx, int ty, bool inWorld, const CacheEntry** base, int nb,
+static void DrawSlot(Ring& r, HDC rdc, HDC src, int tx, int ty, bool inWorld, const CacheEntry** base, int nb,
                      const OvPlace* ov, int no)
 {
     int ox = Mod(tx, kRing) * TILE, oy = Mod(ty, kRing) * TILE;
@@ -1397,7 +1460,7 @@ static void DrawSlot(HDC rdc, HDC src, int tx, int ty, bool inWorld, const Cache
         SelectClipRgn(rdc, rgn);
         for (int i = 0; i < nb; i++) {
             const CacheEntry* e = base[i];
-            double f = pow(2.0, g_cfg.z - e->req.z);
+            double f = pow(2.0, r.z - e->req.z);
             double left = ox + e->req.x * TILE * f - tx * TILE, top = oy + e->req.y * TILE * f - ty * TILE;
             double size = TILE * f;
             HGDIOBJ old = SelectObject(src, e->img.bmp);
@@ -1426,32 +1489,43 @@ static void DrawSlot(HDC rdc, HDC src, int tx, int ty, bool inWorld, const Cache
         for (int i = 0; i < no; i++)
             if (ov[i].left < (tx + 1) * TILE && ov[i].right > tx * TILE && ov[i].top < (ty + 1) * TILE &&
                 ov[i].bottom > ty * TILE)
-                BlendRing(ov[i].e->ov, ox + ov[i].left - tx * TILE, oy + ov[i].top - ty * TILE, ov[i].sy, rc);
+                BlendRing(r.bits, ov[i].e->ov, ox + ov[i].left - tx * TILE, oy + ov[i].top - ty * TILE, ov[i].sy, rc);
     const unsigned short* lut = g_cfg.night && !g_cfg.vector ? NightLut() : NULL;   // (vector: its own night palette)
     if (lut)
         for (int y = rc.top; y < rc.bottom; y++) {
-            unsigned short* p = s_ringBits + (kRingPx - 1 - y) * kRingPx + rc.left;
+            unsigned short* p = r.bits + (kRingPx - 1 - y) * kRingPx + rc.left;
             for (int x = 0; x < TILE; x++)
                 p[x] = lut[p[x]];
         }
     s_statSlots++;
 }
 
-// The slots under the (rotated) window, brought up to date. Returns how many of them show some map.
-static int RingUpdate(HDC dc, double vx, double vy, double angle)
+// The (rotated) window's bounding box round the view's centre: half its width and height, world px
+static void WindowBox(double angle, double* ex, double* ey)
 {
     double a = angle * M_PI / 180.0, c = cos(a), s = sin(a);
     double hw = g_cfg.mapW / 2.0, hh = g_cfg.mapH / 2.0;
-    double ex = hw * fabs(c) + hh * fabs(s), ey = hw * fabs(s) + hh * fabs(c);   // the window's bounding box
+    *ex = hw * fabs(c) + hh * fabs(s);
+    *ey = hw * fabs(s) + hh * fabs(c);
+}
+
+// The ring's slots in the box +-ex, +-ey round (vx, vy) (world px of its zoom), brought up to date. Returns how many
+// of them show some map. Traffic only on the view's own ring.
+static int RingUpdate(Ring& r, HDC dc, double vx, double vy, double ex, double ey)
+{
     int i0 = (int)floor((vx - ex) / TILE), i1 = (int)floor((vx + ex) / TILE);
     int j0 = (int)floor((vy - ey) / TILE), j1 = (int)floor((vy + ey) / TILE);
     if (i1 - i0 >= kRing) i1 = i0 + kRing - 1;   // can't be with 800 x 480; never two tiles in one slot
     if (j1 - j0 >= kRing) j1 = j0 + kRing - 1;
-    int tiles = 1 << g_cfg.z;
+    r.i0 = i0;
+    r.j0 = j0;
+    r.i1 = i1;
+    r.j1 = j1;
+    int tiles = 1 << r.z;
     CacheEntry* list[CACHE_MEM];
     int n = CacheList(list, CACHE_MEM);
     OvPlace ov[CACHE_MEM];
-    int no = g_cfg.traffic ? OverlayPlaces(list, n, ov) : 0;
+    int no = g_cfg.traffic && r.z == g_cfg.z ? OverlayPlaces(list, n, ov) : 0;
     HDC rdc = NULL, src = NULL;
     HGDIOBJ old = NULL;
     int shown = 0;
@@ -1459,19 +1533,19 @@ static int RingUpdate(HDC dc, double vx, double vy, double angle)
         for (int tx = i0; tx <= i1; tx++) {
             bool inWorld = tx >= 0 && ty >= 0 && tx < tiles && ty < tiles;
             const CacheEntry* base[CACHE_MEM];
-            int nb = inWorld ? BaseCandidates(list, n, tx, ty, base) : 0;
+            int nb = inWorld ? BaseCandidates(list, n, r.z, tx, ty, base) : 0;
             if (nb)
                 shown++;
-            DWORD sig = SlotSig(tx, ty, inWorld, base, nb, ov, no);
-            RingSlot& sl = s_slot[Mod(ty, kRing)][Mod(tx, kRing)];
+            DWORD sig = SlotSig(r.z, tx, ty, inWorld, base, nb, ov, no);
+            RingSlot& sl = r.slot[Mod(ty, kRing)][Mod(tx, kRing)];
             if (sl.used && sl.x == tx && sl.y == ty && sl.sig == sig)
                 continue;   // the same as it is
             if (!rdc) {
                 rdc = CreateCompatibleDC(dc);
                 src = CreateCompatibleDC(dc);
-                old = SelectObject(rdc, s_ring.bmp);
+                old = SelectObject(rdc, r.img.bmp);
             }
-            DrawSlot(rdc, src, tx, ty, inWorld, base, nb, ov, no);
+            DrawSlot(r, rdc, src, tx, ty, inWorld, base, nb, ov, no);
             sl.x = tx;
             sl.y = ty;
             sl.sig = sig;
@@ -1506,9 +1580,61 @@ static void RotateRing(double vx, double vy, double angle)
             int px = (int)(wx >> 16), py = (int)(wy >> 16);
             if (px < 0) px += R; else if (px >= R) px -= R;
             if (py < 0) py += R; else if (py >= R) py -= R;
-            d[x] = s_ringBits[(R - 1 - py) * R + px];
+            d[x] = s_near.bits[(R - 1 - py) * R + px];
         }
     }
+}
+
+// A ring's view for TiltWarp: its canvas (a DIB: bottom-up), the part loaded in the view zoom's world px
+static RingView RingViewOf(const Ring& r, int shift)
+{
+    RingView v = { r.bits + (kRingPx - 1) * kRingPx, -kRingPx, kRingPx, shift, (r.i0 * TILE) << shift,
+                   (r.j0 * TILE) << shift, ((r.i1 + 1) * TILE) << shift, ((r.j1 + 1) * TILE) << shift };
+    return v;
+}
+
+// The third person's view: the frame tilted out of the near ring and the far one (ring.cpp), into s_rotated.
+static void TiltFrame(const Tilt& t, double vx, double vy, double angle)
+{
+    const int W = s_rotated.w, H = s_rotated.h, stride = ((W * 2 + 3) & ~3) / 2;
+    RingView rings[2] = { RingViewOf(s_near, 0), RingViewOf(s_far, 2) };
+    TiltWarp(rings, s_far.bits ? 2 : 1, t, W, H, vx, vy, angle, g_cfg.night != 0, s_rotatedBits + (H - 1) * stride,
+             -stride);
+}
+
+// A point of the turned map (offsets x, y from the map's centre) on the screen: tilted in the third person's view;
+// false: in its fog
+static bool Lift(const Tilt* t, double* x, double* y)
+{
+    return !t || TiltPoint(*t, *x, *y, x, y);
+}
+
+// A piece of a line of the turned map (offsets from the map's centre) on the screen: cut to the third person's view's
+// fog first; false: none of it seen; cut: its end cut off
+static bool LiftSeg(const Tilt* t, double* x0, double* y0, double* x1, double* y1, bool* cut)
+{
+    *cut = false;
+    if (!t)
+        return true;
+    double ex = *x1, ey = *y1;
+    if (!TiltClip(*t, x0, y0, x1, y1))
+        return false;
+    *cut = *x1 != ex || *y1 != ey;
+    TiltProject(*t, *x0, *y0, x0, y0);
+    TiltProject(*t, *x1, *y1, x1, y1);
+    return true;
+}
+
+// A world px of the view's zoom on the screen (turned, tilted); false: in the fog
+static bool ScreenOf(double gx, double gy, double vx, double vy, double cx, double cy, double angle, double* x, double* y)
+{
+    double ra = angle * M_PI / 180.0, rc = cos(ra), rs = sin(ra), dx = gx - vx, dy = gy - vy;
+    *x = dx * rc + dy * rs;
+    *y = -dx * rs + dy * rc;
+    bool seen = Lift(ViewTilt(), x, y);
+    *x += cx;
+    *y += cy;
+    return seen;
 }
 
 // North-up: the window straight out of the ring, in 1-4 pieces where it wraps.
@@ -1517,7 +1643,7 @@ static void RingBlit(HDC dc, const RECT& mr, double vx, double vy)
     int W = mr.right - mr.left, H = mr.bottom - mr.top;
     int wl = (int)floor(vx - W / 2.0 + 0.5), wt = (int)floor(vy - H / 2.0 + 0.5);
     HDC src = CreateCompatibleDC(dc);
-    HGDIOBJ old = SelectObject(src, s_ring.bmp);
+    HGDIOBJ old = SelectObject(src, s_near.img.bmp);
     for (int y = 0; y < H;) {
         int ry = Mod(wt + y, kRingPx), h = kRingPx - ry < H - y ? kRingPx - ry : H - y;
         for (int x = 0; x < W;) {
@@ -1828,6 +1954,7 @@ static void DrawAltLines(HDC dc, double cx, double cy, double vx, double vy, dou
         double timeS, distM;
         if (k == RouteAltCur() || !RouteAltGet(k, &ll, &np, &timeS, &distM) || np < 2)
             continue;
+        const Tilt* tp = ViewTilt();
         HPEN edge = CreatePen(PS_SOLID, 9, RGB(70, 76, 86)), in = CreatePen(PS_SOLID, 5, RGB(160, 170, 186));
         double px = 0, py = 0;
         for (int pass = 0; pass < 2; pass++) {
@@ -1837,8 +1964,14 @@ static void DrawAltLines(HDC dc, double cx, double cy, double vx, double vy, dou
                 GeoToWorld(ll[i * 2], ll[i * 2 + 1], g_cfg.z, &gx, &gy);
                 double dx = gx - vx, dy = gy - vy, x = cx + dx * rc + dy * rs, y = cy - dx * rs + dy * rc;
                 if (i > 0) {
-                    double x0 = px, y0 = py, x1 = x, y1 = y;
-                    if (ClipSeg(&x0, &y0, &x1, &y1, l, t, r, b) && (fabs(x1 - x0) + fabs(y1 - y0) >= 1 || i == np - 1)) {
+                    double x0 = px - cx, y0 = py - cy, x1 = x - cx, y1 = y - cy;
+                    bool tcut, seen = LiftSeg(tp, &x0, &y0, &x1, &y1, &tcut);   // (the third person's view)
+                    x0 += cx;
+                    y0 += cy;
+                    x1 += cx;
+                    y1 += cy;
+                    if (seen && ClipSeg(&x0, &y0, &x1, &y1, l, t, r, b) &&
+                        (fabs(x1 - x0) + fabs(y1 - y0) >= 1 || i == np - 1)) {
                         POINT seg[2] = { { Round(x0), Round(y0) }, { Round(x1), Round(y1) } };
                         Polyline(dc, seg, 2);
                     } else if (fabs(x1 - x0) + fabs(y1 - y0) < 1) {
@@ -1854,12 +1987,12 @@ static void DrawAltLines(HDC dc, double cx, double cy, double vx, double vy, dou
         DeleteObject(in);
         // its number at the middle of the line
         const double* m = ll + (np / 2) * 2;
-        double gx, gy;
+        double gx, gy, sx, sy;
         GeoToWorld(m[0], m[1], g_cfg.z, &gx, &gy);
-        double dx = gx - vx, dy = gy - vy;
         wchar_t num[4];
         _snwprintf(num, 4, L"%d", k + 1);
-        RouteMarker(dc, Round(cx + dx * rc + dy * rs), Round(cy - dx * rs + dy * rc), RGB(90, 98, 110), num);
+        if (ScreenOf(gx, gy, vx, vy, cx, cy, angle, &sx, &sy))
+            RouteMarker(dc, Round(sx), Round(sy), RGB(90, 98, 110), num);
     }
 }
 
@@ -1938,6 +2071,7 @@ static void DrawRoute(HDC dc, double cx, double cy, double vx, double vy, double
         // the colours' signature: the slots drawn (traffic came), the zoom, the provider, this route
         DWORD sig = Mix(Mix(Mix(Mix(s_ringStamp, g_cfg.z), g_cfg.trafficSrc), g_cfg.traffic), (DWORD)(size_t)ll) | 1;
         double l = g_cfg.mapX - 50, t = g_cfg.mapY - 50, r = g_cfg.mapX + g_cfg.mapW + 50, b = g_cfg.mapY + g_cfg.mapH + 50;
+        const Tilt* tp = ViewTilt();
         static int runs[512];
         int nr = 0, n = 0, runStart = 0;
         bool open = false;
@@ -1948,8 +2082,14 @@ static void DrawRoute(HDC dc, double cx, double cy, double vx, double vy, double
             double dx = gx - vx, dy = gy - vy;
             double x = cx + dx * rc + dy * rs, y = cy - dx * rs + dy * rc;
             if (i > 0) {
-                double x0 = px, y0 = py, x1 = x, y1 = y;
-                bool in = ClipSeg(&x0, &y0, &x1, &y1, l, t, r, b);
+                double x0 = px - cx, y0 = py - cy, x1 = x - cx, y1 = y - cy;
+                bool tcut, in = LiftSeg(tp, &x0, &y0, &x1, &y1, &tcut);   // (the third person's view)
+                x0 += cx;
+                y0 += cy;
+                x1 += cx;
+                y1 += cy;
+                double lx = x1, ly = y1;   // (its end on the screen before the box's cut)
+                in = in && ClipSeg(&x0, &y0, &x1, &y1, l, t, r, b);
                 if (in) {
                     if (s_rcolSig[i - 1] != sig) {   // the segment's colour: at its start, to the right of it
                         int j = i - 1;
@@ -1974,7 +2114,7 @@ static void DrawRoute(HDC dc, double cx, double cy, double vx, double vy, double
                     }
                     POINT q = { Round(x1), Round(y1) };
                     const POINT& last = s_rpts[n - 1];
-                    bool cut = x1 != x || y1 != y;   // leaves the box here
+                    bool cut = tcut || x1 != lx || y1 != ly;   // leaves the box (or the fog) here
                     // a point is left out when it is close to the last one - unless the colour changes there
                     if (cut || abs(q.x - last.x) + abs(q.y - last.y) >= 2 || i == np - 1 ||
                         (i + 1 < np && s_rcolSig[i] == sig && s_rcol[i] != s_rcol[s_ridx[n - 1]])) {
@@ -2044,10 +2184,10 @@ static void DrawRoute(HDC dc, double cx, double cy, double vx, double vy, double
             lat = s_lpLat;
             fill = kOrange;
         }
-        double gx, gy;
+        double gx, gy, sx, sy;
         GeoToWorld(lon, lat, g_cfg.z, &gx, &gy);
-        double dx = gx - vx, dy = gy - vy;
-        RouteMarker(dc, Round(cx + dx * rc + dy * rs), Round(cy - dx * rs + dy * rc), fill, t[0] ? t : NULL);
+        if (ScreenOf(gx, gy, vx, vy, cx, cy, angle, &sx, &sy))
+            RouteMarker(dc, Round(sx), Round(sy), fill, t[0] ? t : NULL);
     }
 }
 
@@ -2073,12 +2213,35 @@ static void DrawMap(HDC dc)
         s_rotatedBits = NULL;
     }
 
+    // the third person's view: the far ring (3.2 MB) only while it is on
+    const Tilt* tilt = ViewTilt();
+    if (tilt && !s_far.bits) {
+        memset(s_far.slot, 0, sizeof(s_far.slot));
+        s_far.bits = ImageCreate(kRingPx, kRingPx, &s_far.img);
+    } else if (!tilt && s_far.bits) {
+        ImageFree(&s_far.img);
+        s_far.bits = NULL;
+    }
+
     int drawn = 0;
-    if (s_ringBits && (!rotate || s_rotatedBits)) {
-        drawn = RingUpdate(dc, vx, vy, angle);
+    if (s_near.bits && (!rotate || s_rotatedBits)) {
+        double ex = kNearHalf, ey = kNearHalf;
+        if (!tilt)
+            WindowBox(angle, &ex, &ey);
+        s_near.z = g_cfg.z;
+        drawn = RingUpdate(s_near, dc, vx, vy, ex, ey);
+        if (tilt && s_far.bits) {
+            s_far.z = g_cfg.z - 2;
+            RingUpdate(s_far, dc, vx / 4, vy / 4, kFarHalf, kFarHalf);
+        }
         if (rotate) {   // turned again only when something moved
-            if (s_rotStamp != s_ringStamp || s_rotVx != vx || s_rotVy != vy || s_rotAngle != angle) {
-                RotateRing(vx, vy, angle);
+            int tz = tilt ? g_cfg.z : -1;
+            if (s_rotStamp != s_ringStamp || s_rotVx != vx || s_rotVy != vy || s_rotAngle != angle || s_rotTilt != tz) {
+                if (tilt)
+                    TiltFrame(*tilt, vx, vy, angle);
+                else
+                    RotateRing(vx, vy, angle);
+                s_rotTilt = tz;
                 s_rotStamp = s_ringStamp;
                 s_rotVx = vx;
                 s_rotVy = vy;
@@ -2096,14 +2259,15 @@ static void DrawMap(HDC dc)
     if (g_cfg.vector && drawn) {   // the names over the turned frame, upright (vtile.cpp); not under the car
         RECT avoid[1];   // only the car: the controls are dark enough over the names (the user 2026-10-27)
         int na = 0;
+        double gx, gy, sx, sy;
         if (s_gps.fixTick) {   // the car
-            double gx, gy;
             GeoToWorld(s_gps.lon, s_gps.lat, g_cfg.z, &gx, &gy);
-            double ra = angle * M_PI / 180.0, dx = gx - vx, dy = gy - vy;
-            int px = (int)(cx + dx * cos(ra) + dy * sin(ra)), py = (int)(cy - dx * sin(ra) + dy * cos(ra));
-            SetRect(&avoid[na++], px - 34, py - 34, px + 34, py + 34);
+            if (ScreenOf(gx, gy, vx, vy, cx, cy, angle, &sx, &sy))
+                SetRect(&avoid[na++], (int)sx - 34, (int)sy - 34, (int)sx + 34, (int)sy + 34);
         }
+        g_tilt = tilt;   // (the names tilted with the frame)
         VLabelsDraw(dc, mr, cx, cy, vx, vy, angle, g_cfg.z, avoid, na);
+        g_tilt = NULL;
     }
     DrawAttribution(dc, mr);
     DrawRoute(dc, cx, cy, vx, vy, angle);
@@ -3357,12 +3521,16 @@ static void DrawButtons(HDC dc)
         if (!ButtonRect(i, &r))
             continue;
         int pressed = s_pressed == i && s_pressedInside ? 1 : 0;
-        if (i == B_GPS || i == B_MINUS || i == B_PLUS) {   // a dark round button over the map, no border
+        if (i == B_GPS || i == B_MINUS || i == B_PLUS || i == B_TILT) {   // a dark round button over the map, no border
             if (pressed)
                 Tile(dc, r, kOrange, kOrange, kRound);
             else
                 Card(dc, r, kRound / 2);
-            DrawSign(dc, i, r, pressed);
+            if (i == B_TILT)   // "3D", in the accent while it is on
+                Text(dc, s_fontLabel, pressed ? kInk : g_cfg.tilt ? kOrange : kText, r.left, r.top, r.right, r.bottom,
+                     DT_CENTER, L"3D");
+            else
+                DrawSign(dc, i, r, pressed);
             continue;
         }
         // a slot of the bottom bar, as VestaHome's: the sign (a mode that is on: the orange one) and its caption
@@ -3514,7 +3682,7 @@ static void OnCreate(HWND hwnd)
     g_cfg.mapW = s_cw;
     g_cfg.mapH = s_ch;
     LoadImages();
-    s_ringBits = ImageCreate(kRingPx, kRingPx, &s_ring);
+    s_near.bits = ImageCreate(kRingPx, kRingPx, &s_near.img);
     CacheInit();
     VTileInit();
 

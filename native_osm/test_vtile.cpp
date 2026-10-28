@@ -718,6 +718,8 @@ static void TiltChecks()
           sx2 < sx && sx < 10, "tilt: the farther the higher on the screen and the smaller");
     Check(TiltPoint(t, 0, 120 - 299, &sx, &sy) && !TiltPoint(t, 0, 120 - 301, &sx, &sy), "tilt: the fog at 300 px ahead");
     Check(!TiltPoint(t, 0, 120 - 300, &sx, &sy), "tilt: the fog's very edge not seen");
+    TiltProject(t, 0, 120 - 300, &sx, &sy);                              // (a line cut there: its end drawn)
+    Check(Near(sy, t.fr) && Near(sx, 0), "tilt: the fog's edge projected to the fog's row");
     Check(TiltPoint(t, 1000, 20, &sx, &sy), "tilt: the fog by the depth only: far aside seen");
     Check(TiltPoint(t, 0, 400, &sx, &sy) && sy > 240 && !TiltPoint(t, 0, 120 + 300, &sx, &sy),
           "tilt: behind the car below the screen, behind the fog's depth none");
@@ -1090,6 +1092,24 @@ int main()
     Check(Lit(f, 306, 268, 366, 284) == 0, "z14: no station's name under its sign yet");
     Check(Lit(f, 454, 246, 475, 267) == 0, "z14: no car park signs yet");
     Check(Count(f, 370, 166, 430, 186, white) > 20, "z14: the city's name");
+    Tilt tNear, tFar;                  // the third person's view: the city's name 64 px ahead of the view's centre
+    TiltMake(&tFar, 0, 0, 200, 60);   // the fog 200 px ahead: the name seen, tNearer the centre (the depth shortened)
+    TiltMake(&tNear, 0, 0, 100, 60);  // the fog 100 px ahead: 64 px is where it thickens - no name
+    double nx, ny;
+    TiltPoint(tFar, 0, -64, &nx, &ny);
+    g_tilt = &tFar;
+    Labels(f, 9000, 5000, 128, 128, 14, 0, mr, NULL, 0);
+    int at = (int)(240 + ny);
+    Check(Count(f, 370, at - 10, 430, at + 10, white) > 20 && Lit(f, 370, 166, 430, 186) == 0,
+          "tilted: the city's name at its tilted place");
+    TiltPoint(tFar, 0, 36, &nx, &ny);   // the street 36 px below the centre: its name along it, still level
+    at = (int)(240 + ny);
+    Check(Count(f, 370, at - 8, 436, at + 8, white) > 200, "tilted: the street's name along it, level");
+    g_tilt = &tNear;
+    Labels(f, 9000, 5000, 128, 128, 14, 0, mr, NULL, 0);
+    Check(Lit(f, 300, 100, 500, 240) == 0, "tilted: no names where the fog thickens");
+    g_tilt = NULL;
+    Labels(f, 9000, 5000, 128, 128, 14, 0, mr, NULL, 0);   // (the flat frame back: the next check compares it)
     Labels(g, 9100, 5000, 128, 128, 14, 0, mr, NULL, 0);
     Check(!memcmp(f.bits, g.bits, 800 * 480 * 2), "z14: the village under the city not drawn");
     RECT all = { 0, 0, 800, 480 };

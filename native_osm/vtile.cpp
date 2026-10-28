@@ -1075,6 +1075,7 @@ struct LabelView {
     HDC dc;
     const RECT* mr;             // a name only whole on the map
     double cx, cy, vx, vy, rc, rs, unit;
+    double fx, fy;              // the last label's point on the turned flat map (off its centre): g_tilt's input
     int z;
     const Style* pal;
     HGDIOBJ font0;              // the dc's own font, put back at the end
@@ -1194,13 +1195,23 @@ static void AddAvoid(LabelView& v, const RECT* avoid, int navoid)   // taken by 
     }
 }
 
-// The label's screen point (x, y); false = too far off the map
-static bool OnScreen(const LabelView& v, const VLabelSet& set, const VLabel& lb, double& x, double& y)
+// The label's screen point (x, y), tilted in the third person's view (g_tilt); false = too far off the map or in the
+// fog
+static bool OnScreen(LabelView& v, const VLabelSet& set, const VLabel& lb, double& x, double& y)
 {
     double ox = (double)set.key.x * kExtent * v.unit, oy = (double)set.key.y * kExtent * v.unit;
     double dx = ox + lb.x * v.unit - v.vx, dy = oy + lb.y * v.unit - v.vy;
-    x = v.cx + dx * v.rc + dy * v.rs;
-    y = v.cy - dx * v.rs + dy * v.rc;
+    v.fx = dx * v.rc + dy * v.rs;
+    v.fy = -dx * v.rs + dy * v.rc;
+    double fy, k, fade;   // (in the third person's view: none where the fog thickens - a crowd at the horizon)
+    if (g_tilt && (!TiltPoint(*g_tilt, v.fx, v.fy, &x, &y) || !TiltRow(*g_tilt, y, &fy, &k, &fade) || fade > 0))
+        return false;
+    if (!g_tilt) {
+        x = v.fx;
+        y = v.fy;
+    }
+    x += v.cx;
+    y += v.cy;
     const RECT& mr = *v.mr;
     return x >= mr.left - 60 && x <= mr.right + 60 && y >= mr.top - 20 && y <= mr.bottom + 20;
 }
@@ -1301,11 +1312,23 @@ static bool SameStreetNear(const LabelView& v, const Placed& box)   // its name 
     return again;
 }
 
+// The road's direction (sx, sy: data units) at the label (x, y on the screen) seen tilted: a tenth of it further
+// projected, its length as long on the screen
+static void TiltedDir(const LabelView& v, double x, double y, double& sx, double& sy)
+{
+    double e = 0.1 * v.unit, qx, qy;
+    TiltProject(*g_tilt, v.fx + sx * e, v.fy + sy * e, &qx, &qy);
+    sx = (qx + v.cx - x) / e;
+    sy = (qy + v.cy - y) / e;
+}
+
 // A street's name along its road, upright
 static bool StreetLabel(LabelView& v, const VLabel& lb, const wchar_t* s, int n, const SIZE& sz, double x, double y,
                         Placed& box)
 {
     double sx = lb.dx * v.rc + lb.dy * v.rs, sy = -lb.dx * v.rs + lb.dy * v.rc;   // the road on the screen
+    if (g_tilt)
+        TiltedDir(v, x, y, sx, sy);
     double len = sqrt(sx * sx + sy * sy);
     if (len * v.unit < sz.cx + 12)
         return false;   // the segment is shorter than the name

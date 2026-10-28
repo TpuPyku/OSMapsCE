@@ -37,6 +37,7 @@ struct Config {
     int     night;          // dark map: lightness inverted, dimmed
     int     vector;         // the base map: 0 OSM raster tiles, 1 vector tiles (OpenFreeMap, vtile.cpp)
     int     junction;       // the junction card before complex maneuvers (junction.cpp; the user 2026-10-28: off by default)
+    int     tilt;           // the third person's view (its button: heading-up from z15; tilt.cpp, ring.cpp)
     int     trafficTtlMin;  // traffic image is considered fresh this long
     int     yandexLimit;    // requests per day per traffic provider
     int     twogisLimit;
@@ -234,6 +235,7 @@ struct Tilt { double cf, cs, rc, f, fog, fr; };   // fr: the fog's row (the grou
 extern const Tilt* g_tilt;   // the view's tilt while it is on (VLabelsDraw), else NULL
 void TiltMake(Tilt* t, double carFlat, double carScreen, double fogPx, double pitchDeg);   // pitch: from straight down
 bool TiltPoint(const Tilt& t, double fx, double fy, double* sx, double* sy);   // false: in the fog
+void TiltProject(const Tilt& t, double fx, double fy, double* sx, double* sy);   // the same, no fog
 bool TiltRow(const Tilt& t, double sy, double* fy, double* k, double* fade);   // a screen row: the flat row fy, its
                                 // x = sx * k, the fog over it 0..1; false: all fog
 void TiltFog(const Tilt& t, double sy, bool night, unsigned char rgb[3]);   // the fog's colour at a screen row
