@@ -675,11 +675,21 @@ static void Levels()
     Check(Column(ia, 64, 116, 140, casing) >= 2, "the road's casing over the tunnel under it");
     Check(Px(ia, 64, 40) == RGB565(249, 234, 205), "the tunnel paler: half the background");
     Check(Row(ia, 40, 54, 74, casing) == 0, "the tunnel without a casing");
+    const unsigned short shadow = RGB565(206, 200, 190);   // the user 2026-10-28: a bridge's height shown by its shadow
+    Check(Row(ia, 40, 133, 145, shadow) >= 4 && Row(ia, 40, 110, 123, shadow) == 0,
+          "the bridge's shadow beside it, to one side (south-east), over the ground");
+    Check(Row(ia, 40, 120, 150, shadow) == 6 && Px(ia, 138, 40) == shadow,
+          "the shadow: the bridge's casing wide, 3/4 of its width aside");
+    Check(Column(ia, 136, 123, 134, shadow) == 11, "the shadow over the road under the bridge, its casing too");
+    Check(Px(ia, 136, 1) != shadow && Px(ia, 136, 2) == shadow, "the shadow shifted down too (south-east)");
+    Check(Row(ia, 40, 50, 80, shadow) == 0 && Column(ia, 20, 116, 150, shadow) == 0,
+          "no shadow of the tunnel, of the road on the ground");
     Check(VTileRender(b, pmt, np, &ib) && SameImage(ia, ib), "Protomaps' bridge and tunnel as OpenMapTiles'");
     ImageFree(&ib);
     g_cfg.night = 1;   // (no casings at night: the bridge's own, of the background)
     Check(VTileRender(n, omt, no, &ib) && Row(ib, 128, 118, 138, RGB565(17, 19, 23)) >= 2,
           "night: the bridge parted from the road it crosses");
+    Check(Row(ib, 40, 133, 145, RGB565(6, 7, 9)) >= 4, "night: the bridge's shadow darker than the night's ground");
     Check(Column(ib, 64, 118, 138, RGB565(17, 19, 23)) == 0, "night: no casing of the ground road over the tunnel");
     g_cfg.night = 0;
     ImageFree(&ia);

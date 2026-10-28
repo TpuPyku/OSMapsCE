@@ -41,6 +41,7 @@ static const Style kStyle[2][K_COUNT] = { {
     { 58, 118, 196, 0, true, 11, 12, 14 }, { 58, 118, 196, 0, true, 11, 12, 14 },
 } };
 static const unsigned char kBg[2][3] = { { 243, 240, 235 }, { 17, 19, 23 } };
+static const unsigned char kShadow[2][3] = { { 206, 200, 190 }, { 6, 7, 9 } };   // a bridge's shadow on the ground
 // The smallest shown zoom of a kind (design v3: buildings from z15, paths from z16)
 static int MinZoom(int kind)
 {
@@ -914,6 +915,21 @@ static void StrokeLines(HDC dc, const VTile& t, const Xf& xf, int z, const Style
     }
 }
 
+// The bridges' shadows (the user 2026-10-28: their height seen, in the third person's view too): each bridge's line
+// as wide as its casing, shifted south-east by 3/4 of its width - drawn over the ground, under the bridges
+static void StrokeShadows(HDC dc, const VTile& t, const Xf& xf, int z, const Style* pal, const unsigned char* c)
+{
+    for (int k = kFirstLine; k < K_PLACE; k++) {
+        if (z < MinZoom(k))
+            continue;
+        int w = LineWidth(pal[k].width, z), off = (w * 3 + 2) / 4;
+        Xf sh = xf;
+        sh.ox -= off * 16;
+        sh.oy -= off * 16;
+        StrokeKind(dc, t, sh, k, 1, w + 2, RGB(c[0], c[1], c[2]));
+    }
+}
+
 static void Draw(const VTile& t, const Xf& xf, int z, bool night, HDC dc, unsigned short* bits)
 {
     const Style* pal = kStyle[night ? 1 : 0];
@@ -921,13 +937,15 @@ static void Draw(const VTile& t, const Xf& xf, int z, bool night, HDC dc, unsign
     unsigned short bg = RGB565(bc[0], bc[1], bc[2]);
     for (int i = 0; i < TILE * TILE; i++)
         bits[i] = bg;
-    // areas, kind by kind, then the lines with their casings level by level: the tunnels, the ground, the bridges (the
-    // labels: over the frame, VLabelsDraw)
+    // areas, kind by kind, then the lines with their casings level by level: the tunnels, the ground, the bridges'
+    // shadows and the bridges (the labels: over the frame, VLabelsDraw)
     FillAreas(t, xf, z, pal, bits);
 #ifndef UNDER_CE
     GdiFlush();   // the desktop's GDI may batch: our pixels before its lines (CE draws at once)
 #endif
     for (int level = -1; level <= 1; level++) {
+        if (level > 0)
+            StrokeShadows(dc, t, xf, z, pal, kShadow[night ? 1 : 0]);
         StrokeLines(dc, t, xf, z, pal, bc, level, true);
         StrokeLines(dc, t, xf, z, pal, bc, level, false);
     }
