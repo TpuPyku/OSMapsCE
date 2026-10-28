@@ -905,6 +905,89 @@ static void JunctionChecks()
           "the rounded corners' inset by the row");
 }
 
+// The tilted frame out of the rings (ring.cpp): the near ring (the view's zoom) where it is loaded, the far one (two
+// zooms out: 4 world px a ring px) past it, the fog above and fading in over the far rows
+static unsigned short RingPx(const RingView& r, double wx, double wy)
+{
+    int x = ((int)floor(wx) >> r.shift) % r.size, y = ((int)floor(wy) >> r.shift) % r.size;
+    return r.top[y * r.stride + x];
+}
+
+static void TiltWarpChecks()
+{
+    Check(Blend565(RGB565(0, 0, 0), RGB565(248, 252, 248), 0) == RGB565(0, 0, 0) &&
+          Blend565(RGB565(0, 0, 0), RGB565(248, 252, 248), 32) == RGB565(248, 252, 248) &&
+          Blend565(RGB565(0, 0, 0), RGB565(248, 252, 248), 16) == RGB565(120, 124, 120), "the 565 blend by 32nds");
+    unsigned short ba = RGB565(200, 100, 40), bb = RGB565(40, 200, 160), bm = Blend565(ba, bb, 8);   // each channel its own
+    Check((bm >> 11) == 25 + (5 - 25) * 8 / 32 && ((bm >> 5) & 63) == 25 + (50 - 25) * 8 / 32 &&
+          (bm & 31) == 5 + (20 - 5) * 8 / 32, "the 565 blend: red, green, blue apart");
+    static unsigned short nearBits[64 * 64], farBits[64 * 64], frame[60 * 40 + 1], up[60 * 40 + 1], sky[400 * 40];
+    for (int i = 0; i < 64 * 64; i++) {
+        nearBits[i] = (unsigned short)(i & 0x7FFF);
+        farBits[i] = (unsigned short)(0x8000 | i);
+    }
+    const double vx = 1000.5, vy = 2000.5;
+    RingView rings[2] = { { nearBits, 64, 64, 0, 980, 1980, 1021, 2021 }, { farBits, 64, 64, 2, 800, 1800, 1200, 2200 } };
+    Tilt t;
+    TiltMake(&t, 10, 10, 100, 60);   // the car 10 px below the centre, the fog 100 px ahead
+    TiltWarp(rings, 2, t, 40, 60, vx, vy, 0, false, frame, 40);
+    Check(frame[40 * 40 + 20] == RingPx(rings[0], vx, vy + 10) && frame[40 * 40 + 35] == RingPx(rings[0], vx + 15, vy + 10),
+          "tilt frame: the car's row from the near ring, the map's own size");
+    double fy, k, fade;
+    int row = 0;
+    for (int y = 0; y < 60 && !row; y++)   // the first row seen past the near ring (more than 20 px ahead)
+        if (TiltRow(t, y - 30, &fy, &k, &fade) && fy < -20 && fade == 0)
+            row = y;
+    TiltRow(t, row - 30, &fy, &k, &fade);
+    Check(row && frame[row * 40 + 20] == RingPx(rings[1], vx, vy + fy) &&
+          frame[row * 40 + 30] == RingPx(rings[1], vx + 10 * k, vy + fy), "tilt frame: past the near ring the far one");
+    unsigned char c[3];
+    TiltFog(t, -30, false, c);
+    Check(frame[20] == RGB565(c[0], c[1], c[2]) && frame[39] == RGB565(c[0], c[1], c[2]), "tilt frame: above the fog its colour");
+    int fr = -1;
+    for (int y = 0; y < 60 && fr < 0; y++)
+        if (TiltRow(t, y - 30, &fy, &k, &fade) && fade > 0.2 && fade < 0.8)
+            fr = y;
+    TiltRow(t, fr - 30, &fy, &k, &fade);
+    TiltFog(t, fr - 30, false, c);
+    Check(fr >= 0 && frame[fr * 40 + 20] == Blend565(RingPx(rings[1], vx, vy + fy), RGB565(c[0], c[1], c[2]),
+                                                     (int)(fade * 32 + 0.5)), "tilt frame: the fog fading in");
+    TiltWarp(rings, 2, t, 40, 60, vx, vy, 90, true, frame, 40);   // course east: the screen's right is the south
+    Check(frame[40 * 40 + 25] == RingPx(rings[0], vx - 10, vy + 5) && frame[20] == 0,
+          "tilt frame: turned by the course; at night the fog black");
+    RingView narrow = { nearBits, 64, 64, 0, 990, 1990, 1011, 2011 };   // only the near ring, loaded 10 px round
+    TiltWarp(&narrow, 1, t, 40, 60, vx, vy, 0, false, frame, 40);
+    TiltFog(t, 10, false, c);
+    Check(frame[40 * 40 + 35] == RGB565(c[0], c[1], c[2]) && frame[40 * 40 + 25] == RingPx(narrow, vx + 5, vy + 10),
+          "tilt frame: nothing loaded there - the fog's colour");
+    frame[60 * 40] = up[60 * 40] = 0x1234;                              // a DIB's bottom-up rows: the same frame
+    TiltWarp(rings, 2, t, 40, 60, vx, vy, 0, false, up + 59 * 40, -40);
+    TiltWarp(rings, 2, t, 40, 60, vx, vy, 0, false, frame, 40);
+    bool same = frame[60 * 40] == 0x1234 && up[60 * 40] == 0x1234;     // (and nothing past the rows written)
+    for (int y = 0; y < 60; y++)
+        same = same && !memcmp(up + (59 - y) * 40, frame + y * 40, 80);
+    Check(same, "tilt frame: bottom-up rows too, each row its width only");
+    RingView edge[2] = { { nearBits, 64, 64, 0, 990, 1990, 1011, 2010 }, { nearBits, 64, 64, 0, 990, 2010, 1011, 2030 } };
+    TiltWarp(edge, 1, t, 40, 60, vx, vy, 0, false, frame, 40);          // the car's row at y 2010: the ring's end
+    TiltFog(t, 10, false, c);
+    unsigned short f10 = RGB565(c[0], c[1], c[2]);
+    Check(frame[40 * 40 + 10] == f10 && frame[40 * 40 + 30] == f10 && frame[40 * 40 + 31] == f10,
+          "tilt frame: a ring's last row and column not past it");
+    TiltWarp(edge + 1, 1, t, 40, 60, vx, vy, 0, false, frame, 40);      // its first row 2010, its columns 990..1010
+    Check(frame[40 * 40 + 10] == RingPx(edge[1], vx - 10, vy + 10) && frame[40 * 40 + 9] == f10 &&
+          frame[40 * 40 + 30] == RingPx(edge[1], vx + 10, vy + 10) && frame[40 * 40 + 31] == f10,
+          "tilt frame: a ring's first row and column in it, from x0 to x1 - 1");
+    TiltWarp(rings, 2, t, 40, 60, vx, vy, 90, false, frame, 40);       // far, turned: the course exact
+    TiltRow(t, row - 30, &fy, &k, &fade);
+    Check(frame[row * 40 + 39] == RingPx(rings[1], vx - fy, vy + 19 * k), "tilt frame: far pixels turned exactly");
+    static unsigned short wide[60 * 400];                               // a wide frame: the course exact 200 px aside
+    RingView all = { farBits, 64, 64, 2, 0, 0, 4000, 4000 };
+    TiltWarp(&all, 1, t, 400, 60, vx, vy, 90, false, wide, 400);
+    Check(wide[row * 400 + 399] == RingPx(all, vx - fy, vy + 199 * k), "tilt frame: far pixels turned exactly, far aside");
+    TiltWarp(rings, 2, t, 40, 400, vx, vy, 0, false, sky, 40);          // a tall frame: the sky's blue at its top
+    Check(sky[0] == RGB565(170, 205, 238), "tilt frame: the sky's blue high up");
+}
+
 int main()
 {
     VTileInit();
@@ -1039,6 +1122,7 @@ int main()
     Levels();
     Joints();
     JunctionChecks();
+    TiltWarpChecks();
     RECT whole = { 0, 0, 800, 480 };
     // the Russian name when the tile has one (name:ru), else the local one: a frame named so equals one whose tile
     // holds that text as its plain name

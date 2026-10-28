@@ -239,6 +239,14 @@ bool TiltRow(const Tilt& t, double sy, double* fy, double* k, double* fade);   /
 void TiltFog(const Tilt& t, double sy, bool night, unsigned char rgb[3]);   // the fog's colour at a screen row
 bool TiltClip(const Tilt& t, double* x0, double* y0, double* x1, double* y1);   // a flat line cut to the seen part
 
+// ring.cpp: the third person's frame out of the map's rings. A ring: a square canvas that wraps (a world px of the
+// view's zoom at ((wx >> shift) mod size, (wy >> shift) mod size)), top: its top row (a DIB's: stride negative), the part
+// loaded [x0, x1) x [y0, y1) in the view zoom's world px
+struct RingView { const unsigned short* top; int stride, size, shift; int x0, y0, x1, y1; };
+unsigned short Blend565(unsigned short a, unsigned short b, int alpha32);   // a to b by alpha / 32
+void TiltWarp(const RingView* rings, int n, const Tilt& t, int w, int h, double vx, double vy, double angleDeg, bool night,
+              unsigned short* dst, int dstride);   // rings: the first that has a pixel gives it; dst: the top row
+
 // junction.cpp: the junction card (the user 2026-10-28, on in the settings) - the route round a complex maneuver on the
 // map turned so the way in points up
 bool JunctionComplex(const char* osrmType);   // a fork, a ramp, a roundabout, a merge
