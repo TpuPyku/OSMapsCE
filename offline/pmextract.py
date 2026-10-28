@@ -215,6 +215,9 @@ def latest_build(get=http_get):
     return SERVER + json.loads(get(BUILDS))[-1]['key']
 
 
-if __name__ == '__main__':
-    a = sys.argv[1:]
+def main(a):
     extract(http_bytes(a[6] if len(a) > 6 else latest_build()), tuple(map(float, a[0:4])), int(a[4]), a[5], keep=slim)
+
+
+if __name__ == '__main__':
+    main(sys.argv[1:])

@@ -181,6 +181,43 @@ class Tools(unittest.TestCase):
         tile = pb(3, body[:-2] + numbers + body[-2:])   # (before the version, the layer's last 2 bytes)
         self.assertEqual(mvt_kinds(pmextract.slim(tile)), {'pois': ['fuel']})
 
+    def test_slim_exact_bytes(self):
+        """The slim layer byte for byte: the kept features as they were, the layer's length again (a long one: a
+        varint of 2 bytes), "kind" found among other keys; a layer all dropped: gone."""
+        def layer(kinds, keep):   # keys: name, kind; each feature: its name (value 0) and its kind
+            body = pb(1, b'landuse') + pb(3, b'name') + pb(3, b'kind') + pb(4, pb(1, b'x' * 3))
+            body += b''.join(pb(4, pb(1, k.encode())) for k in kinds)
+            for i in keep:
+                body += pb(2, pb(2, bytes([0, 0, 1, i + 1])) + pb(3, 3) + pb(4, bytes([9, 2, 2])))
+            return pb(3, body + pb(15, 2))
+        kinds = ['wood', 'park'] * 40                      # 80 features, the layer > 127 bytes
+        got = pmextract.slim(layer(kinds, range(80)))
+        self.assertEqual(got, layer(kinds, range(1, 80, 2)))
+        self.assertGreater(len(got), 300)
+        self.assertEqual(pmextract.slim(layer(['wood'], [0])), b'')
+        self.assertEqual(pmextract.slim(mvt({'landuse': ['wood', 'farmland']})), b'')
+
+    def test_protobuf_fields(self):
+        import struct
+        msg = (bytes([3 << 3 | 1]) + struct.pack('<d', 2.5) + bytes([4 << 3 | 5]) + struct.pack('<f', 1.5) +
+               pb(5, 300) + pb(6, b'ab'))
+        self.assertEqual(list(pmextract.fields(msg)), [(3, struct.pack('<d', 2.5)), (4, struct.pack('<f', 1.5)),
+                                                        (5, 300), (6, b'ab')])
+        self.assertEqual(pmextract.length_field(3, b'z' * 200), bytes([26, 200, 1]) + b'z' * 200)
+        self.assertEqual(list(pmextract.fields(pb(7, 128))), [(7, 128)])                     # (0x80 0x01: 128 itself)
+        self.assertEqual(pmextract.length_field(3, b'z' * 128), bytes([26, 0x80, 1]) + b'z' * 128)
+
+    def test_pmextract_command_line(self):
+        import unittest.mock
+        asked = []
+        patch = unittest.mock.patch.object
+        with patch(pmextract, 'extract', lambda *a, **k: asked.append((a, k))), \
+                patch(pmextract, 'http_bytes', lambda url: url), patch(pmextract, 'latest_build', lambda: 'newest'):
+            pmextract.main(['1', '2', '3', '4', '15', 'out.vtp'])
+            pmextract.main(['1', '2', '3', '4', '15', 'out.vtp', 'archive'])
+        self.assertEqual(asked[0], (('newest', (1.0, 2.0, 3.0, 4.0), 15, 'out.vtp'), {'keep': pmextract.slim}))
+        self.assertEqual(asked[1][0][0], 'archive')
+
     def test_pmtiles_extract_by_bbox(self):
         src = os.path.join(self.tmp, 'planet.pmtiles')
         inside = {(0, 0, 0): b'world', (5, 20, 10): b'samara', (5, 21, 10): b'east'}
