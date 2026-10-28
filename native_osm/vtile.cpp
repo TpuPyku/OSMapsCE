@@ -858,7 +858,47 @@ static bool LineRoom(int pn)   // s_line holds pn points
 }
 
 // One part of a line in whole pixels, points closer than 2 px to the last one left out (but the end)
-static void StrokePart(HDC dc, const VTile& t, const Xf& xf, const Feat& f, int pi)
+static void Reverse(POINT* p, int m)
+{
+    for (int i = 0, j = m - 1; i < j; i++, j--) {
+        POINT q = p[i];
+        p[i] = p[j];
+        p[j] = q;
+    }
+}
+
+// The line's start cut by trim px; the points left
+static int TrimStart(POINT* p, int m, int trim)
+{
+    int i = 0;
+    for (; i + 1 < m; i++) {
+        int dx = p[i + 1].x - p[i].x, dy = p[i + 1].y - p[i].y;
+        double len = sqrt((double)(dx * dx + dy * dy));
+        if (len > trim) {
+            p[i].x += (int)floor(dx * trim / len + 0.5);
+            p[i].y += (int)floor(dy * trim / len + 0.5);
+            break;
+        }
+        trim -= (int)len;
+    }
+    memmove(p, p + i, (m - i) * sizeof(POINT));
+    return m - i;
+}
+
+// Both ends cut by trim px (a bridge's casing and shadow: its pen's round caps end at its ends - no casing across the
+// road it continues, the user 2026-10-28)
+static int TrimEnds(POINT* p, int m, int trim)
+{
+    if (!trim)
+        return m;
+    m = TrimStart(p, m, trim);
+    Reverse(p, m);
+    m = TrimStart(p, m, trim);
+    Reverse(p, m);
+    return m;
+}
+
+static void StrokePart(HDC dc, const VTile& t, const Xf& xf, const Feat& f, int pi, int trim)
 {
     int p0 = t.parts[(f.part0 + pi) * 2], pn = t.parts[(f.part0 + pi) * 2 + 1];
     if (!LineRoom(pn))
@@ -875,18 +915,19 @@ static void StrokePart(HDC dc, const VTile& t, const Xf& xf, const Feat& f, int 
         s_line[m].y = y;
         m++;
     }
+    m = TrimEnds(s_line, m, trim);
     if (m > 1)
         Polyline(dc, s_line, m);
 }
 
-// The lines of kind k and of a level with a pen w px wide
-static void StrokeKind(HDC dc, const VTile& t, const Xf& xf, int k, int level, int w, COLORREF color)
+// The lines of kind k and of a level with a pen w px wide (their ends cut by trim px)
+static void StrokeKind(HDC dc, const VTile& t, const Xf& xf, int k, int level, int w, COLORREF color, int trim)
 {
     HPEN pen = CreatePen(PS_SOLID, w, color);
     HGDIOBJ op = SelectObject(dc, pen);
     for (int fi = NextShown(t, xf, k, w, 0); fi < t.nf; fi = NextShown(t, xf, k, w, fi + 1))
         for (int pi = 0; pi < t.f[fi].nparts && t.f[fi].level == level; pi++)
-            StrokePart(dc, t, xf, t.f[fi], pi);
+            StrokePart(dc, t, xf, t.f[fi], pi, trim);
     SelectObject(dc, op);
     DeleteObject(pen);
 }
@@ -902,16 +943,21 @@ static COLORREF LineColor(const Style& s, const unsigned char* bg, bool casing, 
     return RGB(s.r, s.g, s.b);
 }
 
-// The lines of a level, kind by kind: the casings (2 px wider, of the cased kinds and every bridge; none under the
-// ground), or the lines themselves
+static bool Cased(const Style& s, int level)   // the cased kinds and every bridge; none under the ground
+{
+    return level > 0 || (s.cased && level == 0);
+}
+
+// The lines of a level, kind by kind: the casings (2 px wider: Cased), or the lines themselves
 static void StrokeLines(HDC dc, const VTile& t, const Xf& xf, int z, const Style* pal, const unsigned char* bg,
                         int level, bool casing)
 {
     for (int k = kFirstLine; k < K_PLACE; k++) {
         const Style& sty = pal[k];
-        if ((casing && !(level > 0 || (sty.cased && level == 0))) || z < MinZoom(k))
+        if ((casing && !Cased(sty, level)) || z < MinZoom(k))
             continue;
-        StrokeKind(dc, t, xf, k, level, LineWidth(sty.width, z) + (casing ? 2 : 0), LineColor(sty, bg, casing, level));
+        int w = LineWidth(sty.width, z) + (casing ? 2 : 0);
+        StrokeKind(dc, t, xf, k, level, w, LineColor(sty, bg, casing, level), casing && level > 0 ? w / 3 : 0);
     }
 }
 
@@ -926,7 +972,7 @@ static void StrokeShadows(HDC dc, const VTile& t, const Xf& xf, int z, const Sty
         Xf sh = xf;
         sh.ox -= off * 16;
         sh.oy -= off * 16;
-        StrokeKind(dc, t, sh, k, 1, w + 2, RGB(c[0], c[1], c[2]));
+        StrokeKind(dc, t, sh, k, 1, w + 2, RGB(c[0], c[1], c[2]), off + (w + 2) / 2);
     }
 }
 

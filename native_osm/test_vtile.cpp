@@ -681,7 +681,8 @@ static void Levels()
     Check(Row(ia, 40, 120, 150, shadow) == 6 && Px(ia, 138, 40) == shadow,
           "the shadow: the bridge's casing wide, 3/4 of its width aside");
     Check(Column(ia, 136, 123, 134, shadow) == 11, "the shadow over the road under the bridge, its casing too");
-    Check(Px(ia, 136, 1) != shadow && Px(ia, 136, 2) == shadow, "the shadow shifted down too (south-east)");
+    Check(Px(ia, 136, 12) != shadow && Px(ia, 136, 13) == shadow,
+          "the shadow shifted down too (south-east), its ends cut back to the bridge's");
     Check(Row(ia, 40, 50, 80, shadow) == 0 && Column(ia, 20, 116, 150, shadow) == 0,
           "no shadow of the tunnel, of the road on the ground");
     Check(VTileRender(b, pmt, np, &ib) && SameImage(ia, ib), "Protomaps' bridge and tunnel as OpenMapTiles'");
@@ -759,6 +760,60 @@ static void TiltChecks()
     Check(TiltClip(t, &x0, &y0, &x1, &y1) && Near(y1, -180), "tilt: a line 1 px deep cut at the fog");
     x0 = -10, y0 = -200, x1 = 10, y1 = -200;
     Check(!TiltClip(t, &x0, &y0, &x1, &y1), "tilt: a line across beyond the fog: none");
+}
+
+// A road on the ground, then its bridge, then the ground again, in one line at y 64 (the joints at x 100 and 180): the
+// bridge's casing along its sides only - no casing across the road at the joints (the user 2026-10-28: the bridge one
+// with its road)
+static int MakeJoint(unsigned char* out)
+{
+    static const char* kKeys[] = { "class", "brunnel" };
+    static const char* kRows[3][2] = { { "primary", NULL }, { "primary", "bridge" }, { "primary", NULL } };
+    static const int kX[4] = { 0, 100, 180, 256 };
+    Pbw tile = { { 0 }, 0 };
+    Keyed l;
+    BeginKeys(l, "transportation", kKeys, 2);
+    for (int i = 0; i < 3; i++) {   // (the bridge: a first piece of 2 px, shorter than its casing's cut)
+        unsigned int g[8] = { 9, Zz(kX[i] * 16), Zz(64 * 16), 2 | 2 << 3, Zz(2 * 16), 0, Zz((kX[i + 1] - kX[i] - 2) * 16), 0 };
+        if (i != 1)
+            HLine(g, kX[i], kX[i + 1], 64);
+        AddVals(l, kRows[i], 2, g, i == 1 ? 8 : 6);
+    }
+    unsigned int dead[6];   // a road on the ground ending in the tile: its casing round its end
+    HLine(dead, 20, 100, 150);
+    AddVals(l, kRows[0], 2, dead, 6);
+    HLine(dead, 200, 204, 200);   // a bridge shorter than its casing's cut
+    AddVals(l, kRows[1], 2, dead, 6);
+    Bytes(tile, 3, l.w.b, l.w.n);
+    memcpy(out, tile.b, tile.n);
+    return tile.n;
+}
+
+static void Joints()
+{
+    static unsigned char d[4096];
+    int n = MakeJoint(d);
+    const unsigned short casing = RGB565(224, 182, 120), road = RGB565(255, 228, 176);
+    MapRequest r = { SRC_OSM, 14, 9900, 5000 };
+    Image im = { 0 };
+    bool ok = VTileRender(r, d, n, &im);
+    int across = 0;
+    for (int x = 94; x < 107; x++)
+        across += Column(im, x, 61, 68, casing) + Column(im, x + 80, 61, 68, casing);
+    Check(ok && across == 0 && Row(im, 64, 90, 190, road) == 100, "a bridge's joints with its road: no casing across");
+    Check(Px(im, 140, 59) == casing && Px(im, 140, 68) == casing, "the bridge's casing along its sides");
+    Check(Row(im, 61, 94, 107, road) == 13 && Row(im, 67, 174, 187, road) == 13,
+          "the bridge's road whole up to its ends, its edges too");
+    Check(Px(im, 104, 150) == casing && Px(im, 103, 150) == road, "a road's end on the ground: its casing round it");
+    Check(Row(im, 59, 88, 112, casing) == 21 && Row(im, 59, 168, 196, casing) == 25,
+          "the bridge's casing cut at its ends only a little (3 px of its top side)");
+    Check(Row(im, 70, 168, 196, RGB565(206, 200, 190)) == 12 && Row(im, 67, 168, 196, RGB565(206, 200, 190)) == 0,
+          "its shadow ends with it: not over the road on the ground after it");
+    int shortCasing = 0;
+    for (int y = 190; y < 211; y++)
+        shortCasing += Row(im, y, 190, 216, casing) + Row(im, y, 190, 216, RGB565(206, 200, 190));
+    Check(shortCasing == 0 && Px(im, 202, 200) == road, "a bridge shorter than its casing's cut: no casing, no shadow");
+    ImageFree(&im);
 }
 
 int main()
@@ -893,6 +948,7 @@ int main()
     Twins();
     Deep();
     Levels();
+    Joints();
     RECT whole = { 0, 0, 800, 480 };
     // the Russian name when the tile has one (name:ru), else the local one: a frame named so equals one whose tile
     // holds that text as its plain name
