@@ -8,6 +8,7 @@
 static const char* const kComplex[] = { "fork", "off ramp", "on ramp", "roundabout", "rotary", "roundabout turn",
                                         "exit roundabout", "exit rotary", "merge" };
 static const int kShownM = 300;   // the card from this far before the maneuver (as the big turn card)
+static const int kCloseZ = 17;    // the zoom before it
 
 bool JunctionComplex(const char* osrmType)
 {
@@ -20,6 +21,13 @@ bool JunctionComplex(const char* osrmType)
 bool JunctionShown(bool on, bool complex, int nextM, bool off)
 {
     return on && complex && !off && nextM <= kShownM;
+}
+
+// The zoom before a complex maneuver (the user 2026-10-28): z17 - the third person's view at its lowest camera -
+// within the card's 300 m, heading-up; else the user's own (closer already: kept)
+int JunctionZoom(int userZ, bool heading, bool complex, int nextM, bool off)
+{
+    return JunctionShown(heading, complex, nextM, off) && userZ < kCloseZ ? kCloseZ : userZ;
 }
 
 // Metres east and north from point a to b (a small piece: the plane at a's latitude)

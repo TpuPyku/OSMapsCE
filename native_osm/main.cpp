@@ -714,7 +714,7 @@ static void PanBy(double dx, double dy)
     g_cfg.follow = FOLLOW_OFF;
 }
 
-static void Zoom(int dz)
+static void ZoomBy(int dz)
 {
     int z = g_cfg.z + dz;
     if (z < 2 || z > 19)
@@ -725,6 +725,35 @@ static void Zoom(int dz)
     g_cfg.z = z;
     WorldToGeo(x * f, y * f, z, &g_cfg.lon, &g_cfg.lat);
     FollowGps();
+}
+
+// Closer before a complex maneuver (junction.cpp JunctionZoom; the user 2026-10-28), back to the user's zoom after it;
+// the user zooming meanwhile keeps theirs for that maneuver
+static int s_autoFrom;        // the user's zoom while the map is closer by itself (0: it is not)
+static int s_autoSkip = -1;   // the maneuver (its point) the user zoomed at
+
+static void AutoZoom()
+{
+    RouteInfo ri;
+    RouteGet(&ri);
+    int user = s_autoFrom ? s_autoFrom : g_cfg.z;
+    bool on = ri.state == ROUTE_ON && g_cfg.follow == FOLLOW_HEADING && ri.shape != s_autoSkip;
+    int want = JunctionZoom(user, on, ri.complex, ri.nextM, ri.off);
+    if (want == g_cfg.z)
+        return;
+    s_autoFrom = want > user ? user : 0;
+    ZoomBy(want - g_cfg.z);
+}
+
+static void Zoom(int dz)   // the user's
+{
+    if (s_autoFrom) {
+        RouteInfo ri;
+        RouteGet(&ri);
+        s_autoSkip = ri.shape;
+        s_autoFrom = 0;
+    }
+    ZoomBy(dz);
 }
 
 // GPS button: off -> north-up (car in the center) -> heading-up (car at the bottom) -> off
@@ -3971,6 +4000,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             RouteGps(s_gps.lon, s_gps.lat, s_gps.speedKmh, s_gps.course);
         }
         if (!s_dragging) {
+            AutoZoom();
             FollowGps();
             Ensure(REQ_AUTO);
         }

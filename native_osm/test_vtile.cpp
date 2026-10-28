@@ -829,6 +829,12 @@ static void JunctionChecks()
     Check(JunctionShown(true, true, 300, false) && !JunctionShown(true, true, 301, false) &&
           !JunctionShown(false, true, 100, false) && !JunctionShown(true, false, 100, false) &&
           !JunctionShown(true, true, 100, true), "junction: on in the settings, complex, within 300 m, on the route");
+    Check(JunctionZoom(15, true, true, 300, false) == 17 && JunctionZoom(16, true, true, 0, false) == 17,
+          "auto zoom: z17 within 300 m of a complex maneuver, heading-up");
+    Check(JunctionZoom(15, true, true, 301, false) == 15 && JunctionZoom(15, false, true, 100, false) == 15 &&
+          JunctionZoom(15, true, false, 100, false) == 15 && JunctionZoom(15, true, true, 100, true) == 15 &&
+          JunctionZoom(18, true, true, 100, false) == 18 && JunctionZoom(17, true, true, 100, false) == 17,
+          "auto zoom: else the user's (farther, north-up, a plain turn, off the route, closer already)");
     // a line north 300 m then east 300 m (at 53 N), the maneuver at the corner (point 3)
     const double la = 53.0, dla = 100 / 110540.0, dlo = 100 / (111320.0 * cos(la * M_PI / 180));
     double ll[] = { 50, la, 50, la + dla, 50, la + 2 * dla, 50, la + 3 * dla, 50 + dlo, la + 3 * dla,

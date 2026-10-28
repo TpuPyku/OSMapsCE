@@ -253,6 +253,7 @@ void TiltWarp(const RingView* rings, int n, const Tilt& t, int w, int h, double 
 // map turned so the way in points up
 bool JunctionComplex(const char* osrmType);   // a fork, a ramp, a roundabout, a merge
 bool JunctionShown(bool on, bool complex, int nextM, bool off);
+int  JunctionZoom(int userZ, bool heading, bool complex, int nextM, bool off);   // z17 before a complex maneuver
 int  JunctionSlice(const double* ll, int np, int at, double beforeM, double afterM, double* out, int cap, int* outAt,
                    double* course);   // lon, lat pairs; outAt: the maneuver's point in out; course: the way in's, degrees
 void JunctionTurn(const unsigned short* src, int sw, int sh, int sstride, double scx, double scy, unsigned short* dst,
