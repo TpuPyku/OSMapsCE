@@ -36,6 +36,7 @@ struct Config {
     int     follow;         // GPS mode: 0 off, 1 north-up, 2 heading-up
     int     night;          // dark map: lightness inverted, dimmed
     int     vector;         // the base map: 0 OSM raster tiles, 1 vector tiles (OpenFreeMap, vtile.cpp)
+    int     junction;       // the junction card before complex maneuvers (junction.cpp; the user 2026-10-28: off by default)
     int     trafficTtlMin;  // traffic image is considered fresh this long
     int     yandexLimit;    // requests per day per traffic provider
     int     twogisLimit;
@@ -182,6 +183,8 @@ struct RouteInfo {
     bool           off;         // off the route, a new one is asked for
     const wchar_t* thenText;    // the turn after the next one (NULL: none)
     int            seg;         // the line's segment the car is on (the rest of the line: from it)
+    bool           complex;     // the next maneuver a fork, a ramp, a roundabout, a merge (the junction card)
+    int            shape;       // its point on the line (RoutePoints)
 };
 void SearchStart(const wchar_t* q, double lon, double lat);
 int  SearchState();
@@ -243,8 +246,10 @@ bool JunctionShown(bool on, bool complex, int nextM, bool off);
 int  JunctionSlice(const double* ll, int np, int at, double beforeM, double afterM, double* out, int cap, int* outAt,
                    double* course);   // lon, lat pairs; outAt: the maneuver's point in out; course: the way in's, degrees
 void JunctionTurn(const unsigned short* src, int sw, int sh, int sstride, double scx, double scy, unsigned short* dst,
-                  int dw, int dh, int dstride, double dcx, double dcy, double courseDeg, unsigned short bg);
-                                // src, dst: their top rows; strides in pixels (a DIB's bottom-up rows: negative)
+                  int dw, int dh, int dstride, double dcx, double dcy, double courseDeg, unsigned short bg, int radius);
+                                // src, dst: their top rows; strides in pixels (a DIB's bottom-up rows: negative);
+                                // radius: the card's round corners (their pixels left as they are)
+int  CornerInset(int radius, int y, int top, int bottom);   // a rounded rectangle's row y: px in from each side
 
 // cache.cpp - decoded images in memory + OSM tiles on disk in <exe>\Cache
 struct CacheEntry {

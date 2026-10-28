@@ -286,6 +286,7 @@ static RoutePlan s_plan;
 struct Maneuver {
     int     shape;          // its point on the line
     int     turn;           // RouteInfo::turn
+    bool    complex;        // a fork, a ramp, a roundabout, a merge (JunctionComplex: the junction card)
     wchar_t text[112];
 };
 
@@ -728,6 +729,7 @@ static void OnRoute(const char* body, int k)
             Maneuver& d = man[s_nm++];
             d.shape = at;
             d.turn = Turn(m, type, mod, stop);
+            d.complex = JunctionComplex(type);
             Instruction(st, m, type, mod, stop, d.text, 112);
             if (stop && !strcmp(type, "arrive") && s_nViaShape < kMaxVia)
                 s_viaShape[s_nViaShape++] = at;
@@ -898,6 +900,8 @@ void RouteGet(RouteInfo* o)
         if (s_cum[s_man[i].shape] > s_along + 5 || i == s_nm - 1) {
             o->text = s_man[i].text;
             o->turn = s_man[i].turn;
+            o->complex = s_man[i].complex;
+            o->shape = s_man[i].shape;
             o->nextM = (int)(s_cum[s_man[i].shape] - s_along);
             if (o->nextM < 0)
                 o->nextM = 0;

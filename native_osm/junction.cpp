@@ -79,22 +79,38 @@ int JunctionSlice(const double* ll, int np, int at, double beforeM, double after
     if (pa > 0)
         PutPart(out, n, cap, ll + a * 2, ll + (a + 1) * 2, pa);
     *outAt = at - b + (pb > 0 ? 1 : 0);
-    int from = at > 0 ? at - 1 : 0;   // the way in: the piece before the maneuver (at the start: the first one)
+    // the way in: from the piece's start to the maneuver - the approach, not its last bend (a roundabout's entry);
+    // at the line's start: its first piece
     double e, nn;
-    Metres(ll + from * 2, ll + (from + 1 < np ? from + 1 : from) * 2, &e, &nn);
+    if (*outAt > 0 && *outAt < n)
+        Metres(out, out + *outAt * 2, &e, &nn);
+    else
+        Metres(ll, ll + (np > 1 ? 2 : 0), &e, &nn);
     *course = atan2(e, nn) * 180 / M_PI;
     if (*course < 0)
         *course += 360;
     return n;
 }
 
+// A rounded rectangle's (rows top..bottom - 1) row y: how far in from each side it starts (the circle's, by the pixel
+// centres); also main.cpp's Darken
+int CornerInset(int radius, int y, int top, int bottom)
+{
+    int dy = y < top + radius ? top + radius - y : y >= bottom - radius ? y - (bottom - radius - 1) : 0;
+    if (dy <= 0)
+        return 0;
+    double d = dy - 0.5;
+    return (int)(radius - sqrt(radius * radius - d * d) + 0.5);
+}
+
 void JunctionTurn(const unsigned short* src, int sw, int sh, int sstride, double scx, double scy, unsigned short* dst,
-                  int dw, int dh, int dstride, double dcx, double dcy, double courseDeg, unsigned short bg)
+                  int dw, int dh, int dstride, double dcx, double dcy, double courseDeg, unsigned short bg, int radius)
 {
     double a = courseDeg * M_PI / 180, ca = cos(a), sa = sin(a);
     for (int y = 0; y < dh; y++) {
         double sy = y - dcy;
-        for (int x = 0; x < dw; x++) {
+        int in = CornerInset(radius, y, 0, dh);
+        for (int x = in; x < dw - in; x++) {
             double sx = x - dcx;   // the card's offset -> the map's: turned by the course (as main.cpp RotateRing)
             int px = (int)floor(sx * ca - sy * sa + scx + 0.5), py = (int)floor(sx * sa + sy * ca + scy + 0.5);
             dst[y * dstride + x] = px >= 0 && py >= 0 && px < sw && py < sh ? src[py * sstride + px] : bg;

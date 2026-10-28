@@ -845,14 +845,21 @@ static void JunctionChecks()
     for (int i = 0; i < 32; i++)
         out[i] = -1;
     n = JunctionSlice(ll, 7, 3, 110, 70, out, 2, &at, &course);
-    Check(n == 2 && out[4] == -1 && out[5] == -1, "junction: no more points than room for");
+    Check(n == 2 && out[4] == -1 && out[5] == -1 && fabs(course) < 0.01,
+          "junction: no more points than room for (the maneuver's left out: the line's first piece's course)");
     n = JunctionSlice(ll, 7, 1, 110, 70, out, 16, &at, &course);
     Check(n == 3 && at == 1 && out[0] == 50 && out[1] == la && fabs(course) < 0.01,
           "junction: less than 110 m from the line's start: from the start");
     n = JunctionSlice(ll, 7, 4, 110, 70, out, 16, &at, &course);
-    Check(fabs(course - 90) < 0.01 && n == 4 && at == 2, "junction: the way in the piece before the maneuver (east)");
+    double want4 = atan2(100 * cos((la + 3 * dla) * M_PI / 180) / cos(la * M_PI / 180), 10.0) * 180 / M_PI;
+    Check(fabs(course - want4) < 0.05 && n == 4 && at == 2,
+          "junction: the way in from 110 m before to the maneuver (the approach, not its last bend)");
     n = JunctionSlice(ll + 4, 5, 0, 110, 70, out, 16, &at, &course);   // from the corner's point before: north, then east
     Check(fabs(course) < 0.01, "junction: at the start the course of the first piece, not of the next");
+    n = JunctionSlice(ll + 6, 4, 0, 110, 70, out, 16, &at, &course);   // from the corner east
+    Check(fabs(course - 90) < 0.05, "junction: at the start of a line going east: 90");
+    n = JunctionSlice(ll + 8, 2, 0, 110, 70, out, 16, &at, &course);
+    Check(n == 2 && fabs(course - 90) < 0.05, "junction: a line of two points");
     double one[2] = { 50, la };
     n = JunctionSlice(one, 1, 0, 110, 70, out, 16, &at, &course);
     Check(n == 1 && at == 0 && course == 0, "junction: a line of one point");
@@ -864,26 +871,38 @@ static void JunctionChecks()
     unsigned short src[16], dst[4];
     for (int i = 0; i < 16; i++)
         src[i] = (unsigned short)i;
-    JunctionTurn(src, 4, 4, 4, 2, 2, dst, 2, 2, 2, 1, 1, 90, 0xFFFF);   // up-left on the card: north-east on the map
+    JunctionTurn(src, 4, 4, 4, 2, 2, dst, 2, 2, 2, 1, 1, 90, 0xFFFF, 0);   // up-left on the card: north-east on the map
     Check(dst[0] == src[1 * 4 + 3] && dst[1] == src[2 * 4 + 3] && dst[2] == src[1 * 4 + 2] && dst[3] == src[2 * 4 + 2],
           "junction: the canvas turned into the card (a course of 90: east up)");
     unsigned short flip[16], up[4];                                        // rows bottom-up (a DIB's): negative strides
     for (int i = 0; i < 16; i++)
         flip[i] = src[(3 - i / 4) * 4 + i % 4];
-    JunctionTurn(flip + 12, 4, 4, -4, 2, 2, up + 2, 2, 2, -2, 1, 1, 90, 0xFFFF);
+    JunctionTurn(flip + 12, 4, 4, -4, 2, 2, up + 2, 2, 2, -2, 1, 1, 90, 0xFFFF, 0);
     Check(up[2] == dst[0] && up[3] == dst[1] && up[0] == dst[2] && up[1] == dst[3], "junction: bottom-up rows too");
-    JunctionTurn(src, 4, 4, 4, 0, 0, dst, 2, 2, 2, 1, 1, 0, 0xFFFF);
+    JunctionTurn(src, 4, 4, 4, 0, 0, dst, 2, 2, 2, 1, 1, 0, 0xFFFF, 0);
     Check(dst[0] == 0xFFFF && dst[1] == 0xFFFF && dst[2] == 0xFFFF && dst[3] == src[0],
           "junction: off the canvas the background (left, above)");
-    JunctionTurn(src, 4, 4, 4, 3, 3, dst, 2, 2, 2, 0, 0, 0, 0xFFFF);
+    JunctionTurn(src, 4, 4, 4, 3, 3, dst, 2, 2, 2, 0, 0, 0, 0xFFFF, 0);
     Check(dst[0] == src[15] && dst[1] == 0xFFFF && dst[2] == 0xFFFF && dst[3] == 0xFFFF,
           "junction: off the canvas the background (right, below)");
     static unsigned short big[64 * 64];
     for (int i = 0; i < 64 * 64; i++)
         big[i] = (unsigned short)i;
     unsigned short far1;
-    JunctionTurn(big, 64, 64, 64, 32, 62, &far1, 1, 1, 1, 60, 0, 90, 0xFFFF);   // 60 px left on the card: 60 north
+    JunctionTurn(big, 64, 64, 64, 32, 62, &far1, 1, 1, 1, 60, 0, 90, 0xFFFF, 0);   // 60 px left on the card: 60 north
     Check(far1 == big[2 * 64 + 32], "junction: the turn exact 60 px away");
+    static unsigned short card[16 * 16];   // round corners of radius 6: the corners' pixels left as they were
+    for (int i = 0; i < 256; i++)
+        card[i] = 1;
+    JunctionTurn(big, 64, 64, 64, 32, 32, card, 16, 16, 16, 8, 8, 0, 0xFFFF, 6);
+    Check(card[0] == 1 && card[3] == 1 && card[4] != 1 && card[16] == 1 && card[17] == 1 && card[18] != 1 &&
+          card[3 * 16] == 1 && card[4 * 16] != 1 && card[15] == 1 && card[15 * 16] == 1 && card[255] == 1 &&
+          card[15 * 16 + 3] == 1 && card[15 * 16 + 4] != 1 && card[8 * 16] != 1 && card[8 * 16 + 15] != 1 &&
+          card[6 * 16 + 6] != 1, "junction: the card's corners round");
+    Check(CornerInset(6, 0, 0, 16) == 4 && CornerInset(6, 1, 0, 16) == 2 && CornerInset(6, 3, 0, 16) == 1 &&
+          CornerInset(6, 4, 0, 16) == 0 && CornerInset(6, 15, 0, 16) == 4 && CornerInset(6, 11, 0, 16) == 0 &&
+          CornerInset(6, 8, 0, 16) == 0 && CornerInset(0, 0, 0, 16) == 0 && CornerInset(6, 10, 10, 26) == 4,
+          "the rounded corners' inset by the row");
 }
 
 int main()

@@ -186,19 +186,20 @@ static const int   kSetCacheCount = sizeof(kSetCacheMb) / sizeof(kSetCacheMb[0])
 // The settings screen as VestaHome's: a top bar with "back", one panel of rows; a row's stepper (port, speed,
 // cache) applies at once - no "Apply" / "Close". Rows at kSetRow0 + i * kSetRowH.
 enum { S_PORT_PREV, S_PORT_NEXT, S_BAUD_PREV, S_BAUD_NEXT, S_CACHE_PREV, S_CACHE_NEXT, S_MAP_PREV, S_MAP_NEXT,
-       S_SCAN, S_EXIT, S_BACK, S_COUNT };
-enum { kSetRow0 = 76, kSetRowH = 56 };
+       S_JUNC_PREV, S_JUNC_NEXT, S_SCAN, S_EXIT, S_BACK, S_COUNT };
+enum { kSetRow0 = 76, kSetRowH = 50 };   // (6 rows: 50 px each since the junction card's, 2026-10-28)
 static const RECT kSetCtl[S_COUNT] = {
-    { 512, 80, 560, 124 }, { 712, 80, 760, 124 },     // the steppers' arrows: rows 0..3
-    { 512, 136, 560, 180 }, { 712, 136, 760, 180 },
-    { 512, 192, 560, 236 }, { 712, 192, 760, 236 },
-    { 512, 248, 560, 292 }, { 712, 248, 760, 292 },
-    { 616, 304, 760, 348 },                            // find GPS
+    { 512, 79, 560, 123 }, { 712, 79, 760, 123 },     // the steppers' arrows: rows 0..4
+    { 512, 129, 560, 173 }, { 712, 129, 760, 173 },
+    { 512, 179, 560, 223 }, { 712, 179, 760, 223 },
+    { 512, 229, 560, 273 }, { 712, 229, 760, 273 },
+    { 512, 279, 560, 323 }, { 712, 279, 760, 323 },
+    { 616, 329, 760, 373 },                            // find GPS
     { 600, 416, 784, 468 },                            // exit the program
     { 8, 412, 80, 480 },                               // back: VestaHome's, at the bottom left
 };
-static const wchar_t* kSetCaption[S_COUNT] = { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, L"ПОИСК", L"ЗАВЕРШИТЬ",
-                                               NULL };
+static const wchar_t* kSetCaption[S_COUNT] = { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, L"ПОИСК",
+                                               L"ЗАВЕРШИТЬ", NULL };
 
 // ---------------------------------------------------------------- view & tiles
 
@@ -450,6 +451,8 @@ static void LoadFromDisk(const MapRequest* keys, int n, int maxLoads)
     }
 }
 
+static int JunctionKeys(MapRequest* out, double* mx, double* my);
+
 static void Ensure(int mode)
 {
     MapRequest keys[kMaxKeys];
@@ -463,6 +466,11 @@ static void Ensure(int mode)
             parentLoaded = true;
         }
     }
+    double mx, my;   // the junction card's tiles: after the view's (one request at a time: theirs first)
+    n = JunctionKeys(keys, &mx, &my);
+    LoadFromDisk(keys, n, 2);
+    for (int i = 0; i < n; i++)
+        Request(REQ_AUTO, keys[i], CacheFind(keys[i], false));
     if (g_cfg.traffic) {
         n = NeededKeys(TrafficSource(), keys, kMaxKeys);
         for (int i = 0; i < n; i++)
@@ -601,6 +609,8 @@ static void OnSettingsCtl(int id)
     switch (id) {
     case S_MAP_PREV:
     case S_MAP_NEXT:   MapStyleSet(!g_cfg.vector); break;
+    case S_JUNC_PREV:
+    case S_JUNC_NEXT:  g_cfg.junction = !g_cfg.junction; ConfigSave(); break;
     case S_PORT_PREV:  s_setPort = s_setPort > 1 ? s_setPort - 1 : 9; ApplySettings(); break;
     case S_PORT_NEXT:  s_setPort = s_setPort < 9 ? s_setPort + 1 : 1; ApplySettings(); break;
     case S_BAUD_PREV:  s_setBaud = (s_setBaud + kSetBaudCount - 1) % kSetBaudCount; ApplySettings(); break;
@@ -1013,11 +1023,7 @@ static void Darken(HDC dc, const RECT& r, int radius, int shift = 2)
 #endif
     int stride = BackStride();
     for (int y = r.top < 0 ? 0 : r.top; y < r.bottom && y < s_ch; y++) {
-        int inset = 0, dy = y < r.top + radius ? r.top + radius - y : y >= r.bottom - radius ? y - (r.bottom - radius - 1) : 0;
-        if (dy > 0) {
-            double d = dy - 0.5;
-            inset = (int)(radius - sqrt(radius * radius - d * d) + 0.5);
-        }
+        int inset = CornerInset(radius, y, r.top, r.bottom);
         unsigned short* p = s_backBits + (s_ch - 1 - y) * stride;
         int x1 = r.right - inset > s_cw ? s_cw : r.right - inset;
         for (int x = r.left + inset < 0 ? 0 : r.left + inset; x < x1; x++)
@@ -2135,8 +2141,8 @@ static void DrawCtl(HDC dc, const RECT& r, bool pressed, HFONT font, const wchar
 // A row of the settings panel: label, a muted line under it, a separator under the row.
 static void SetRow(HDC dc, int y, const wchar_t* label, const wchar_t* sub, bool sep)
 {
-    Text(dc, s_fontLabel, kText, 36, y + 6, 500, y + 32, DT_LEFT, label);
-    Text(dc, s_fontSmall, kTextDim, 36, y + 32, 500, y + 54, DT_LEFT, sub);
+    Text(dc, s_fontLabel, kText, 36, y + 3, 500, y + 28, DT_LEFT, label);
+    Text(dc, s_fontSmall, kTextDim, 36, y + 27, 500, y + 48, DT_LEFT, sub);
     if (sep) {
         RECT l = { 24, y + kSetRowH - 2, s_cw - 24, y + kSetRowH };
         HBRUSH b = CreateSolidBrush(kLine);
@@ -2184,7 +2190,7 @@ static void DrawSettings(HDC dc)
     Text(dc, s_fontClock, kText, s_cw - 160, 0, s_cw - 16, 56, DT_RIGHT, s);
     BackDisc(dc, s_setPressed == S_BACK);
 
-    RECT panel = { 16, 64, s_cw - 16, 408 };
+    RECT panel = { 16, 64, s_cw - 16, 412 };
     Tile(dc, panel, kPanel, kPanel, 32);
 
     // the receiver's state, under "GPS port"
@@ -2226,30 +2232,32 @@ static void DrawSettings(HDC dc)
            true);
     Stepper(dc, S_MAP_PREV, S_MAP_NEXT, g_cfg.vector ? L"Вектор" : L"Растр");
 
-    SetRow(dc, kSetRow0 + 4 * kSetRowH, L"Найти GPS", L"перебрать COM1…COM9 и скорости", false);
+    SetRow(dc, kSetRow0 + 4 * kSetRowH, L"Схема развязки", L"перед съездом, развилкой, кольцом", true);
+    Stepper(dc, S_JUNC_PREV, S_JUNC_NEXT, g_cfg.junction ? L"Вкл" : L"Выкл");
+
+    SetRow(dc, kSetRow0 + 5 * kSetRowH, L"Найти GPS", L"перебрать COM1…COM9 и скорости", false);
     DrawCtl(dc, kSetCtl[S_SCAN], s_setPressed == S_SCAN, s_fontLabel, kSetCaption[S_SCAN]);
     DrawCtl(dc, kSetCtl[S_EXIT], s_setPressed == S_EXIT, s_fontLabel, kSetCaption[S_EXIT]);
 
-    // live state of the receiver (the port's own state: under "Порт GPS")
-    _snwprintf(s, 128, L"NMEA: %d строк, с ошибкой %d", s_gps.lines, s_gps.badLines);
-    Text(dc, s_fontSmall, s_gps.lines ? kText : kTextDim, 36, 348, 580, 366, DT_LEFT, s);
-
+    // live state of the receiver (the port's own state: under "Порт GPS"): the lines and the place in one line
     if (s_gps.valid)
-        _snwprintf(s, 128, L"Координаты: %.5f, %.5f  (%d спутн.)", s_gps.lat, s_gps.lon, s_gps.sats);
+        _snwprintf(s, 128, L"NMEA %d (ошибок %d) · %.5f, %.5f · %d спутн.", s_gps.lines, s_gps.badLines, s_gps.lat,
+                   s_gps.lon, s_gps.sats);
     else
-        _snwprintf(s, 128, L"Координат пока нет (%d спутн.)", s_gps.sats);
+        _snwprintf(s, 128, L"NMEA %d (ошибок %d) · координат пока нет · %d спутн.", s_gps.lines, s_gps.badLines,
+                   s_gps.sats);
     s[127] = 0;
-    Text(dc, s_fontSmall, s_gps.valid ? kText : kTextDim, 36, 366, 580, 384, DT_LEFT, s);
+    Text(dc, s_fontSmall, s_gps.valid ? kText : kTextDim, 36, 374, 580, 392, DT_LEFT, s);
 
     if (s_gps.found == 1) {
         _snwprintf(s, 128, L"Найден GPS: %s %lu, настройки сохранены", s_gps.port, s_gps.baud);
-        Text(dc, s_fontSmall, RGB(120, 220, 120), 36, 384, 580, 402, DT_LEFT, s);
+        Text(dc, s_fontSmall, RGB(120, 220, 120), 36, 392, 580, 410, DT_LEFT, s);
     } else if (s_gps.found == -1) {
-        Text(dc, s_fontSmall, kTextErr, 36, 384, 580, 402, DT_LEFT, L"GPS не найден на COM1..COM9");
+        Text(dc, s_fontSmall, kTextErr, 36, 392, 580, 410, DT_LEFT, L"GPS не найден на COM1..COM9");
     } else {   // the last line as it came (no fix yet), or the hint
         MultiByteToWideChar(CP_ACP, 0, s_gps.last, -1, s, 128);
         s[127] = 0;
-        Text(dc, s_fontSmall, kTextDim, 36, 384, 580, 402, DT_LEFT,
+        Text(dc, s_fontSmall, kTextDim, 36, 392, 580, 410, DT_LEFT,
              s[0] && !s_gps.valid ? s : L"Нет строк - не тот порт. Строки с ошибкой - не та скорость.");
     }
 
@@ -2341,10 +2349,165 @@ static void DrawTurn(HDC dc, const RECT& r, int turn, COLORREF col = kText)
 // The turn (the user 2026-10-26): the big card only before it - 300 m or 20 s at the speed, whichever is more -
 // narrower than the mockup's; the rest of the time a compact one, about a quarter of it: the sign and the distance.
 // Off the route: the compact card says so in red. Not on (being laid, not found, arrived): a line card.
+// ---- the junction card (junction.cpp; the user 2026-10-28, on in the settings): under the big turn card before a
+// complex maneuver, the map at z17 round it turned so the way in points up, the route on it. Built only when what it
+// shows changes (the maneuver, its tiles coming, night) - through a 512 x 512 canvas freed right after - and copied
+// into each frame.
+enum { kJunZ = 17, kJunCanvas = 512, kJunW = 242, kJunH = 142, kJunTiles = 9 };
+static unsigned short* s_junCard;   // kJunW x kJunH, rows top-down
+static DWORD s_junSig;
+
+// The card's tiles (z17 round the next maneuver) while it is shown, and the maneuver's world pixel; their count
+static int JunctionKeys(MapRequest* out, double* mx, double* my)
+{
+    RouteInfo ri;
+    RouteGet(&ri);
+    const double* ll;
+    int np = RoutePoints(&ll), n = 0, h = kJunCanvas / 2;
+    if (!JunctionShown(g_cfg.junction != 0, ri.complex, ri.nextM, ri.off) || ri.shape >= np)
+        return 0;
+    GeoToWorld(ll[ri.shape * 2], ll[ri.shape * 2 + 1], kJunZ, mx, my);
+    for (int ty = (int)floor((*my - h) / TILE); ty <= (int)floor((*my + h - 1) / TILE); ty++)
+        for (int tx = (int)floor((*mx - h) / TILE); tx <= (int)floor((*mx + h - 1) / TILE) && n < kJunTiles; tx++) {
+            MapRequest k = { SRC_OSM, kJunZ, tx, ty };
+            out[n++] = k;
+        }
+    return n;
+}
+
+static DWORD JunctionSig(const MapRequest* keys, int n)
+{
+    RouteInfo ri;
+    RouteGet(&ri);
+    const double* ll;
+    RoutePoints(&ll);
+    DWORD h = Mix(Mix(Mix(2166136261u, ri.shape), (DWORD)(size_t)ll), g_cfg.night);
+    for (int i = 0; i < n; i++) {
+        CacheEntry* e = CacheFind(keys[i], false);
+        h = Mix(h, e ? e->fetchTick + 1 : 0);
+    }
+    return h;
+}
+
+// The route round the maneuver on the canvas: white edge, the accent inside, an arrow at its end; the way in's course
+static double JunctionRoute(HDC cdc, double ox, double oy)
+{
+    RouteInfo ri;
+    RouteGet(&ri);
+    const double* ll;
+    int np = RoutePoints(&ll), at;
+    double pts[2 * 64], course;
+    int n = JunctionSlice(ll, np, ri.shape, 110, 70, pts, 64, &at, &course);
+    POINT p[64];
+    for (int i = 0; i < n; i++) {
+        double wx, wy;
+        GeoToWorld(pts[i * 2], pts[i * 2 + 1], kJunZ, &wx, &wy);
+        p[i].x = Round(wx - ox);
+        p[i].y = Round(wy - oy);
+    }
+    for (int pass = 0; pass < 2 && n > 1; pass++) {
+        HPEN pen = CreatePen(PS_SOLID, pass ? 9 : 14, pass ? kOrange : RGB(255, 255, 255));
+        HGDIOBJ op = SelectObject(cdc, pen);
+        Polyline(cdc, p, n);
+        SelectObject(cdc, op);
+        DeleteObject(pen);
+    }
+    if (n > 1) {   // the arrow's head along the last piece
+        double a = atan2((double)(p[n - 1].y - p[n - 2].y), (double)(p[n - 1].x - p[n - 2].x));
+        POINT h[3];
+        for (int k = 0; k < 3; k++) {
+            double ang = a + (k == 0 ? 0 : k == 1 ? 2.4 : -2.4), len = k == 0 ? 14 : 16;
+            h[k].x = p[n - 1].x + Round(cos(ang) * len);
+            h[k].y = p[n - 1].y + Round(sin(ang) * len);
+        }
+        HBRUSH b = CreateSolidBrush(kOrange);
+        HPEN pen = CreatePen(PS_SOLID, 2, RGB(255, 255, 255));
+        HGDIOBJ ob = SelectObject(cdc, b), op = SelectObject(cdc, pen);
+        Polygon(cdc, h, 3);
+        SelectObject(cdc, op);
+        SelectObject(cdc, ob);
+        DeleteObject(pen);
+        DeleteObject(b);
+    }
+    return course;
+}
+
+// The card's picture made again: the tiles there and the route on a canvas, turned into s_junCard
+static void JunctionBuild(HDC dc, const MapRequest* keys, int n, double mx, double my)
+{
+    Image canvas = { 0 };
+    unsigned short* bits = ImageCreate(kJunCanvas, kJunCanvas, &canvas);
+    if (!bits)
+        return;
+    HDC cdc = CreateCompatibleDC(dc), tdc = CreateCompatibleDC(dc);
+    HGDIOBJ oc = SelectObject(cdc, canvas.bmp);
+    RECT all = { 0, 0, kJunCanvas, kJunCanvas };
+    HBRUSH bg = CreateSolidBrush(kMapBg);
+    FillRect(cdc, &all, bg);
+    DeleteObject(bg);
+    double ox = mx - kJunCanvas / 2, oy = my - kJunCanvas / 2;
+    for (int i = 0; i < n; i++) {
+        CacheEntry* e = CacheFind(keys[i], false);
+        if (!e)
+            continue;
+        HGDIOBJ ot = SelectObject(tdc, e->img.bmp);
+        BitBlt(cdc, Round(keys[i].x * TILE - ox), Round(keys[i].y * TILE - oy), TILE, TILE, tdc, 0, 0, SRCCOPY);
+        SelectObject(tdc, ot);
+    }
+    double course = JunctionRoute(cdc, ox, oy);
+#ifndef UNDER_CE
+    GdiFlush();
+#endif
+    JunctionTurn(bits + (kJunCanvas - 1) * kJunCanvas, kJunCanvas, kJunCanvas, -kJunCanvas, kJunCanvas / 2,
+                 kJunCanvas / 2, s_junCard, kJunW, kJunH, kJunW, kJunW / 2, kJunH * 0.62, course, RGB565(228, 226, 222), 0);
+    SelectObject(cdc, oc);
+    DeleteDC(cdc);
+    DeleteDC(tdc);
+    ImageFree(&canvas);
+}
+
+static void JunctionFree()
+{
+    free(s_junCard);
+    s_junCard = NULL;
+    s_junSig = 0;
+}
+
+// The card under the big turn card (its top at y), or nothing (the card's memory freed)
+static void DrawJunction(HDC dc, int top)
+{
+    MapRequest keys[kJunTiles];
+    double mx, my;
+    int n = JunctionKeys(keys, &mx, &my);
+    if (!n || !s_backBits) {
+        JunctionFree();
+        return;
+    }
+    if (!s_junCard && !(s_junCard = (unsigned short*)malloc(kJunW * kJunH * 2)))
+        return;
+    DWORD sig = JunctionSig(keys, n) | 1;
+    if (sig != s_junSig) {
+        JunctionBuild(dc, keys, n, mx, my);
+        s_junSig = sig;
+    }
+    RECT c = { 16, top, 16 + kJunW + 8, top + kJunH + 8 };
+    Card(dc, c, 20);
+#ifndef UNDER_CE
+    GdiFlush();
+#endif
+    int stride = BackStride(), x0 = c.left + 4, y0 = c.top + 4;
+    for (int y = 0; y < kJunH && y0 + y < s_ch; y++) {
+        int in = CornerInset(16, y, 0, kJunH);
+        memcpy(s_backBits + (s_ch - 1 - (y0 + y)) * stride + x0 + in, s_junCard + y * kJunW + in, (kJunW - 2 * in) * 2);
+    }
+}
+
 static void DrawGuide(HDC dc)
 {
     RouteInfo ri;
     RouteGet(&ri);
+    if (ri.state != ROUTE_ON)
+        JunctionFree();
     if (ri.state == ROUTE_NONE)
         return;
     if (ri.state != ROUTE_ON) {
@@ -2363,6 +2526,7 @@ static void DrawGuide(HDC dc)
     double soonM = s_gps.speedKmh / 3.6 * 20;
     bool big = !ri.off && ri.nextM <= (soonM > 300 ? soonM : 300);
     if (!big) {   // compact: the sign in the accent's square and the distance
+        JunctionFree();
         RECT p = { 16, 56, ri.off ? 330 : 182, 112 };
         Card(dc, p, 18);
         RECT sq = { 22, 62, 66, 106 };
@@ -2374,6 +2538,7 @@ static void DrawGuide(HDC dc)
     }
     // big: 250 px wide
     RECT p = { 16, 56, 266, ri.thenText ? 222 : 188 };
+    DrawJunction(dc, p.bottom + 8);   // (under the card: its own pixels first, the card's GDI after)
     Card(dc, p, 22);
     RECT sq = { 28, 68, 96, 136 };
     Tile(dc, sq, kOrange, kOrange, 32);

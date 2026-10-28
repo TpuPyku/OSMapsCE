@@ -169,6 +169,7 @@ static void ConfigSet(const char* key, const char* val)
     else if (!strcmp(key, "hide_taskbar")) g_cfg.hideTaskbar = atoi(val) != 0;
     else if (!strcmp(key, "night"))        g_cfg.night = atoi(val) != 0;
     else if (!strcmp(key, "vector"))       g_cfg.vector = atoi(val) != 0;
+    else if (!strcmp(key, "junction"))     g_cfg.junction = atoi(val) != 0;
     else if (!strcmp(key, "map_x"))        g_cfg.mapX = atoi(val);
     else if (!strcmp(key, "map_y"))        g_cfg.mapY = atoi(val);
     else if (!strcmp(key, "map_w"))        g_cfg.mapW = Clamp(atoi(val), 100, 650);
@@ -237,6 +238,8 @@ void ConfigSave()
         "night=%d\r\n"
         "; the base map: 0 OSM raster tiles, 1 vector tiles (OpenFreeMap)\r\n"
         "vector=%d\r\n"
+        "; the junction card before a fork, a ramp, a roundabout: 1 on\r\n"
+        "junction=%d\r\n"
         "; minutes a traffic overlay stays fresh (auto refresh period)\r\n"
         "traffic_ttl=%d\r\n"
         "; max traffic requests per day per provider\r\n"
@@ -269,7 +272,7 @@ void ConfigSave()
         "map_w=%d\r\n"
         "map_h=%d\r\n",
         g_cfg.lon, g_cfg.lat, g_cfg.z, g_cfg.traffic, kTrafficNames[g_cfg.trafficSrc],
-        g_cfg.follow, g_cfg.night, g_cfg.vector, g_cfg.trafficTtlMin, g_cfg.yandexLimit, g_cfg.twogisLimit,
+        g_cfg.follow, g_cfg.night, g_cfg.vector, g_cfg.junction, g_cfg.trafficTtlMin, g_cfg.yandexLimit, g_cfg.twogisLimit,
         g_cfg.autoReserve, g_cfg.cacheMb, g_cfg.cacheKb, g_cfg.cacheDays, g_cfg.reqDay,
         g_cfg.yandexCount, g_cfg.twogisCount, g_cfg.osmCount, g_cfg.apiLimit, g_cfg.apiCount,
         g_cfg.gpsEnabled, port, g_cfg.gpsBaud, kill, g_cfg.hideTaskbar,
