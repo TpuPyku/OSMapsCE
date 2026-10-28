@@ -2,6 +2,7 @@
 
     python -m unittest discover -s offline/test      (quality.bat runs it under coverage)
 """
+import math
 import os
 import pathlib
 import shutil
@@ -222,7 +223,7 @@ class Tools(unittest.TestCase):
         src = os.path.join(self.tmp, 'planet.pmtiles')
         inside = {(0, 0, 0): b'world', (5, 20, 10): b'samara', (5, 21, 10): b'east'}
         same = {(5, 20, 11): b'sea', (5, 21, 11): b'sea'}            # identical neighbours: one entry, a run
-        outside = {(5, 2, 2): b'far'}
+        outside = {(5, 2, 2): b'far', (6, 41, 21): b'deeper'}     # (z6: past the max zoom asked)
         filler = {(12, x, y): b'%d,%d' % (x, y) for x in range(100, 170) for y in range(100, 175)}   # leaf dirs
         make_pmtiles(src, {**inside, **same, **outside, **filler})
         data = read(src)
@@ -237,6 +238,156 @@ class Tools(unittest.TestCase):
         _, _, got = pack_tiles(out)
         self.assertEqual(got, {**inside, **same})                 # ungzipped, the run's tiles both, nothing else
         self.assertLess(len(asked), 12)                             # header, directories, a few merged data ranges
+
+    def test_pmtiles_extract_parallel_with_progress(self):
+        """The user 2026-10-28: the maps came 'very slowly, if at all' - each range of Protomaps' server takes seconds:
+        the directories and the data fetched 8 at a time, each directory once, the data in pieces of at most kMaxGroup;
+        the progress told from the start, with its stage."""
+        import threading
+        import time
+        import unittest.mock
+        src = os.path.join(self.tmp, 'planet.pmtiles')
+        tiles = {(12, x, y): b'%d,%d' % (x, y) * 20 for x in range(100, 170) for y in range(100, 175)}
+        make_pmtiles(src, tiles)
+        data = read(src)
+        asked, lock, now = [], threading.Lock(), {'in': 0, 'max': 0}
+
+        def get_bytes(offset, length):                              # slow, as Protomaps' server: concurrency counted
+            with lock:
+                asked.append((offset, length))
+                now['in'] += 1
+                now['max'] = max(now['max'], now['in'])
+            time.sleep(0.02)
+            with lock:
+                now['in'] -= 1
+            return data[offset:offset + length]
+        steps = []
+        out = os.path.join(self.tmp, 'tiles.vtp')
+        n = 1 << 12
+        lon = lambda x: x / n * 360 - 180                           # noqa: E731
+        lat = lambda y: math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * y / n))))   # noqa: E731
+        with unittest.mock.patch.object(pmextract, 'kMaxGroup', 4000):
+            pmextract.extract(get_bytes, (lon(100.5), lat(174.5), lon(169.5), lat(100.5)), 12, out,
+                              lambda part, text: steps.append((part, text)))
+        _, _, got = pack_tiles(out)
+        self.assertEqual({k: v for k, v in got.items() if k[0] == 12}, tiles)
+        self.assertEqual(len(asked), len(set(asked)))               # each directory, each piece: once
+        self.assertGreater(now['max'], 1)                           # 8 at a time
+        self.assertLessEqual(now['max'], 8)
+        self.assertTrue(steps[0][0] == 0 and 'каталог' in steps[0][1], steps[:2])   # told before any data
+        self.assertEqual(steps[-1][0], 1.0)
+        self.assertTrue(all(a[0] <= b[0] for a, b in zip(steps, steps[1:])))
+        self.assertTrue(any('МБ' in t for _, t in steps))
+        self.assertEqual(steps[-2][0], 1.0)                         # the data's progress up to its end
+        self.assertTrue(all(l <= 4000 + 200 for o, l in asked[1:] if l > 600), asked[:5])   # the data's pieces
+
+    def test_pmtiles_extract_through_leaf_directories(self):
+        """A big region: the root directory points to leaves (Protomaps' build: always), read a level at a time,
+        each once."""
+        import random
+        from pmtiles.tile import deserialize_header
+        random.seed(1)
+        src = os.path.join(self.tmp, 'big.pmtiles')
+        tiles = {(15, 16000 + random.randrange(300), 10000 + random.randrange(300)): b'%d' % i for i in range(60000)}
+        make_pmtiles(src, tiles)
+        data = read(src)
+        self.assertGreater(deserialize_header(data[:127])['leaf_directory_length'], 0)
+        asked = []
+
+        def get_bytes(offset, length):
+            asked.append((offset, length))
+            return data[offset:offset + length]
+        n = 1 << 15
+        lon = lambda x: x / n * 360 - 180                           # noqa: E731
+        lat = lambda y: math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * y / n))))   # noqa: E731
+        out = os.path.join(self.tmp, 'big.vtp')
+        pmextract.extract(get_bytes, (lon(16100.5), lat(10199.5), lon(16199.5), lat(10100.5)), 15, out)
+        _, _, got = pack_tiles(out)
+        want = {k: v for k, v in tiles.items() if 16100 <= k[1] < 16200 and 10100 <= k[2] < 10200}
+        self.assertEqual(got, want)
+        self.assertEqual(len(asked), len(set(asked)))
+
+    def test_merged_bounds(self):
+        """Data ranges as one fetch up to kGap apart and kMaxGroup long - not a byte more."""
+        g, m = pmextract.kGap, pmextract.kMaxGroup
+        self.assertEqual(len(pmextract.merged([(0, 10), (10 + g, 5)])), 1)
+        self.assertEqual(len(pmextract.merged([(0, 10), (11 + g, 5)])), 2)
+        self.assertEqual(pmextract.merged([(1000, m - 5), (995 + m, 5)]), [[1000, 1000 + m, [(1000, m - 5), (995 + m, 5)]]])
+        self.assertEqual(len(pmextract.merged([(1000, m - 5), (995 + m, 6)])), 2)
+        self.assertEqual(pmextract.merged([(100, 10), (100, 10)]), [[100, 110, [(100, 10)]]])
+
+    def test_http_bytes_reconnects(self):
+        """A connection the server closed (or that broke): opened again, the range asked again."""
+        import http.server
+        import threading
+        body = bytes(range(256)) * 40
+        conns = []
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            protocol_version = 'HTTP/1.1'   # (says it keeps the connection - and drops it after each answer)
+
+            def setup(self):
+                conns.append(1)
+                super().setup()
+
+            def do_GET(self):
+                a, b = map(int, self.headers['Range'].split('=')[1].split('-'))
+                self.send_response(206)
+                self.send_header('Content-Length', str(b + 1 - a))
+                self.end_headers()
+                self.wfile.write(body[a:b + 1])
+                self.close_connection = True
+
+            def log_message(self, *a):
+                pass
+        srv = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            get = pmextract.http_bytes('http://127.0.0.1:%d/p.pmtiles' % srv.server_address[1])
+            self.assertEqual(get(10, 100), body[10:110])
+            self.assertEqual(get(5000, 300), body[5000:5300])
+            self.assertEqual(len(conns), 2)
+            bad = pmextract.http_bytes('http://127.0.0.1:%d/p.pmtiles' % srv.server_address[1])
+            srv.shutdown()
+            srv.server_close()
+            with self.assertRaises(OSError):
+                bad(0, 10)
+        finally:
+            srv.shutdown()
+
+    def test_http_bytes_keeps_its_connection(self):
+        """Ranges over one kept connection a thread (a new HTTPS connection each was a round trip more each)."""
+        import http.server
+        import threading
+        body = bytes(range(256)) * 40
+        conns = []
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            protocol_version = 'HTTP/1.1'
+
+            def setup(self):
+                conns.append(1)
+                super().setup()
+
+            def do_GET(self):
+                a, b = map(int, self.headers['Range'].split('=')[1].split('-'))
+                part = body[a:b + 1]
+                self.send_response(206)
+                self.send_header('Content-Length', str(len(part)))
+                self.end_headers()
+                self.wfile.write(part)
+
+            def log_message(self, *a):
+                pass
+        srv = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            get = pmextract.http_bytes('http://127.0.0.1:%d/p.pmtiles' % srv.server_address[1])
+            self.assertEqual(get(10, 100), body[10:110])
+            self.assertEqual(get(5000, 300), body[5000:5300])
+            self.assertEqual(len(conns), 1)
+        finally:
+            srv.shutdown()
 
     def test_search_index(self):
         out = os.path.join(self.tmp, 'search.idx')

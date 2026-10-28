@@ -105,7 +105,8 @@ class Maps(unittest.TestCase):
         data = read(planet)
         drive = os.path.join(self.tmp, 'E')
         steps = []
-        maps_app.install(entry, drive, zips.__getitem__, lambda off, n: data[off:off + n], 15, steps.append, '20261027')
+        maps_app.install(entry, drive, zips.__getitem__, lambda off, n: data[off:off + n], 15,
+                         lambda part, text: steps.append(part), '20261027')
         folder = os.path.join(drive, 'OSMapsData', 'tiny')
         self.assertEqual(sorted(os.listdir(folder)), ['region.txt', 'route.grf', 'search.idx', 'tiles.vtp'])
         _, _, got = pack_tiles(os.path.join(folder, 'tiles.vtp'))
@@ -138,6 +139,53 @@ class Maps(unittest.TestCase):
         self.assertEqual([r['name'] for r in maps_app.matching(cat, 'мос')], ['moscow_oblast'])
         self.assertEqual([r['name'] for r in maps_app.matching(cat, 'SAMARA')], ['samara_oblast'])
         self.assertEqual(maps_app.outdated(cat, {'crimea': 'd1', 'samara_oblast': 'd2'}), {'crimea'})
+
+    def test_app_window(self):
+        """The window itself (Tk, the catalog given): a click on a row picks it (lit), again lets it go; all / none /
+        the outdated; the search narrows the list; the status tells the size chosen; nothing chosen - nothing written."""
+        import tkinter
+        import tkinter.ttk
+        import unittest.mock
+        cat = {'regions': [{'name': 'a_oblast', 'title': 'Альфа', 'size': 2e6, 'date': 'd2'},
+                           {'name': 'b_oblast', 'title': 'Бета', 'size': 3e6, 'date': 'd2'}]}
+        drive = os.path.join(self.tmp, 'E')
+        os.makedirs(os.path.join(drive, 'OSMapsData', 'b_oblast'))
+        with open(os.path.join(drive, 'OSMapsData', 'b_oblast', 'region.txt'), 'w') as f:
+            f.write('date=d1\n')
+        patch = unittest.mock.patch.object
+        with patch(maps_app, 'load_catalog', lambda: cat), patch(maps_app, 'removable_drives', lambda: [drive]):
+            app = maps_app.App(tkinter, tkinter.ttk)
+        try:
+            app.root.geometry('+-3000+-3000')   # (shown - its rows laid out - but off the screen)
+            app.on_catalog(cat)
+            app.root.update()
+            self.assertEqual(app.tree.get_children(), ('a_oblast', 'b_oblast'))
+            self.assertEqual(app.tree.item('b_oblast', 'tags'), ('update',))       # newer in the catalog
+            y = app.tree.bbox('a_oblast')[1] + 5
+            app.click(type('E', (), {'y': y})())
+            self.assertEqual(app.chosen, {'a_oblast'})
+            self.assertEqual(app.tree.item('a_oblast', 'tags'), ('chosen',))
+            self.assertIn('выбрано 1 (2 МБ', app.status.get())
+            app.click(type('E', (), {'y': y})())
+            self.assertEqual(app.chosen, set())
+            app.click(type('E', (), {'y': 10000})())                                # no row there
+            self.assertEqual(app.chosen, set())
+            app.pick_all()
+            self.assertEqual(app.chosen, {'a_oblast', 'b_oblast'})
+            app.pick_none()
+            app.pick_old()
+            self.assertEqual(app.chosen, {'b_oblast'})
+            app.find.set('аль')
+            self.assertEqual(app.tree.get_children(), ('a_oblast',))
+            app.pick_none()
+            with unittest.mock.patch.object(maps_app.threading, 'Thread') as thread:
+                app.write_chosen()
+                self.assertFalse(thread.called)                                     # nothing chosen: nothing
+                app.chosen = {'a_oblast'}
+                app.write_chosen()
+                self.assertEqual(thread.call_args[1]['args'][1], [cat['regions'][0]])
+        finally:
+            app.root.destroy()
 
     def test_app_icon(self):
         """The icon: every Windows size, a dark floppy disk with the green tag on its label."""

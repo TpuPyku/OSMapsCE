@@ -7,10 +7,14 @@ tiles' data in merged ranges (neighbours in the archive's Hilbert order lie clos
 The tiles come out ungzipped, keyed as OSMapsCE names them (make_tiles' tiles.vtp), slim: only what OSMapsCE draws.
 """
 import gzip
+import http.client
 import json
 import math
 import sys
+import threading
+import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from pmtiles.tile import Compression, deserialize_directory, deserialize_header, find_tile, zxy_to_tileid
 
@@ -19,7 +23,10 @@ import make_tiles
 BUILDS = 'https://build-metadata.protomaps.dev/builds.json'
 SERVER = 'https://build.protomaps.com/'
 UA = {'User-Agent': 'OSMapsCE-maps (+https://github.com/TpuPyku/OSMapsCE)'}
-kGap = 128 * 1024   # data ranges closer than this are fetched as one
+kGap = 128 * 1024          # data ranges closer than this are fetched as one
+kMaxGroup = 2 * 1024 * 1024   # ... up to this much: a region's data is pieces, fetched kThreads at a time
+kThreads = 8               # (each range of Protomaps' server takes seconds: 8 at a time ~8 times faster - 2026-10-28)
+kDirsPart = 0.1            # the progress's part the directories take
 
 
 def tile_range(bbox, z):
@@ -42,29 +49,34 @@ class Archive:
         self.h = deserialize_header(get_bytes(0, 127))
         self.dirs = {}
 
-    def directory(self, offset, length):
-        if (offset, length) not in self.dirs:   # (deserialize_directory ungzips: Protomaps' internal compression)
-            self.dirs[(offset, length)] = deserialize_directory(self.get_bytes(offset, length))
-        return self.dirs[(offset, length)]
+    def prefetch(self, spans, pool):
+        """The directories not read yet, read at once (kThreads at a time), each once."""
+        need = sorted({d for d in spans if d not in self.dirs})
+        for d, raw in zip(need, pool.map(lambda d: self.get_bytes(*d), need)):
+            self.dirs[d] = deserialize_directory(raw)   # (it ungzips: Protomaps' internal compression)
 
-    def locate(self, tile_id):
-        """(data offset, length) of a tile, None when the archive has none."""
-        offset, length = self.h['root_offset'], self.h['root_length']
+    def locate_all(self, tile_ids, pool):
+        """{tile id: (data offset, length)} of the tiles the archive has: a level of directories at a time."""
+        pending = {t: (self.h['root_offset'], self.h['root_length']) for t in tile_ids}
+        found = {}
         for _ in range(4):   # (the spec's depth limit)
-            e = find_tile(self.directory(offset, length), tile_id)
-            if e is None:
-                return None
-            if e.run_length:
-                return self.h['tile_data_offset'] + e.offset, e.length
-            offset, length = self.h['leaf_directory_offset'] + e.offset, e.length
-        return None
+            self.prefetch(pending.values(), pool)
+            deeper = {}
+            for t, d in pending.items():
+                e = find_tile(self.dirs[d], t)
+                if e is not None and e.run_length:
+                    found[t] = (self.h['tile_data_offset'] + e.offset, e.length)
+                elif e is not None:
+                    deeper[t] = (self.h['leaf_directory_offset'] + e.offset, e.length)
+            pending = deeper
+        return found
 
 
 def merged(spans):
     """Sorted (offset, length) spans grouped into fetches: [(start, end, [spans])]."""
     groups = []
     for off, n in sorted(set(spans)):
-        if groups and off - groups[-1][1] <= kGap:
+        if groups and off - groups[-1][1] <= kGap and off + n - groups[-1][0] <= kMaxGroup:
             groups[-1][1] = max(groups[-1][1], off + n)
             groups[-1][2].append((off, n))
         else:
@@ -72,34 +84,40 @@ def merged(spans):
     return groups
 
 
-def fetch(archive, located, progress=None):
-    """{span: tile bytes} for the located tiles' spans, a fetch per merged group; progress(done part 0..1) after each."""
+def fetch(archive, located, pool, progress=None):
+    """{span: tile bytes} for the located tiles' spans, the merged groups kThreads at a time; progress(part, text)
+    after each."""
     data = {}
     groups = merged(located.values())
-    for i, (start, end, spans) in enumerate(groups):
-        chunk = archive.get_bytes(start, end - start)
+    total, done = sum(e - b for b, e, _ in groups) or 1, 0
+    jobs = {pool.submit(archive.get_bytes, b, e - b): (b, e, spans) for b, e, spans in groups}
+    for job in as_completed(jobs):
+        start, end, spans = jobs[job]
+        chunk = job.result()
         for off, n in spans:
             data[(off, n)] = chunk[off - start:off - start + n]
+        done += end - start
         if progress:
-            progress((i + 1) / len(groups))
+            progress(kDirsPart + (1 - kDirsPart) * done / total, 'плитки: %.1f из %.1f МБ' % (done / 1e6, total / 1e6))
     return data
 
 
 def extract(get_bytes, bbox, maxzoom, out, progress=None, keep=lambda tile: tile):
-    """The region's tiles into the pack out; keep: what of a tile is kept (slim)."""
-    archive = Archive(get_bytes)
-    located = {}
-    for z in range(0, maxzoom + 1):
-        xs, ys = tile_range(bbox, z)
-        for x in xs:
-            for y in ys:
-                span = archive.locate(zxy_to_tileid(z, x, y))
-                if span:
-                    located[(z, x, y)] = span
-    data = fetch(archive, located, progress)
+    """The region's tiles into the pack out; keep: what of a tile is kept (slim); progress(part 0..1, text) from the
+    start: the archive's directories first, then the data."""
+    tell = progress or (lambda part, text: None)
+    tell(0, 'каталог архива…')
+    with ThreadPoolExecutor(kThreads) as pool:
+        archive = Archive(get_bytes)
+        keys = {zxy_to_tileid(z, x, y): (z, x, y) for z in range(0, maxzoom + 1)
+                for xs, ys in [tile_range(bbox, z)] for x in xs for y in ys}
+        located = {keys[t]: span for t, span in archive.locate_all(keys, pool).items()}
+        tell(kDirsPart, 'каталог: %d плиток' % len(located))
+        data = fetch(archive, located, pool, tell)
     unzip = archive.h['tile_compression'] == Compression.GZIP
     make_tiles.write_pack(out, ((make_tiles.key(*t), keep(gzip.decompress(data[s]) if unzip else data[s]))
                                 for t, s in located.items()))
+    tell(1.0, 'плитки записаны')
 
 
 # ---- slim tiles: only what OSMapsCE draws (native_osm/vtile.cpp's kKinds) - no layers it never draws, no greenery
@@ -197,11 +215,32 @@ def slim(tile):
 
 
 def http_bytes(url):
-    """get_bytes over HTTP Range requests."""
+    """get_bytes over HTTP Range requests: a kept connection a thread (a new one each: a round trip more each),
+    opened again once when it broke."""
+    u = urllib.parse.urlsplit(url)
+    local = threading.local()
+
+    def connection():
+        if getattr(local, 'conn', None) is None:
+            cls = http.client.HTTPSConnection if u.scheme == 'https' else http.client.HTTPConnection
+            local.conn = cls(u.netloc, timeout=120)
+        return local.conn
+
     def get(offset, length):
-        req = urllib.request.Request(url, headers=dict(UA, Range='bytes=%d-%d' % (offset, offset + length - 1)))
-        with urllib.request.urlopen(req, timeout=120) as r:
-            return r.read()
+        for attempt in (0, 1):
+            conn = connection()
+            try:
+                conn.request('GET', u.path, headers=dict(UA, Range='bytes=%d-%d' % (offset, offset + length - 1)))
+                r = conn.getresponse()
+                body = r.read()
+                if r.status != 206:
+                    raise OSError('HTTP %d' % r.status)
+                return body
+            except (http.client.HTTPException, OSError):
+                conn.close()
+                local.conn = None
+                if attempt:
+                    raise
     return get
 
 

@@ -231,13 +231,18 @@ class App:
         if entries:
             threading.Thread(target=self.work, args=(self.write_all, entries, self.drive.get()), daemon=True).start()
 
+    def tell(self, head, part, text):   # (from the writing thread: through the queue)
+        self.news.put(('progress', part))
+        self.news.put(('status', '%s: %s' % (head, text)))
+
     def write_all(self, entries, drive):
         build = pmextract.latest_build()
         get_bytes, day = pmextract.http_bytes(build), build.rsplit('/', 1)[1].split('.')[0]
         for i, e in enumerate(entries):
-            self.news.put(('status', '%s (%d из %d): плитки и данные…' % (e.get('title', e['name']), i + 1,
-                                                                          len(entries))))
-            install(e, drive, http_get, get_bytes, MAXZOOM, lambda part: self.news.put(('progress', part)), day)
+            head = '%s (%d из %d)' % (e.get('title', e['name']), i + 1, len(entries))
+            self.news.put(('status', head + ': начало…'))
+            install(e, drive, http_get, get_bytes, MAXZOOM, lambda part, text, h=head: self.tell(h, part, text), day)
+            self.news.put(('status', head + ': граф и поиск записаны'))
         self.news.put(('status', 'Готово: %d. Флешку — в ГУ (папка OSMapsData в корне).' % len(entries)))
         self.news.put(('catalog', self.cat))
 
