@@ -4,14 +4,16 @@
 // straight down by the zoom (z16 less, z17 more). A flat point v px ahead of the car (v < 0: behind) goes to the
 // screen row r = rc * f / (v + f) below the horizon (the car's row: rc), sideways scaled by r / rc - so the car keeps
 // its size, the far is higher and smaller; at the car the depth is shortened by rc / f = cot(pitch). The visibility:
-// a fog by the depth (a straight horizon - the user's choice), fog px ahead and behind, fading in from 0.8 of it;
+// a fog by the depth (a straight horizon - the user's choice), fog px ahead and behind, thickening from half of it;
 // f = 1.25 fog keeps v + f > 0 within it. A screen row is one flat row, its x a scale of the screen's - the turned
 // frame (main.cpp) stays a walk along a line per row, in integers.
 
 const Tilt* g_tilt;
 
 static const double kDepth = 1.25;   // f / fog
-static const double kFade = 0.8;     // the fog starts fading in at this part of its depth
+static const double kFade = 0.5;     // the fog starts thickening at this part of its depth (the user 2026-10-28)
+static const double kSkySpan = 120;  // px over the fog's row from the map's cream to the sky's blue (by day)
+static const unsigned char kCream[3] = { 243, 240, 235 }, kSky[3] = { 170, 205, 238 };
 
 void TiltMake(Tilt* t, double carFlat, double carScreen, double fogPx, double pitchDeg)
 {
@@ -20,6 +22,17 @@ void TiltMake(Tilt* t, double carFlat, double carScreen, double fogPx, double pi
     t->fog = fogPx;
     t->f = kDepth * fogPx;
     t->rc = t->f / tan(pitchDeg * M_PI / 180);
+    t->fr = t->cs - t->rc + t->rc * t->f / (fogPx + t->f);
+}
+
+// The fog's colour (the user 2026-10-28): by day the map's cream at the ground, over it a gradient to the sky's blue;
+// at night black
+void TiltFog(const Tilt& t, double sy, bool night, unsigned char rgb[3])
+{
+    double a = (t.fr - sy) / kSkySpan;
+    a = a < 0 ? 0 : a > 1 ? 1 : a;
+    for (int i = 0; i < 3; i++)
+        rgb[i] = night ? 0 : (unsigned char)(kCream[i] + (kSky[i] - kCream[i]) * a + 0.5);
 }
 
 bool TiltPoint(const Tilt& t, double fx, double fy, double* sx, double* sy)

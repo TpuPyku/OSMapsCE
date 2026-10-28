@@ -227,12 +227,13 @@ const wchar_t* MapFace();   // main.cpp: the text's face (Golos Text, else Tahom
 
 // tilt.cpp: the third person's view - the flat map (offsets from the map's centre, px, y down) tilted, the car at
 // (0, cf) to the screen's (0, cs) keeping its size, nothing past the fog (fog px ahead of the car or behind it)
-struct Tilt { double cf, cs, rc, f, fog; };
+struct Tilt { double cf, cs, rc, f, fog, fr; };   // fr: the fog's row (the ground's top) on the screen
 extern const Tilt* g_tilt;   // the view's tilt while it is on (VLabelsDraw), else NULL
 void TiltMake(Tilt* t, double carFlat, double carScreen, double fogPx, double pitchDeg);   // pitch: from straight down
 bool TiltPoint(const Tilt& t, double fx, double fy, double* sx, double* sy);   // false: in the fog
 bool TiltRow(const Tilt& t, double sy, double* fy, double* k, double* fade);   // a screen row: the flat row fy, its
                                 // x = sx * k, the fog over it 0..1; false: all fog
+void TiltFog(const Tilt& t, double sy, bool night, unsigned char rgb[3]);   // the fog's colour at a screen row
 bool TiltClip(const Tilt& t, double* x0, double* y0, double* x1, double* y1);   // a flat line cut to the seen part
 
 // cache.cpp - decoded images in memory + OSM tiles on disk in <exe>\Cache

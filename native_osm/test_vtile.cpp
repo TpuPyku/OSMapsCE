@@ -713,11 +713,24 @@ static void TiltChecks()
     Check(TiltRow(t, 100, &fy, &k, &fade) && TiltPoint(t, 30 * k, fy, &sx, &sy) && Near(sx, 30) && Near(sy, 100),
           "tilt: a screen row back to the flat map");
     Check(TiltRow(t, 140, &fy, &k, &fade) && fade == 0, "tilt: no fog near the car");
-    double row90 = t.cs - t.rc + t.rc * t.f / (270 + t.f);   // 0.9 of the fog's depth: half faded
-    Check(TiltRow(t, row90, &fy, &k, &fade) && Near(fade, 0.5), "tilt: the fog fading in from 0.8 of its depth");
+    double row75 = t.cs - t.rc + t.rc * t.f / (225 + t.f), row40 = t.cs - t.rc + t.rc * t.f / (120 + t.f);
+    Check(TiltRow(t, row75, &fy, &k, &fade) && Near(fade, 0.5) && TiltRow(t, row40, &fy, &k, &fade) && fade == 0,
+          "tilt: the fog thickening from half its depth (the user 2026-10-28)");
+    unsigned char c[3];
+    TiltFog(t, t.fr + 10, false, c);
+    Check(c[0] == 243 && c[1] == 240 && c[2] == 235, "fog: by day the map's cream at the ground");
+    TiltFog(t, t.fr - 200, false, c);
+    Check(c[0] == 170 && c[1] == 205 && c[2] == 238, "fog: by day sky blue high above");
+    TiltFog(t, t.fr - 60, false, c);
+    Check(c[0] > 170 && c[0] < 243 && c[2] > 235 && c[2] < 238 + 1, "fog: by day a gradient between");
+    TiltFog(t, t.fr - 200, true, c);
+    unsigned char d[3];
+    TiltFog(t, t.fr + 10, true, d);
+    Check(!c[0] && !c[1] && !c[2] && !d[0] && !d[1] && !d[2], "fog: at night just black");
     double fogRow = 150 - t.rc * 300 / (300 + t.f);
     Check(!TiltRow(t, fogRow - 1, &fy, &k, &fade) && TiltRow(t, fogRow + 1, &fy, &k, &fade),
           "tilt: above the fog's row only fog");
+    Check(Near(t.fr, fogRow), "tilt: the fog's row kept");
     Check(!TiltRow(t, t.cs - t.rc - 1, &fy, &k, &fade), "tilt: above the horizon only fog");
     double x0 = 0, y0 = 120, x1 = 0, y1 = -580;
     Check(TiltClip(t, &x0, &y0, &x1, &y1) && Near(y0, 120) && Near(y1, 120 - 300), "tilt: a line cut at the fog");
