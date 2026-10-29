@@ -63,18 +63,19 @@ TITLES = {
     'vologda_oblast': 'Вологодская область', 'voronezh_oblast': 'Воронежская область',
     'yamalo_nenets_autonomous_okrug': 'Ямало-Ненецкий автономный округ', 'yaroslavl_oblast': 'Ярославская область',
     'zabaykalsky_krai': 'Забайкальский край',
-    # Ukraine's oblasts (the disputed lands: crimea, donetsk, luhansk above) and the CIS countries (2026-10-29)
-    'cherkasy_oblast': 'Украина: Черкасская область', 'chernihiv_oblast': 'Украина: Черниговская область',
-    'chernivtsi_oblast': 'Украина: Черновицкая область', 'dnipropetrovsk_oblast': 'Украина: Днепропетровская область',
-    'kharkiv_oblast': 'Украина: Харьковская область', 'kherson_oblast': 'Украина: Херсонская область',
-    'khmelnytskyi_oblast': 'Украина: Хмельницкая область', 'kiev_oblast': 'Украина: Киев и Киевская область',
-    'kirovohrad_oblast': 'Украина: Кировоградская область', 'lviv_oblast': 'Украина: Львовская область',
-    'mykolaiv_oblast': 'Украина: Николаевская область', 'odessa_oblast': 'Украина: Одесская область',
-    'poltava_oblast': 'Украина: Полтавская область', 'rivne_oblast': 'Украина: Ровенская область',
-    'sumy_oblast': 'Украина: Сумская область', 'ternopil_oblast': 'Украина: Тернопольская область',
-    'vinnytsia_oblast': 'Украина: Винницкая область', 'volyn_oblast': 'Украина: Волынская область',
-    'zakarpattia_oblast': 'Украина: Закарпатская область', 'zaporizhia_oblast': 'Украина: Запорожская область',
-    'zhytomyr_oblast': 'Украина: Житомирская область',
+    # Ukraine's oblasts (the disputed lands: crimea, donetsk, luhansk above) and the CIS countries (2026-10-29); a
+    # country by its regions - the regions' own names (as Russia's), a whole country - its name (the user 2026-10-29)
+    'cherkasy_oblast': 'Черкасская область', 'chernihiv_oblast': 'Черниговская область',
+    'chernivtsi_oblast': 'Черновицкая область', 'dnipropetrovsk_oblast': 'Днепропетровская область',
+    'kharkiv_oblast': 'Харьковская область', 'kherson_oblast': 'Херсонская область',
+    'khmelnytskyi_oblast': 'Хмельницкая область', 'kiev_oblast': 'Киев и Киевская область',
+    'kirovohrad_oblast': 'Кировоградская область', 'lviv_oblast': 'Львовская область',
+    'mykolaiv_oblast': 'Николаевская область', 'odessa_oblast': 'Одесская область',
+    'poltava_oblast': 'Полтавская область', 'rivne_oblast': 'Ровенская область',
+    'sumy_oblast': 'Сумская область', 'ternopil_oblast': 'Тернопольская область',
+    'vinnytsia_oblast': 'Винницкая область', 'volyn_oblast': 'Волынская область',
+    'zakarpattia_oblast': 'Закарпатская область', 'zaporizhia_oblast': 'Запорожская область',
+    'zhytomyr_oblast': 'Житомирская область',
     'belarus': 'Беларусь', 'moldova': 'Молдова', 'georgia': 'Грузия', 'kazakhstan': 'Казахстан',
     'uzbekistan': 'Узбекистан', 'kyrgyzstan': 'Киргизия', 'tajikistan': 'Таджикистан', 'turkmenistan': 'Туркмения',
     'azerbaijan': 'Азербайджан', 'armenia': 'Армения',
@@ -124,6 +125,9 @@ def catalog(dist, previous=None, known=()):
                 entries.append(json.load(e))
     built = {e['name'] for e in entries}
     entries += [e for e in (previous or {'regions': []})['regions'] if e['name'] not in built and e['name'] in known]
+    for e in entries:   # (a kept one: today's title - the user 2026-10-29: "Украина:" off the oblasts)
+        if 'title' in e:
+            e['title'] = title(e['name'])
     cat = {'version': 1, 'made': time.strftime('%Y-%m-%d', time.gmtime()),
            'regions': sorted(entries, key=lambda e: e['name'])}
     with open(os.path.join(dist, 'catalog.json'), 'w', encoding='utf-8') as f:

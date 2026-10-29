@@ -1,5 +1,6 @@
 """The offline tests' second region (native_osm/test_offline.bat): tiny.osm 5 degrees north, its town Другоград - a
-search from the first region finds it there (the user 2026-10-29: a town of another region on the card).
+search from the first region finds it there (the user 2026-10-29: a town of another region on the card); its side
+street named after the first region's town (Тестовская): asked there, "Тестовск" is the street here, the town there.
 
     python make_twin.py <tiny.osm> <out.osm>
 """
@@ -9,7 +10,7 @@ import sys
 
 def twin(text):
     text = re.sub(r'lat="([0-9.]+)"', lambda m: 'lat="%.3f"' % (float(m.group(1)) + 5), text)
-    return text.replace('Тестовск', 'Другоград')
+    return text.replace('Тестовск', 'Другоград').replace('Боковая улица', 'Тестовская улица')
 
 
 if __name__ == '__main__':
