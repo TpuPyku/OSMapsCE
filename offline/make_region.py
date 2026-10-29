@@ -33,7 +33,8 @@ BASE = 'http://download.openstreetmap.fr/extracts/russia/'
 # The disputed lands (the user 2026-10-27: apart, so no one is offended): neutral names, openstreetmap.fr's whole
 # extracts (russia/'s crimea_republic, sevastopol are nearly empty, 258 KB and 94 KB; no Donetsk, Luhansk there).
 # Sevastopol in Crimea: one region, as a city in its oblast (INSIDE).
-UKRAINE = 'http://download.openstreetmap.fr/extracts/europe/ukraine/%s-latest.osm.pbf'
+UKRAINE_DIR = 'http://download.openstreetmap.fr/extracts/europe/ukraine/'
+UKRAINE = UKRAINE_DIR + '%s-latest.osm.pbf'
 APART = {'crimea': [UKRAINE % 'crimea', UKRAINE % 'sevastopol'], 'donetsk': UKRAINE % 'donetsk_oblast',
          'luhansk': UKRAINE % 'luhansk_oblast'}
 # A city in its oblast's hole (moscow_oblast's extract has holes where Moscow is; the unit routes within one
@@ -42,6 +43,16 @@ INSIDE = {'moscow': 'moscow_oblast'}
 # Gone: russia/'s nearly empty copies (APART has them whole); Saint Petersburg - leningrad_oblast's extract has it
 # all (its .poly one ring around the city too), a region of its own only doubled it
 GONE = ('crimea_republic', 'sevastopol', 'saint_petersburg')
+# The CIS (the user 2026-10-29): Ukraine by its oblasts (openstreetmap.fr's folder; its Crimea, Sevastopol, Donetsk,
+# Luhansk are APART's; Kyiv a hole in its oblast, as Moscow), the other countries whole - openstreetmap.fr has no
+# parts of them, Geofabrik has each (the biggest, Belarus, 335 MB of OSM: as Moscow's oblast)
+UKRAINE_APART = ('crimea', 'sevastopol', 'donetsk_oblast', 'luhansk_oblast')
+INSIDE_UA = {'kiev': 'kiev_oblast'}
+GEOFABRIK = 'https://download.geofabrik.de/%s-latest.osm.pbf'
+COUNTRIES = {n: GEOFABRIK % (part + '/' + n) for part, names in (
+    ('europe', ('belarus', 'moldova', 'georgia')),
+    ('asia', ('kazakhstan', 'uzbekistan', 'kyrgyzstan', 'tajikistan', 'turkmenistan', 'azerbaijan', 'armenia')))
+    for n in names}
 UA = {'User-Agent': 'OSMapsCE-make_region (+https://github.com/TpuPyku/OSMapsCE)'}
 
 
@@ -58,18 +69,28 @@ def region_links(html, base):
     return {f: base + f + '-latest.osm.pbf' for f in re.findall(r'href="([a-z_]+)-latest\.osm\.pbf"', html)}
 
 
+def merged(out, inside):   # a city into its oblast's region
+    for city, region in inside.items():
+        if city in out and region in out:
+            out[region] = [out[region], out.pop(city)]
+
+
 def regions(get=get):
-    """{name: url or [urls] (a region of several extracts)} of Russia's regions (the federal districts' folders)
-    and the disputed lands (APART)."""
+    """{name: url or [urls] (a region of several extracts)} of Russia's regions (the federal districts' folders),
+    the disputed lands (APART), Ukraine's oblasts and the CIS countries."""
     out = {}
     for d in district_links(get(BASE)):
         out.update(region_links(get(BASE + d + '/'), BASE + d + '/'))
     for gone in GONE:
         out.pop(gone, None)
-    for city, region in INSIDE.items():
-        if city in out:
-            out[region] = [out[region], out.pop(city)]
+    merged(out, INSIDE)
+    ua = region_links(get(UKRAINE_DIR) or '', UKRAINE_DIR)
+    for gone in UKRAINE_APART:
+        ua.pop(gone, None)
+    merged(ua, INSIDE_UA)
+    out.update(ua)
     out.update(APART)
+    out.update(COUNTRIES)
     return out
 
 

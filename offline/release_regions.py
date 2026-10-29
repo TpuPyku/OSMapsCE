@@ -63,6 +63,21 @@ TITLES = {
     'vologda_oblast': 'Вологодская область', 'voronezh_oblast': 'Воронежская область',
     'yamalo_nenets_autonomous_okrug': 'Ямало-Ненецкий автономный округ', 'yaroslavl_oblast': 'Ярославская область',
     'zabaykalsky_krai': 'Забайкальский край',
+    # Ukraine's oblasts (the disputed lands: crimea, donetsk, luhansk above) and the CIS countries (2026-10-29)
+    'cherkasy_oblast': 'Украина: Черкасская область', 'chernihiv_oblast': 'Украина: Черниговская область',
+    'chernivtsi_oblast': 'Украина: Черновицкая область', 'dnipropetrovsk_oblast': 'Украина: Днепропетровская область',
+    'kharkiv_oblast': 'Украина: Харьковская область', 'kherson_oblast': 'Украина: Херсонская область',
+    'khmelnytskyi_oblast': 'Украина: Хмельницкая область', 'kiev_oblast': 'Украина: Киев и Киевская область',
+    'kirovohrad_oblast': 'Украина: Кировоградская область', 'lviv_oblast': 'Украина: Львовская область',
+    'mykolaiv_oblast': 'Украина: Николаевская область', 'odessa_oblast': 'Украина: Одесская область',
+    'poltava_oblast': 'Украина: Полтавская область', 'rivne_oblast': 'Украина: Ровенская область',
+    'sumy_oblast': 'Украина: Сумская область', 'ternopil_oblast': 'Украина: Тернопольская область',
+    'vinnytsia_oblast': 'Украина: Винницкая область', 'volyn_oblast': 'Украина: Волынская область',
+    'zakarpattia_oblast': 'Украина: Закарпатская область', 'zaporizhia_oblast': 'Украина: Запорожская область',
+    'zhytomyr_oblast': 'Украина: Житомирская область',
+    'belarus': 'Беларусь', 'moldova': 'Молдова', 'georgia': 'Грузия', 'kazakhstan': 'Казахстан',
+    'uzbekistan': 'Узбекистан', 'kyrgyzstan': 'Киргизия', 'tajikistan': 'Таджикистан', 'turkmenistan': 'Туркмения',
+    'azerbaijan': 'Азербайджан', 'armenia': 'Армения',
 }
 
 
