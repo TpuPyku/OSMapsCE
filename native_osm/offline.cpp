@@ -932,11 +932,19 @@ static bool AnyStart(Snap* s, double course)
     return false;
 }
 
-static double LineM(const Line& line, int from)   // the line's metres from its point from on
+static double KxAt(int lat)   // metres per 1e-6 degree of longitude at that latitude
+{
+    return 0.111195 * cos(lat / 1e6 * M_PI / 180);
+}
+
+// The line's metres from its point from on - each segment at its own latitude (2026-10-29: Vladivostok - Moscow at
+// the start's 43 degrees counted 10465 km for ~9200)
+static double LineM(const Line& line, int from)
 {
     double m = 0;
     for (int i = from + 1; i < line.n; i++) {
-        double dx = (line.p[i * 2 + 1] - line.p[i * 2 - 1]) * s_kx, dy = (line.p[i * 2] - line.p[i * 2 - 2]) * 0.111195;
+        double dx = (line.p[i * 2 + 1] - line.p[i * 2 - 1]) * KxAt(line.p[i * 2]);
+        double dy = (line.p[i * 2] - line.p[i * 2 - 2]) * 0.111195;
         m += sqrt(dx * dx + dy * dy);
     }
     return m;
@@ -988,6 +996,16 @@ static void PutGeometry(JBuf& b, const Line& line)   // the line as polyline6
 }
 
 static bool Answer(const Request& r, char** body, int* len, DWORD t0);
+
+// The request's metres per microdegree of longitude: at its point nearest a pole - the A*'s estimate never over the
+// truth on a long way north (the start's latitude was taken: Vladivostok's 43 degrees for a way at 55)
+static double KxFor(const Request& r)
+{
+    int top = 0;
+    for (int i = 0; i < r.n; i++)
+        top = abs(r.pts[i * 2]) > top ? abs(r.pts[i * 2]) : top;
+    return KxAt(top);
+}
 
 // "/routed-car/route/v1/driving/lon,lat;lon,lat...?...&bearings=deg,60;..." -> an OSRM answer, or false (no region
 // holds the points, no road near, no way): then OSRM is asked.
@@ -1246,13 +1264,13 @@ bool OfflineTrunkRoute(const char* path, char** body, int* len)
     file[MAX_PATH - 1] = 0;
     if (!Load(file))
         return false;
-    s_kx = 0.111195 * cos(r.pts[0] / 1e6 * M_PI / 180);
+    s_kx = KxFor(r);
     return JoinedRoute(r, body, len, t0) || (Load(file) && Answer(r, body, len, t0));
 }
 
 static bool Answer(const Request& r, char** body, int* len, DWORD t0)   // the route on the graph loaded
 {
-    s_kx = 0.111195 * cos(r.pts[0] / 1e6 * M_PI / 180);
+    s_kx = KxFor(r);
     JBuf b = { NULL, 0, 0 };
     Line line = { NULL, 0, 0 };
     JPut(b, "{\"code\":\"Ok\",\"routes\":[{\"legs\":[");
