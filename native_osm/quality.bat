@@ -16,7 +16,7 @@ if "%1"=="vtile" goto vtile
 :offline
 set CPP=offline.cpp offsearch.cpp offdata.cpp vpack.cpp offmaps.cpp json.cpp
 set PY=..\offline\make_graph.py ..\offline\make_search.py ..\offline\make_region.py ..\offline\make_tiles.py ..\offline\pmextract.py ^
-  ..\offline\release_regions.py ..\offline\maps_app.py
+  ..\offline\release_regions.py ..\offline\maps_app.py ..\offline\make_outlines.py
 set COVER=1
 call .\test_offline.bat >obj\test_offline.log 2>&1 || (type obj\test_offline.log & echo === the offline tests fail & exit /b 1)
 set COVER=

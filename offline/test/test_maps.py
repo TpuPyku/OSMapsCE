@@ -105,8 +105,13 @@ class Maps(unittest.TestCase):
         data = read(planet)
         drive = os.path.join(self.tmp, 'E')
         steps = []
-        maps_app.install(entry, drive, zips.__getitem__, lambda off, n: data[off:off + n], 15,
-                         lambda part, text: steps.append(part), '20261027')
+
+        def get_file(url, tell):                                           # the release's zip, its download told
+            tell(0.5, 'half')
+            tell(1.0, 'all')
+            return zips[url]
+        maps_app.install(entry, drive, get_file, lambda off, n: data[off:off + n], 15,
+                         lambda part, text: steps.append((part, text)), '20261027')
         folder = os.path.join(drive, 'OSMapsData', 'tiny')
         self.assertEqual(sorted(os.listdir(folder)), ['region.txt', 'route.grf', 'search.idx', 'tiles.vtp'])
         _, _, got = pack_tiles(os.path.join(folder, 'tiles.vtp'))
@@ -116,7 +121,14 @@ class Maps(unittest.TestCase):
         self.assertEqual(maps_app.installed(drive), {'tiny': entry['date']})
         info = release_regions.region_info(os.path.join(folder, 'region.txt'))
         self.assertEqual(info['tiles'], '20261027')                        # the tiles' build: newer online ones refresh them
-        self.assertTrue(steps and steps[-1] == 1.0, steps)                  # the progress, to the end
+        self.assertEqual(steps[-1][0], 1.0)                                  # the progress, to the end
+        parts = [part for part, _ in steps]
+        self.assertEqual(parts, sorted(parts))
+        tiles_end = [p for p, t in steps if t == 'плитки записаны'][0]          # (the user 2026-10-29: the bar full
+        graph = [(p, t) for p, t in steps if t.startswith('граф и поиск')]      # while the zip still came) the zip's
+        self.assertEqual(tiles_end, maps_app.kTilesPart)                       # download after the tiles, told
+        self.assertEqual(graph, [(maps_app.kTilesPart + (1 - maps_app.kTilesPart) * 0.5, 'граф и поиск: half'),
+                                 (1.0, 'граф и поиск: all')])
 
     def test_app_writes_the_trunk_graph(self):
         """4b (2026-10-29): the trunk roads' graph of Russia and the CIS - with any regions written, once a build."""
@@ -128,15 +140,20 @@ class Maps(unittest.TestCase):
             return buf.getvalue()
         drive = os.path.join(self.tmp, 'T')
         assets = {release_regions.ASSETS + 'trunk.zip': trunk_zip('2026-10-29')}
-        self.assertEqual(maps_app.install_trunk(drive, assets.__getitem__), 'written')
+        told = []
+        get = lambda url, tell: (tell(1.0, 'x'), assets[url])[1]          # noqa: E731
+        self.assertEqual(maps_app.install_trunk(drive, get, lambda part, text: told.append(part)), 'written')
+        self.assertEqual(told, [1.0])
         folder = os.path.join(drive, 'OSMapsData', 'trunk')
         self.assertEqual(sorted(os.listdir(folder)), ['region.txt', 'trunk.grf'])
-        self.assertEqual(maps_app.install_trunk(drive, assets.__getitem__), 'same')
+        self.assertEqual(maps_app.install_trunk(drive, get), 'same')
         assets[release_regions.ASSETS + 'trunk.zip'] = trunk_zip('2026-11-02')
-        self.assertEqual(maps_app.install_trunk(drive, assets.__getitem__), 'written')
+        self.assertEqual(maps_app.install_trunk(drive, get), 'written')
         self.assertEqual(read(os.path.join(folder, 'trunk.grf')), b'OSMG2026-11-02')
-        self.assertEqual(maps_app.install_trunk(drive, {}.__getitem__), 'none')   # no graph in the release yet
+        self.assertEqual(maps_app.install_trunk(drive, lambda url, tell: {}[url]), 'none')   # no graph in the release yet
         self.assertNotIn('trunk', maps_app.installed(drive))                     # not a region of the list
+        self.assertEqual(maps_app.trunk_date(drive), '2026-11-02')                # its own row's date
+        self.assertIsNone(maps_app.trunk_date(self.tmp))
 
     def test_app_states(self):
         cat = {'regions': [{'name': 'a', 'date': '2026-10-27'}, {'name': 'b', 'date': '2026-10-27'},
@@ -173,14 +190,17 @@ class Maps(unittest.TestCase):
         with open(os.path.join(drive, 'OSMapsData', 'b_oblast', 'region.txt'), 'w') as f:
             f.write('date=d1\n')
         patch = unittest.mock.patch.object
-        with patch(maps_app, 'load_catalog', lambda: cat), patch(maps_app, 'removable_drives', lambda: [drive]):
+        with patch(maps_app, 'load_catalog', lambda: cat), patch(maps_app, 'load_outlines', lambda: None), \
+                patch(maps_app, 'removable_drives', lambda: [drive]):
             app = maps_app.App(tkinter, tkinter.ttk)
         try:
             app.root.geometry('+-3000+-3000')   # (shown - its rows laid out - but off the screen)
             app.on_catalog(cat)
             app.root.update()
-            self.assertEqual(app.tree.get_children(), ('a_oblast', 'b_oblast'))
+            self.assertEqual(app.tree.get_children(), ('trunk', 'a_oblast', 'b_oblast'))   # the trunk roads first
             self.assertEqual(app.tree.item('b_oblast', 'tags'), ('update',))       # newer in the catalog
+            self.assertTrue(app.tree['yscrollcommand'])                             # the list scrolls (2026-10-29)
+            self.assertEqual(app.scroll.get(), (0.0, 1.0))
             y = app.tree.bbox('a_oblast')[1] + 5
             app.click(type('E', (), {'y': y})())
             self.assertEqual(app.chosen, {'a_oblast'})
@@ -197,18 +217,26 @@ class Maps(unittest.TestCase):
             self.assertEqual(app.chosen, {'b_oblast'})
             app.find.set('аль')
             self.assertEqual(app.tree.get_children(), ('a_oblast',))
+            app.find.set('магистр')
+            self.assertEqual(app.tree.get_children(), ('trunk',))
+            app.find.set('')
             app.pick_none()
             with unittest.mock.patch.object(maps_app.threading, 'Thread') as thread:
                 app.write_chosen()
                 self.assertFalse(thread.called)                                     # nothing chosen: nothing
                 app.chosen = {'a_oblast'}
                 app.write_chosen()
-                self.assertEqual(thread.call_args[1]['args'][1], [cat['regions'][0]])
+                self.assertEqual(thread.call_args[1]['args'][1:], ([cat['regions'][0]], drive, True))   # no trunk
+                                                                                   # roads there: they too
                 self.assertEqual(app.go['text'], 'Идёт запись…')                     # the button tells it is busy
                 self.assertEqual(str(app.go['style']), 'Busy.TButton')
                 self.assertTrue(app.go.instate(['disabled']))
                 app.write_chosen()
                 self.assertEqual(thread.call_count, 1)                              # not twice at once
+                app.on_done(None)
+                app.chosen = {'trunk'}                                              # the trunk roads alone
+                app.write_chosen()
+                self.assertEqual(thread.call_args[1]['args'][1:], ([], drive, True))
                 app.on_done(None)
                 self.assertEqual(app.go['text'], 'Записать выбранные')
                 self.assertEqual(str(app.go['style']), 'Go.TButton')
@@ -227,6 +255,127 @@ class Maps(unittest.TestCase):
         self.assertEqual(im.getpixel((100, 170))[:3], make_icon.TAG)      # the tag on the label
         self.assertEqual(im.getpixel((30, 100))[:3], make_icon.DISK)       # the disk
         self.assertEqual(im.getpixel((250, 5))[3], 0)                      # the cut corner: see-through
+
+    def test_download_with_progress(self):
+        """A release's file read in pieces, its progress told by its length (the user 2026-10-29: the graph's zip and
+        the trunk roads came minutes long with the bar full and nothing told)."""
+        body = bytes(range(256)) * 3000
+
+        class Resp(io.BytesIO):
+            headers = {'Content-Length': str(len(body))}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                self.close()
+        told = []
+        got = maps_app.download('http://x/y.zip', lambda part, text: told.append((part, text)),
+                                lambda req, timeout: Resp(body), piece=100000)
+        self.assertEqual(got, body)
+        self.assertEqual([p for p, _ in told], [min(1.0, k * 100000 / len(body)) for k in range(1, 9)])   # 8 pieces
+        self.assertEqual(told[-1], (1.0, '0.8 из 0.8 МБ'))
+        self.assertEqual([p for p, _ in told], sorted(p for p, _ in told))
+
+    def test_app_writes_all_with_one_progress(self):
+        """The bar for the whole job (the user 2026-10-29: full before the end): each region a part of it, the trunk
+        roads the last part; never full before they are written."""
+        cat = {'regions': [{'name': 'a', 'title': 'A'}, {'name': 'b', 'title': 'B'}]}
+        app = type('A', (), {})()
+        app.news, app.cat = __import__('queue').Queue(), cat
+        app.tell = lambda head, part, text: maps_app.App.tell(app, head, part, text)
+
+        def install(e, drive, get_file, get_bytes, maxzoom, progress, day):
+            progress(0.5, 'half')
+            progress(1.0, 'done')
+
+        def install_trunk(drive, get_file, tell):
+            tell(0.5, 'trunk half')
+            tell(1.0, 'trunk done')
+            return 'written'
+        patch = unittest.mock.patch.object
+        with patch(maps_app, 'install', install), patch(maps_app, 'install_trunk', install_trunk), \
+                patch(maps_app.pmextract, 'latest_build', lambda: 'https://b/20261029.pmtiles'), \
+                patch(maps_app.pmextract, 'http_bytes', lambda url: None):
+            maps_app.App.write_all(app, cat['regions'], self.tmp, True)
+        news = []
+        while not app.news.empty():
+            news.append(app.news.get())
+        bar = [v for k, v in news if k == 'progress']
+        self.assertEqual(bar, [1 / 6, 1 / 3, 1 / 2, 2 / 3, 5 / 6, 1.0])
+        self.assertIn(('status', 'Магистрали России и СНГ: trunk half'), news)
+
+    def test_outlines(self):
+        """The regions' outlines for the map of the app's (the user 2026-10-29: a visual choice): their sources'
+        .poly (openstreetmap.fr, Geofabrik), the outer rings only, simplified, rounded, a region of two extracts both,
+        east of 180 degrees (Chukotka) on the east."""
+        import make_outlines
+        self.assertEqual(make_outlines.poly_url(
+            'http://download.openstreetmap.fr/extracts/russia/central_federal_district/moscow_oblast-latest.osm.pbf'),
+            'http://download.openstreetmap.fr/polygons/russia/central_federal_district/moscow_oblast.poly')
+        self.assertEqual(make_outlines.poly_url('https://download.geofabrik.de/europe/belarus-latest.osm.pbf'),
+                         'https://download.geofabrik.de/europe/belarus.poly')
+        poly = ('x\n1\n   3.0E+01  5.0E+01\n   30.5 50.0001\n   31 50\n   31 51\n   30 51\n   30 50\nEND\n'
+                '!2\n 30.2 50.2\n 30.3 50.2\n 30.3 50.3\nEND\n3\n -179.5 65\n -179 65\n -179 66\n -179.5 65\nEND\nEND\n')
+        self.assertEqual(make_outlines.parse_poly(poly),
+                         [[(30.0, 50.0), (30.5, 50.0001), (31.0, 50.0), (31.0, 51.0), (30.0, 51.0), (30.0, 50.0)],
+                          [(-179.5, 65.0), (-179.0, 65.0), (-179.0, 66.0), (-179.5, 65.0)]])
+        polys = {'u/a.poly': poly, 'u/b.poly': 'b\n1\n 40 40\n 41 40\n 41 41\n 40 40\nEND\nEND\n'}
+        got = make_outlines.outlines({'a': 'u/a-latest.osm.pbf', 'ab': ['u/a-latest.osm.pbf', 'u/b-latest.osm.pbf']},
+                                     polys.__getitem__)
+        self.assertEqual(got['a'], [[[30.0, 50.0], [31.0, 50.0], [31.0, 51.0], [30.0, 51.0], [30.0, 50.0]],
+                                    [[180.5, 65.0], [181.0, 65.0], [181.0, 66.0], [180.5, 65.0]]])
+        self.assertEqual(len(got['ab']), 3)                                 # both extracts' rings
+
+    def test_app_map(self):
+        """The map of the regions: their outlines, a click picks one (lit as in the list), again lets it go; a drag
+        moves the map, picks nothing; no outlines - the list alone."""
+        import tkinter
+        import tkinter.ttk
+        cat = {'regions': [{'name': 'a_oblast', 'title': 'Альфа', 'size': 2e6, 'date': 'd2'},
+                           {'name': 'b_oblast', 'title': 'Бета', 'size': 3e6, 'date': 'd2'}]}
+        shapes = {'a_oblast': [[[40, 50], [44, 50], [44, 54], [40, 54], [40, 50]]],
+                  'b_oblast': [[[50, 50], [54, 50], [54, 54], [50, 54], [50, 50]]]}
+        drive = os.path.join(self.tmp, 'E')
+        os.makedirs(drive)
+        patch = unittest.mock.patch.object
+        with patch(maps_app, 'load_catalog', lambda: cat), patch(maps_app, 'load_outlines', lambda: shapes), \
+                patch(maps_app, 'removable_drives', lambda: [drive]):
+            app = maps_app.App(tkinter, tkinter.ttk)
+        try:
+            app.root.geometry('+-3000+-3000')
+            app.on_catalog(cat)
+            app.on_outlines(shapes)
+            app.root.update()
+            items = app.map.find_withtag('r:a_oblast')
+            self.assertEqual(len(items), 1)
+            x0, y0, x1, y1 = app.map.bbox(items[0])
+            cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
+            ev = lambda x, y: type('E', (), {'x': x, 'y': y})()             # noqa: E731
+            app.map_press(ev(cx, cy))
+            app.map_release(ev(cx, cy))
+            self.assertEqual(app.chosen, {'a_oblast'})
+            self.assertEqual(app.map.itemcget(items[0], 'fill'), maps_app.ACCENT)
+            self.assertEqual(app.tree.item('a_oblast', 'tags'), ('chosen',))   # the list too
+            app.map_press(ev(cx, cy))
+            app.map_drag(ev(cx + 40, cy))
+            app.map_release(ev(cx + 40, cy))
+            self.assertEqual(app.chosen, {'a_oblast'})                          # a drag: nothing picked
+            nx0 = app.map.bbox(items[0])[0]
+            self.assertEqual(nx0, x0 + 40)                                      # the map moved with it
+            app.map_press(ev(cx + 40, cy))
+            app.map_release(ev(cx + 40, cy))
+            self.assertEqual(app.chosen, set())                                 # again: let go
+            self.assertNotEqual(app.map.itemcget(items[0], 'fill'), maps_app.ACCENT)
+            app.map_press(ev(2, 2))
+            app.map_release(ev(2, 2))
+            self.assertEqual(app.chosen, set())                                 # no region there
+            app.map_wheel(type('E', (), {'x': cx, 'y': cy, 'delta': 120})())
+            self.assertGreater(app.map.bbox(items[0])[2] - app.map.bbox(items[0])[0], x1 - x0)   # nearer
+            app.on_outlines(None)
+            self.assertEqual(app.map.find_withtag('region'), ())                # no outlines: none drawn
+        finally:
+            app.root.destroy()
 
     def test_app_finds_the_removable_drives(self):
         kinds = {'C:\\': 3, 'E:\\': 2, 'F:\\': 2}                          # 2: removable (a card, a flash drive)
