@@ -226,6 +226,24 @@ static int MakeCity(unsigned char* out, bool village)
     return tile.n;
 }
 
+// A quarter's tile: 176 house numbers "1", 16 by 11, 12 by 10 px apart around the tile's centre (z16: 48 by 40 px)
+enum { kHouseCols = 16, kHouseRows = 11 };
+
+static int MakeHouses(unsigned char* out)
+{
+    Pbw tile = { { 0 }, 0 };
+    Layer l;
+    Begin(l, "housenumber", "housenumber");
+    Value(l.w, "1");
+    unsigned int tags[] = { 1, 0 }, g[3];
+    for (int j = 0; j < kHouseRows; j++)
+        for (int i = 0; i < kHouseCols; i++)
+            Feature(l.w, tags, 2, 1, g, Point(g, 38 + 12 * i, 78 + 10 * j));
+    End(tile, l);
+    memcpy(out, tile.b, tile.n);
+    return tile.n;
+}
+
 // A small-scale tile's places: five along the middle row, one below
 enum { kPlaces = 6 };
 static const int kPlaceXY[kPlaces][2] = { { 30, 128 }, { 80, 128 }, { 130, 128 }, { 180, 128 }, { 230, 128 },
@@ -1149,10 +1167,16 @@ int main()
     Labels(f, 9000, 5000, 192, 144, 17, 0, mr, NULL, 0);
     Check(Count(f, 390, 231, 411, 251, blue) > 100, "z17: the car park's sign");
     Check(Count(f, 255, 230, 290, 250, RGB565(120, 112, 104)) > 3, "z17: the house number");
-    Labels(f, 9000, 5000, 176, 144, 15, 0, mr, NULL, 0);   // (the user 2026-10-27: from z15, the zoom one finds a house at)
-    Check(Count(f, 380, 230, 420, 250, RGB565(120, 112, 104)) > 3, "z15: the house number");
-    Labels(f, 9000, 5000, 176, 144, 14, 0, mr, NULL, 0);
-    Check(Count(f, 0, 0, 800, 480, RGB565(120, 112, 104)) == 0, "z14: no house numbers");
+    Labels(f, 9000, 5000, 176, 144, 16, 0, mr, NULL, 0);   // (the user 2026-10-29: from z16)
+    Check(Count(f, 0, 0, 800, 480, RGB565(120, 112, 104)) > 3, "z16: the house number");
+    Labels(f, 9000, 5000, 176, 144, 15, 0, mr, NULL, 0);
+    Check(Count(f, 0, 0, 800, 480, RGB565(120, 112, 104)) == 0, "z15: no house numbers");
+    static unsigned char houses[4096];
+    MapRequest hq = { SRC_OSM, 14, 9200, 5000 };
+    Check(VTileRender(hq, houses, MakeHouses(houses), &im), "the quarter's tile drawn");
+    ImageFree(&im);
+    Labels(f, 9200, 5000, 128, 128, 16, 0, mr, NULL, 0);   // the last row: the 161st to 176th house numbers
+    Check(Count(f, 0, 426, 800, 454, RGB565(120, 112, 104)) > 3 * kHouseCols, "z16: 176 house numbers all drawn");
     Close(f);
     Close(g);
 
