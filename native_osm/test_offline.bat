@@ -23,10 +23,11 @@ if not "%1"=="build" (
   python ..\offline\test\make_test_zip.py obj\test\region.zip %MAP% || exit /b 1
   if not exist obj\test\OSMapsData\old mkdir obj\test\OSMapsData\old
   python ..\offline\test\make_test_tiles.py %MAP%\tiles.vtp obj\test\OSMapsData\old\tiles.vtp >nul || exit /b 1
-  rem the second region (only its search): the town Другоград 5 degrees north
+  rem the second region (its search and graph): the town Другоград 5 degrees north
   if not exist obj\test\OSMapsData\twin mkdir obj\test\OSMapsData\twin
   python ..\offline\test\make_twin.py ..\offline\test\tiny.osm obj\test\twin.osm || exit /b 1
   python ..\offline\make_search.py obj\test\twin.osm obj\test\OSMapsData\twin\search.idx >nul || exit /b 1
+  python ..\offline\make_graph.py obj\test\twin.osm obj\test\OSMapsData\twin\route.grf >nul || exit /b 1
 )
 set OPT=/O2
 if "%COVER%"=="1" set OPT=/Od /Zi

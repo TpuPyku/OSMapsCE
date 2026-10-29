@@ -533,6 +533,20 @@ int main()
     b = Ask("/api/?q=%D0%B3%D0%BB%D0%B0%D0%B2%D0%BD%D0%B0%D1%8F+7%D0%BA2&limit=7&lat=53.0&lon=50.0");   // главная 7к2
     Check(Has(b, L"\"street\":\"Главная улица\",\"housenumber\":\"7к2\""), "search: a house with a letter", b);
     free(b);
+    // the town's name in the query too (the user 2026-10-29: "Жигулёвск Ткачёва 71" - nothing; "Ткачёва 71" found)
+    b = Ask("/api/?q=%D1%82%D0%B5%D1%81%D1%82%D0%BE%D0%B2%D1%81%D0%BA%20%D0%B3%D0%BB%D0%B0%D0%B2%D0%BD%D0%B0%D1%8F%207"
+            "%D0%BA2&limit=7&lat=53.0&lon=50.0");   // тестовск главная 7к2
+    Check(Has(b, L"\"street\":\"Главная улица\",\"housenumber\":\"7к2\""), "search: the town, the street, the house", b);
+    free(b);
+    b = Ask("/api/?q=%D0%B3%D0%BB%D0%B0%D0%B2%D0%BD%D0%B0%D1%8F%20%D1%82%D0%B5%D1%81%D1%82%D0%BE%D0%B2%D1%81%D0%BA"
+            "&limit=7&lat=53.0&lon=50.0");   // главная тестовск
+    Check(Has(b, L"\"name\":\"Главная улица\""), "search: the street, then its town", b);
+    free(b);
+    b = Ask("/api/?q=%D0%B4%D1%80%D1%83%D0%B3%D0%BE%D0%B3%D1%80%D0%B0%D0%B4%20%D0%B3%D0%BB%D0%B0%D0%B2%D0%BD%D0%B0%D1%8F"
+            "&limit=7&lat=53.0&lon=50.0");   // другоград главная: another town's name - not this one's street
+    Check(!Has(b, L"\"name\":\"Главная улица\",\"street\":\"\",\"housenumber\":\"\",\"city\":\"Тестовск\""),
+          "search: another town's name - not this town's street", b);
+    free(b);
     b = Ask("/api/?q=%D1%83%D0%BB%D0%B8%D1%86%D0%B0&limit=7&lat=53.0&lon=50.0");   // улица: a kind word only
     Check(!b, "search: the kind word alone - no answer", b);
     free(b);
@@ -567,6 +581,13 @@ int main()
     free(b);
     b = Ask("/api/?q=%D0%A2%D0%B5%D1%81%D1%82%D0%BE%D0%B2%D1%81%D0%BA&limit=7&lat=53.0&lon=50.0");   // Тестовск again
     Check(Has(b, L"\"name\":\"Тестовск\"") && !Has(b, L"Другоград"), "search: this region's first, the others not mixed in", b);
+    free(b);
+    // here only a street of that name, there the town itself (the user 2026-10-29: "Жигулёвск" from Moscow - Moscow's
+    // Жигулёвская streets, not the town): the regions' answers together, the town first
+    b = Ask("/api/?q=%D0%A2%D0%B5%D1%81%D1%82%D0%BE%D0%B2%D1%81%D0%BA&limit=7&lat=58.0&lon=50.0");   // Тестовск
+    const char* there = Find(b, L"\"name\":\"Тестовск\""), *here = Find(b, L"\"name\":\"Тестовская улица\"");
+    Check(there && here && there < here && Num(b, "\"coordinates\":[") > 0,
+          "search: no exact match here - the other regions too, the exact one first", b);
     free(b);
     b = Ask("/reverse?lon=10.0&lat=10.0&limit=1");
     Check(!b, "reverse: only the point's own region", b);
