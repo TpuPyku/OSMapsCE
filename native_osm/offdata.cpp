@@ -48,19 +48,113 @@ void OffClose(OffFile* f)
 
 // ---------------------------------------------------------------- the regions' folders
 
-static const wchar_t* kDataDirs[] = { L"\\SDMemory\\OSMapsData", L"\\USBDevice\\OSMapsData" };
+// The data folders on any device (the user 2026-10-29: Shturmann NSL 500 saw no vector maps - its card is not the
+// Vesta's \SDMemory): every volume's \OSMapsData - CE: the root's folders (the storage cards, the flash; their names
+// are the device's), the PC: the drives - then the program's own folder's (the PC: the tools' output beside it too).
+// Listed again at most every 5 s (asked for every pack and route; a card may come meanwhile).
+enum { kMaxVols = 12, kMaxDirs = kMaxVols + 2, kDirsMs = 5000 };
 
-// The folders the regions' folders may be in; returns their count.
-static int DataDirs(wchar_t dirs[][MAX_PATH])
+struct Volume { wchar_t root[MAX_PATH]; bool card; };   // card: removable (CE: a storage card's folder)
+
+static int Volumes(Volume* v, int cap)
 {
-    int nd = 0;
-    for (int i = 0; i < 2; i++)
-        wcscpy(dirs[nd++], kDataDirs[i]);
+    int n = 0;
+#ifdef UNDER_CE
+    WIN32_FIND_DATA fd;
+    HANDLE ff = FindFirstFile(L"\\*", &fd);
+    if (ff == INVALID_HANDLE_VALUE)
+        return 0;
+    do {
+        if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && n < cap) {
+            _snwprintf(v[n].root, MAX_PATH, L"\\%s", fd.cFileName);
+            v[n++].card = (fd.dwFileAttributes & FILE_ATTRIBUTE_TEMPORARY) != 0;
+        }
+    } while (FindNextFile(ff, &fd));
+    FindClose(ff);
+#else
+    UINT was = SetErrorMode(SEM_FAILCRITICALERRORS);   // (a drive without its disk: no window)
+    DWORD drives = GetLogicalDrives();
+    for (int d = 2; d < 26 && n < cap; d++)   // (from C:: A: and B: - floppies)
+        if (drives & (1 << d)) {
+            _snwprintf(v[n].root, MAX_PATH, L"%c:", L'A' + d);
+            v[n].card = GetDriveType(v[n].root) == DRIVE_REMOVABLE;
+            n++;
+        }
+    SetErrorMode(was);
+#endif
+    return n;
+}
+
+static bool HasData(const wchar_t* root, wchar_t* dir)   // root's \OSMapsData, when there
+{
+    _snwprintf(dir, MAX_PATH, L"%s\\OSMapsData", root);
+    dir[MAX_PATH - 1] = 0;
+    return GetFileAttributes(dir) != 0xFFFFFFFF;
+}
+
+static int ListDirs(wchar_t dirs[][MAX_PATH])
+{
+    Volume v[kMaxVols];
+    int nv = Volumes(v, kMaxVols), nd = 0;
+    for (int i = 0; i < nv; i++)
+        nd += HasData(v[i].root, dirs[nd]) ? 1 : 0;
     PathInDir(dirs[nd++], L"OSMapsData");
 #ifndef UNDER_CE
-    PathInDir(dirs[nd++], L"..\\OSMapsData");   // the PC: the tool's output beside the program's folder
+    PathInDir(dirs[nd++], L"..\\OSMapsData");
 #endif
     return nd;
+}
+
+static CRITICAL_SECTION s_dirsCs;
+static volatile LONG    s_dirsCsDone;
+static wchar_t          s_dirs[kMaxDirs][MAX_PATH];
+static int              s_nDirs;
+static DWORD            s_dirsTick;
+
+// The folders the regions' folders may be in (the volumes' first, the program's last); returns their count.
+static int DataDirs(wchar_t dirs[][MAX_PATH])
+{
+    if (!InterlockedExchange((LONG*)&s_dirsCsDone, 1))
+        InitializeCriticalSection(&s_dirsCs);
+    EnterCriticalSection(&s_dirsCs);
+    if (!s_nDirs || GetTickCount() - s_dirsTick >= kDirsMs) {
+        s_nDirs = ListDirs(s_dirs);
+        s_dirsTick = GetTickCount();
+    }
+    int nd = s_nDirs;
+    memcpy(dirs, s_dirs, sizeof(s_dirs));
+    LeaveCriticalSection(&s_dirsCs);
+    return nd;
+}
+
+static ULONGLONG FreeOn(const wchar_t* root)
+{
+    ULARGE_INTEGER avail, total, all;
+    wchar_t r[MAX_PATH];
+    _snwprintf(r, MAX_PATH, L"%s\\", root);
+    return GetDiskFreeSpaceEx(r, &avail, &total, &all) ? avail.QuadPart : 0;
+}
+
+// Where the downloaded regions go: the volume that has \OSMapsData already, else the removable one with the most
+// room, else the program's folder
+void OffWriteDir(wchar_t* out)
+{
+    Volume v[kMaxVols];
+    int nv = Volumes(v, kMaxVols), best = -1;
+    ULONGLONG most = 0;
+    for (int i = 0; i < nv; i++) {
+        if (HasData(v[i].root, out))
+            return;
+        ULONGLONG f = v[i].card ? FreeOn(v[i].root) : 0;
+        if (f > most) {
+            most = f;
+            best = i;
+        }
+    }
+    if (best >= 0)
+        HasData(v[best].root, out);
+    else
+        PathInDir(out, L"OSMapsData");
 }
 
 // A found entry of a data folder: a region's folder whose file passes the test (dir = the folder)?
@@ -101,7 +195,7 @@ bool OffInside(const int* box, int lat, int lon)
 
 bool OffRegion(const wchar_t* file, OffHolds holds, void* ctx, wchar_t* dir)
 {
-    wchar_t dirs[4][MAX_PATH];
+    wchar_t dirs[kMaxDirs][MAX_PATH];
     int nd = DataDirs(dirs);
     for (int d = 0; d < nd; d++)
         if (RegionIn(dirs[d], file, holds, ctx, dir))

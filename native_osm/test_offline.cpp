@@ -275,6 +275,14 @@ static void DownloadChecks()
     Check(!MapsGetRegion(5), "job: no such region", NULL);
     MapsSetGet(NULL, 0);
     free(s_zip);
+
+    // the real one's target (this PC's: a drive with \OSMapsData, a removable one, or the program's folder)
+    wchar_t target[MAX_PATH], prog[MAX_PATH];
+    OffWriteDir(target);
+    PathInDir(prog, L"OSMapsData");
+    size_t tl = wcslen(target);
+    Check(tl > 11 && !wcscmp(target + tl - 11, L"\\OSMapsData") &&
+          (!wcscmp(target, prog) || (target[1] == L':' && tl == 13)), "download: its folder - a drive's or ours", NULL);
 }
 
 // json.cpp (shared now: the catalog read with it): escapes, nesting, a string cut short

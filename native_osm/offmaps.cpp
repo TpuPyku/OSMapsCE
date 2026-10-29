@@ -327,8 +327,8 @@ bool MapsInstall(const char* url, const wchar_t* data, const char* name, bool tr
 // ---------------------------------------------------------------- the job: one at a time, on its own thread
 
 // The settings' "Карты" screen asks: the catalog (MapsList), a region (MapsGetRegion) - the trunk roads after it when
-// the card has none. The regions go to the SD card (\SDMemory\OSMapsData), else the USB disk, else the program's
-// folder (the PC; the unit without a card).
+// the card has none. The regions go where OffWriteDir says (the volume with \OSMapsData already, else the
+// removable one with the most room, else the program's folder).
 static const char kAssets[] = "https://github.com/TpuPyku/OSMapsCE/releases/download/maps/";
 enum { kMaxRegions = 200 };
 
@@ -356,17 +356,6 @@ static void Say(const wchar_t* fmt, const char* utf8)   // the job's line (a reg
     _snwprintf(s_text, 128, fmt, w);
     s_text[127] = 0;
     LeaveCriticalSection(&s_cs);
-}
-
-static void MapsDir(wchar_t* out)
-{
-    static const wchar_t* kVols[2] = { L"\\SDMemory", L"\\USBDevice" };
-    for (int i = 0; i < 2; i++)
-        if (GetFileAttributes(kVols[i]) != 0xFFFFFFFF) {
-            _snwprintf(out, MAX_PATH, L"%s\\OSMapsData", kVols[i]);
-            return;
-        }
-    PathInDir(out, L"OSMapsData");
 }
 
 static bool Exists(const wchar_t* path, void*)   // OffRegion's test: the file is there
@@ -416,7 +405,10 @@ static DWORD WINAPI GetThread(LPVOID p)
     LeaveCriticalSection(&s_cs);
     wchar_t data[MAX_PATH];
     char url[256];
-    MapsDir(data);
+    if (s_get == RealGet)
+        OffWriteDir(data);
+    else
+        PathInDir(data, L"OSMapsData");   // (the tests' made-up server: never onto a disk of the PC's)
     _snprintf(url, sizeof(url), "%s%s", kAssets, r.zip);
     bool ok = MapsInstall(url, data, r.name, false);
     if (ok && !TrunkThere()) {   // the routes between the regions (~10 MB, once)

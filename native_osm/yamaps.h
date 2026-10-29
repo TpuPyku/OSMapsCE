@@ -204,6 +204,7 @@ void  OffClose(OffFile* f);                          // the parts freed, the fil
 typedef bool (*OffHolds)(const wchar_t* path, void* ctx);
 bool  OffInside(const int* box, int lat, int lon);   // box: minLat, minLon, maxLat, maxLon (1e-6 degrees, a header's)
 bool  OffRegion(const wchar_t* file, OffHolds holds, void* ctx, wchar_t* dir);
+void  OffWriteDir(wchar_t* out);   // where downloaded regions go: a volume's \OSMapsData (made by the caller)
 struct JBuf { char* p; int n, cap; };                // a growing 0-terminated text (no memory: the rest left out)
 void  JPut(JBuf& b, const char* s, int n = -1);
 void  JPutf(JBuf& b, const char* fmt, ...);
