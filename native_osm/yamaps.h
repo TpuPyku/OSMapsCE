@@ -109,8 +109,13 @@ Overlay* OverlayFromMemory(const unsigned char* data, int len);   // free() it
 
 // http.cpp
 // With ifNoneMatch the server may answer 304 (no body); the ETag of the answer goes to etag.
+struct HttpExtra {             // a download's (offmaps.cpp): its request's headers, the answer's Location
+    const char* headers;       // e.g. "Range: bytes=0-1048575\r\n" (each line with CR LF), NULL none
+    char*       location;      // the answer's Location (a redirect: GitHub's release files), NULL not wanted
+    int         locCap;
+};
 int  HttpGet(const char* host, bool https, const char* path, unsigned char** body, int* bodyLen, int* status,
-             const char* ifNoneMatch = NULL, char* etag = NULL, int etagCap = 0);
+             const char* ifNoneMatch = NULL, char* etag = NULL, int etagCap = 0, const HttpExtra* extra = NULL);
 void HttpSetGpsDate(int yyyymmdd);
 void HttpCloseAll();
 
@@ -166,6 +171,17 @@ void MapsHave(MapRegion* r, int n);
 int  MapState(const MapRegion& r);
 bool UrlSplit(const char* url, char* host, int cap, bool* https, const char** path);
 bool ZipExtract(const wchar_t* zip, const wchar_t* dir, const char* const* files, int n);
+typedef int (*MapsGetFn)(const char* host, bool https, const char* path, unsigned char** body, int* len, int* status,
+                         const HttpExtra* extra);
+void MapsSetGet(MapsGetFn fn, int retryMs);   // tests: a made-up server; NULL - HttpGet
+bool MapsFetch(const char* url, const wchar_t* file, int chunk);   // resumable, in ranges, through redirects
+bool MapsInstall(const char* url, const wchar_t* data, const char* name, bool trunk);   // a release zip unpacked
+enum { MAPS_IDLE, MAPS_BUSY };
+bool MapsList();                 // the release's catalog, on a thread (false: busy)
+bool MapsGetRegion(int i);       // the catalog's region i (and the trunk roads when none), on a thread
+int  MapsCount();
+bool MapsAt(int i, MapRegion* out);
+int  MapsJob(wchar_t* text, int cap, int* gotKb, int* totalKb);   // MAPS_BUSY / MAPS_IDLE, its line, progress
 
 // offline.cpp - routes from a region's road graph (OSMapsData\<region>\route.grf), answered as OSRM's JSON
 bool  OfflineRoute(const char* osrmPath, char** body, int* len);   // false: no region / no way - ask OSRM

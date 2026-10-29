@@ -386,19 +386,41 @@ static bool Grow(char** body, int* cap, int need)
 
 // One request on an open connection. *answered tells whether the server answered anything:
 // a dead keep-alive connection fails before that and the request is retried.
-static int Exchange(Conn* c, const char* path, const char* ifNoneMatch, unsigned char** bodyOut, int* bodyLen,
-                    int* status, char* etag, int etagCap, bool* answered)
+// The request: its path may be long (a redirect's signed URL: ~1 KB), with the extra headers
+static int Request(Conn* c, const char* path, const char* ifNoneMatch, const HttpExtra* extra)
 {
-    *answered = false;
     char cond[160] = "";
     if (ifNoneMatch && ifNoneMatch[0])
         _snprintf(cond, sizeof(cond), "If-None-Match: %s\r\n", ifNoneMatch);
-    char req[1024];
-    int n = _snprintf(req, sizeof(req),
+    const char* more = extra && extra->headers ? extra->headers : "";
+    int cap = (int)(strlen(path) + strlen(more) + strlen(c->host) + 512);
+    char* req = (char*)malloc(cap);
+    if (!req)
+        return NET_MEMORY;
+    int n = _snprintf(req, cap,
         "GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: " HTTP_USER_AGENT "\r\n"
-        "Accept: image/png,image/*\r\n%sConnection: keep-alive\r\n\r\n", path, c->host, cond);
-    if (n < 0 || ConnWrite(c, req, n) < 0)
-        return NET_CONNECT;
+        "Accept: image/png,image/*,*/*\r\n%s%sConnection: keep-alive\r\n\r\n", path, c->host, cond, more);
+    int err = n < 0 || ConnWrite(c, req, n) < 0 ? NET_CONNECT : NET_OK;
+    free(req);
+    return err;
+}
+
+static void Value(const char* line, int skip, char* out, int cap)   // a header's value (past its name and spaces)
+{
+    const char* v = line + skip;
+    while (*v == ' ')
+        v++;
+    strncpy(out, v, cap - 1);
+    out[cap - 1] = 0;
+}
+
+static int Exchange(Conn* c, const char* path, const char* ifNoneMatch, unsigned char** bodyOut, int* bodyLen,
+                    int* status, char* etag, int etagCap, bool* answered, const HttpExtra* extra)
+{
+    *answered = false;
+    int sent = Request(c, path, ifNoneMatch, extra);
+    if (sent != NET_OK)
+        return sent;
 
     Reader* r = (Reader*)malloc(sizeof(Reader));
     if (!r)
@@ -406,7 +428,7 @@ static int Exchange(Conn* c, const char* path, const char* ifNoneMatch, unsigned
     r->c = c;
     r->pos = r->end = 0;
 
-    char line[512];
+    char line[4096];   // (a redirect's Location: ~1 KB)
     int result = NET_OK;
     char* body = NULL;
     int cap = 0, len = 0;
@@ -437,13 +459,10 @@ static int Exchange(Conn* c, const char* path, const char* ifNoneMatch, unsigned
             chunked = true;
         else if (!_strnicmp(line, "Connection:", 11) && strstr(line + 11, "close"))
             closeAfter = true;
-        else if (etag && !_strnicmp(line, "ETag:", 5)) {
-            const char* v = line + 5;
-            while (*v == ' ')
-                v++;
-            strncpy(etag, v, etagCap - 1);
-            etag[etagCap - 1] = 0;
-        }
+        else if (etag && !_strnicmp(line, "ETag:", 5))
+            Value(line, 5, etag, etagCap);
+        else if (extra && extra->location && !_strnicmp(line, "Location:", 9))
+            Value(line, 9, extra->location, extra->locCap);
     }
 
     if (*status == 304) {
@@ -518,7 +537,7 @@ done:
 }
 
 int HttpGet(const char* host, bool https, const char* path, unsigned char** body, int* bodyLen, int* status,
-            const char* ifNoneMatch, char* etag, int etagCap)
+            const char* ifNoneMatch, char* etag, int etagCap, const HttpExtra* extra)
 {
     *status = 0;
     if (etag)
@@ -534,7 +553,7 @@ int HttpGet(const char* host, bool https, const char* path, unsigned char** body
                 return err;
         }
         bool answered;
-        int err = Exchange(c, path, ifNoneMatch, body, bodyLen, status, etag, etagCap, &answered);
+        int err = Exchange(c, path, ifNoneMatch, body, bodyLen, status, etag, etagCap, &answered, extra);
         c->lastUse = GetTickCount();
         if (err == NET_OK)
             return NET_OK;

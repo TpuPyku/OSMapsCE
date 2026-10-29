@@ -19,6 +19,13 @@ void Log(const char*, ...)
 
 bool ReadWholeFile(const wchar_t*, unsigned char**, int*) { return false; }   // (image.cpp's: its zlib is used here)
 
+int HttpGet(const char*, bool, const char*, unsigned char**, int*, int* status, const char*, char*, int,
+            const HttpExtra*)   // (no network here: the downloads are asked of FakeGet)
+{
+    *status = 0;
+    return NET_CONNECT;
+}
+
 static int s_failed, s_checks;
 
 static void Check(bool ok, const char* what, const char* body)
@@ -144,6 +151,132 @@ static bool FileIs(const wchar_t* name, const char* want, int n)   // a file und
     return (int)got == n && !memcmp(buf, want, n);
 }
 
+// A made-up GitHub for the download (offmaps.cpp): github.com redirects to the storage, which answers ranges of the
+// test zip (206); s_failOnce - the next range request times out (a lost link)
+static char* s_zip;
+static int   s_zipLen, s_asked, s_failOnce;
+
+static int FakeGet(const char* host, bool, const char* path, unsigned char** body, int* len, int* status,
+                   const HttpExtra* x)
+{
+    s_asked++;
+    *body = (unsigned char*)malloc(1);
+    *len = 0;
+    if (!strcmp(host, "github.com") && strstr(path, "catalog.json")) {   // the catalog: two regions, zz's zip ours
+        static const char* kCat = "{\"regions\":[{\"name\":\"tiny\",\"title\":\"T\",\"date\":\"2026-10-20\",\"zip\":"
+                                  "\"tiny.zip\",\"size\":10},{\"name\":\"zz\",\"title\":\"Z\",\"date\":\"2026-10-29\","
+                                  "\"zip\":\"zz.zip\",\"size\":2048}]}";
+        free(*body);
+        *body = (unsigned char*)_strdup(kCat);
+        *len = (int)strlen(kCat);
+        *status = 200;
+        return NET_OK;
+    }
+    if (!strcmp(host, "github.com")) {
+        *status = 302;
+        _snprintf(x->location, x->locCap, "https://store.example/f%s?sig=%d", strrchr(path, '/'), s_asked);
+        return NET_OK;
+    }
+    if (strcmp(host, "store.example") || !x->headers || s_failOnce-- > 0) {
+        *status = 0;
+        return NET_TIMEOUT;
+    }
+    int a = 0, b = 0;
+    sscanf(x->headers, "Range: bytes=%d-%d", &a, &b);
+    if (a >= s_zipLen) {
+        *status = 416;
+        return NET_OK;
+    }
+    b = b < s_zipLen ? b : s_zipLen - 1;
+    free(*body);
+    *body = (unsigned char*)malloc(b - a + 2);
+    memcpy(*body, s_zip + a, b - a + 1);
+    *len = b - a + 1;
+    *status = 206;
+    return NET_OK;
+}
+
+static bool WaitMaps()   // the job's thread done (5 s at most)
+{
+    wchar_t t[128];
+    int got, total;
+    for (int i = 0; i < 100 && MapsJob(t, 128, &got, &total) == MAPS_BUSY; i++)
+        Sleep(50);
+    return MapsJob(t, 128, &got, &total) == MAPS_IDLE;
+}
+
+static void Remove(const wchar_t* dir)   // a folder of the test's last run (its files, then itself)
+{
+    static const wchar_t* kNames[4] = { L"route.grf", L"search.idx", L"region.txt", L"trunk.grf" };
+    wchar_t path[MAX_PATH];
+    for (int i = 0; i < 4; i++) {
+        _snwprintf(path, MAX_PATH, L"%s\\%s", dir, kNames[i]);
+        DeleteFile(path);
+    }
+    RemoveDirectory(dir);
+}
+
+static void DownloadChecks()
+{
+    wchar_t zip[MAX_PATH], part[MAX_PATH], dir[MAX_PATH];
+    PathInDir(zip, L"..\\region.zip");
+    HANDLE f = CreateFile(zip, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    s_zipLen = (int)GetFileSize(f, NULL);
+    s_zip = (char*)malloc(s_zipLen);
+    DWORD got;
+    ReadFile(f, s_zip, s_zipLen, &got, NULL);
+    CloseHandle(f);
+    MapsSetGet(FakeGet, 1);
+
+    PathInDir(part, L"..\\dl.zip.part");
+    DeleteFile(part);
+    s_asked = 0;
+    Check(MapsFetch("https://github.com/x/releases/download/maps/tiny.zip", part, 100) &&
+          FileIs(L"..\\dl.zip.part", s_zip, s_zipLen), "download: in 100-byte ranges, through the redirect", NULL);
+    Check(s_asked >= 2 * (s_zipLen / 100), "download: each range asked through github.com (a fresh signature)", NULL);
+
+    HANDLE h = CreateFile(part, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);   // a half: resumed from there
+    DWORD put;
+    WriteFile(h, s_zip, 150, &put, NULL);
+    CloseHandle(h);
+    s_failOnce = 1;
+    Check(MapsFetch("https://github.com/x/releases/download/maps/tiny.zip", part, 100) &&
+          FileIs(L"..\\dl.zip.part", s_zip, s_zipLen), "download: resumed after 150 bytes, past a lost link", NULL);
+    s_failOnce = 9;
+    DeleteFile(part);
+    Check(!MapsFetch("https://github.com/x/releases/download/maps/tiny.zip", part, 100),
+          "download: the link lost for good - false", NULL);
+    s_failOnce = 0;
+
+    PathInDir(dir, L"..\\dldata");
+    Check(MapsInstall("https://github.com/x/releases/download/maps/tiny.zip", dir, "zipped", false) &&
+          FileIs(L"..\\dldata\\zipped\\region.txt", "name=zipped\ndate=2026-10-29\n", 28) &&
+          FileIs(L"..\\dldata\\zipped\\search.idx", "IDXIDXIDXIDXIDXIDXIDXIDXIDXIDX", 30),
+          "download: a region installed into its folder", NULL);
+    wchar_t left[MAX_PATH];
+    PathInDir(left, L"..\\dldata\\zipped.zip");
+    Check(GetFileAttributes(left) == 0xFFFFFFFF, "download: the zip removed after", NULL);
+
+    // the job, as the screen starts it: the catalog, then a region (into the program's OSMapsData here - no card),
+    // the trunk roads after it when the card has none (they are there: obj\test\OSMapsData\trunk)
+    Check(MapsList() && WaitMaps() && MapsCount() == 2, "job: the catalog loaded", NULL);
+    MapRegion m;
+    Check(MapsAt(0, &m) && !strcmp(m.name, "tiny") && MapState(m) == MAP_OK && MapsAt(1, &m) && MapState(m) == MAP_NEW
+          && !MapsAt(2, &m), "job: the card's states", NULL);
+    s_asked = 0;
+    Check(MapsGetRegion(1) && WaitMaps() && MapsAt(1, &m) && !strcmp(m.have, "2026-10-29") && MapState(m) == MAP_OK,
+          "job: a region downloaded, the card's state after", NULL);
+    Check(FileIs(L"OSMapsData\\zz\\search.idx", "IDXIDXIDXIDXIDXIDXIDXIDXIDXIDX", 30), "job: into the program's folder",
+          NULL);
+    wchar_t text[128];
+    int gotKb = 0, total = 0;
+    Check(MapsJob(text, 128, &gotKb, &total) == MAPS_IDLE && total == 2 && wcsstr(text, L"Z"), "job: its result told",
+          NULL);
+    Check(!MapsGetRegion(5), "job: no such region", NULL);
+    MapsSetGet(NULL, 0);
+    free(s_zip);
+}
+
 // json.cpp (shared now: the catalog read with it): escapes, nesting, a string cut short
 static void JsonChecks()
 {
@@ -164,6 +297,11 @@ static void JsonChecks()
 // region's zip unpacked, the download's URLs
 static void MapsChecks()
 {
+    wchar_t app[MAX_PATH];
+    PathInDir(app, L".");
+    CreateDirectory(app, NULL);   // the program's folder (obj\test\app: as the unit's, there before)
+    PathInDir(app, L"OSMapsData\\zz");
+    Remove(app);                  // the last run's download
     static const char* kCat = "{\"version\":1,\"made\":\"x\",\"regions\":[{\"name\":\"tiny\",\"title\":\"\xD0\xA2\xD0\xB5"
                               "\xD1\x81\xD1\x82\",\"date\":\"2026-10-27\",\"zip\":\"tiny.zip\",\"size\":2048000,"
                               "\"bbox\":[1,2,3,4]},{\"name\":\"zz\",\"title\":\"Z\",\"date\":\"2026-10-28\","
@@ -216,6 +354,7 @@ int main()
 
     JsonChecks();
     MapsChecks();
+    DownloadChecks();
 
     // along the main street, west to east: ~400 m, no turn on the way
     char* b = Route("50.000,53.000;50.006,53.000");
