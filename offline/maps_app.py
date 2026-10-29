@@ -60,7 +60,7 @@ def installed(drive):
 
 
 TRUNK = 'trunk'   # the trunk roads of Russia and the CIS (4b): routes from one region to another
-TRUNK_TITLE = 'Магистрали России и СНГ — маршруты между областями'
+TRUNK_TITLE = 'Магистрали России и СНГ'   # (the routes between the regions)
 
 
 def trunk_date(drive):
