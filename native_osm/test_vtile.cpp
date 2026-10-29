@@ -13,7 +13,42 @@ bool SameKey(const MapRequest& a, const MapRequest& b)
 {
     return a.src == b.src && a.z == b.z && a.x == b.x && a.y == b.y;
 }
-bool ReadWholeFile(const wchar_t*, unsigned char**, int*) { return false; }
+
+// The local data VTileLocal reads: a region's pack's tiles, the cache's file (one), each read counted
+enum { kFakePack = 2 };
+static MapRequest           s_packKey[kFakePack];
+static const unsigned char* s_packData[kFakePack];
+static int                  s_packLen[kFakePack], s_nPack, s_reads;
+static wchar_t              s_file[32];
+static const unsigned char* s_fileData;
+static int                  s_fileLen;
+
+static bool Give(const unsigned char* from, int n, unsigned char** data, int* len)
+{
+    *data = (unsigned char*)malloc(n);
+    memcpy(*data, from, n);
+    *len = n;
+    s_reads++;
+    return true;
+}
+
+bool VPackTile(const MapRequest& d, unsigned char** data, int* len)
+{
+    for (int i = 0; i < s_nPack; i++)
+        if (SameKey(s_packKey[i], d))
+            return Give(s_packData[i], s_packLen[i], data, len);
+    return false;
+}
+
+void CachePath(wchar_t* out, const MapRequest& r)
+{
+    _snwprintf(out, MAX_PATH, L"%d/%d/%d", r.z, r.x, r.y);
+}
+
+bool ReadWholeFile(const wchar_t* path, unsigned char** data, int* len)
+{
+    return s_file[0] && !wcscmp(path, s_file) && Give(s_fileData, s_fileLen, data, len);
+}
 
 static int s_failed, s_checks;
 
@@ -1031,12 +1066,54 @@ static void TiltWarpChecks()
     Check(sky[0] == RGB565(170, 205, 238), "tilt frame: the sky's blue high up");
 }
 
+// VTileLocal: a shown tile from the data at hand - the parsed tile without reading, the pack's z15 before its z14,
+// the cache's file; none: false (to download). z14 data tile (40, 20): MakeTile (water in its top left
+// quarter); its top left z15 child: the quarter's houses (no water) - a z16 tile drawn from it is land, from the z14 one
+// water.
+static void LocalChecks(const unsigned char* tile, int tileLen, const unsigned char* houses, int housesLen)
+{
+    const unsigned short water = RGB565(168, 204, 226), land = RGB565(243, 240, 235);
+    MapRequest d = { SRC_OSM, VEC_ZBASE + 14, 40, 20 }, p = { SRC_OSM, VEC_ZBASE + 15, 80, 40 };
+    MapRequest r16 = { SRC_OSM, 16, 160, 80 }, r16b = { SRC_OSM, 16, 161, 81 }, r14 = { SRC_OSM, 14, 40, 20 };
+    Image im = { 0 };
+    Check(!VTileLocal(r14, &im) && !im.bmp && s_reads == 0, "local: no data - nothing drawn, nothing read");
+    CachePath(s_file, d);
+    s_fileData = tile;
+    s_fileLen = tileLen;
+    Check(VTileLocal(r14, &im) && s_reads == 1 && Px(im, 64, 64) == water, "local: the cache's file");
+    ImageFree(&im);
+    Check(VTileLocal(r16, &im) && s_reads == 1 && Px(im, 128, 128) == water,
+          "local: z16 from the parsed z14 tile, nothing read again");
+    ImageFree(&im);
+    s_packKey[0] = p;
+    s_packData[0] = houses;
+    s_packLen[0] = housesLen;
+    s_nPack = 1;
+    Check(VTileLocal(r16, &im) && s_reads == 2 && Px(im, 128, 128) == land, "local: the pack's z15 tile first");
+    ImageFree(&im);
+    Check(VTileLocal(r16b, &im) && s_reads == 2 && Px(im, 128, 128) == land,
+          "local: the parsed z15 tile, nothing read again");
+    ImageFree(&im);
+    s_file[0] = 0;
+    s_packKey[1] = d;
+    s_packData[1] = tile;
+    s_packLen[1] = tileLen;
+    s_nPack = 2;
+    MapRequest r15 = { SRC_OSM, 15, 81, 41 };
+    Check(VTileLocal(r15, &im) && Px(im, 128, 128) != water, "local: z15 with no pack z15 tile - the z14 one");
+    ImageFree(&im);
+    s_nPack = 0;
+    s_reads = 0;
+}
+
 int main()
 {
     VTileInit();
     TiltChecks();
     unsigned char data[4096];
     int len = MakeTile(data);
+    static unsigned char quarter[4096];
+    LocalChecks(data, len, quarter, MakeHouses(quarter));
     const unsigned short water = RGB565(168, 204, 226), road = RGB565(255, 228, 176), land = RGB565(243, 240, 235);
 
     // z14: the data tile itself

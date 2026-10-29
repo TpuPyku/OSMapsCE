@@ -63,7 +63,7 @@ static const COLORREF kLine    = RGB(0x2a, 0x2f, 0x37);   // separators
 static COLORREF       kOrange  = RGB(0xff, 0x6b, 0x1a);
 static const COLORREF kHair    = RGB(64, 68, 77);         // night: a card's 1 px edge over the dark map
 
-enum { TIMER_TICK = 1, TIMER_USER = 2, TIMER_DOCK = 3, TIMER_LONG = 4 };
+enum { TIMER_TICK = 1, TIMER_USER = 2, TIMER_DOCK = 3, TIMER_LONG = 4, TIMER_DISK = 5 };
 static const UINT kUserDelayMs = 900;    // wait for the user to stop pressing buttons
 
 // GPS button modes (g_cfg.follow)
@@ -76,6 +76,9 @@ static const int    kTiltMinZ        = 15;
 static const double kTiltFog         = 1150;
 static const double kNearHalf        = 380;  // (5 slots: 2 x 380 + the 256 px the centre moves in its tile < 1280)
 static const double kFarHalf         = 384;
+static const double kAroundHalf      = 200;  // the next zooms' tiles kept ready +-this of their px round the centre
+static const UINT   kDiskStepMs      = 30;   // the view's tiles at hand drawn kDiskLoads at a time, a frame between
+enum { kDiskLoads = 3 };
                                              // (0.25 of 480: the car stays above the bottom bar)
 static const double kHeadingMinSpeed = 5;    // km/h: below it the course is noise, keep the last heading
 static const int    kMaxKeys         = 32;   // tiles one view can need from one source
@@ -83,8 +86,9 @@ static const int    kMaxParentLevels = 6;    // missing tile: show a coarser cac
 
 // Small ring of map keys: "not on disk" / "no coarser tile" memos,
 // so the card is not searched again every second.
+enum { kRingKeys = 128 };   // (the view 32, the far ring 25, the next zooms 2 x 9 and their parents: all fit)
 struct KeyRing {
-    MapRequest k[64];
+    MapRequest k[kRingKeys];
     int        n, next;
 };
 
@@ -99,8 +103,8 @@ static bool RingHas(const KeyRing& r, const MapRequest& k)
 static void RingAdd(KeyRing& r, const MapRequest& k)
 {
     r.k[r.next] = k;
-    r.next = (r.next + 1) % 64;
-    if (r.n < 64)
+    r.next = (r.next + 1) % kRingKeys;
+    if (r.n < kRingKeys)
         r.n++;
 }
 
@@ -310,21 +314,27 @@ static const Tilt* ViewTilt()
 
 static bool ScreenOf(double gx, double gy, double vx, double vy, double cx, double cy, double angle, double* x, double* y);
 
-// The far ring's tiles (two zooms out round the view's centre) while the third person's view is on; their count
-static int FarKeys(MapRequest* out, int max)
+// Zoom dz from the view's: the tiles +-half of that zoom's px round the view's centre; their count
+static int SquareKeys(int dz, double half, MapRequest* out, int max)
 {
-    if (!Tilted())
+    int z = g_cfg.z + dz, n = 0, tiles = 1 << z;
+    if (z < 2 || z > 19)
         return 0;
     double vx, vy;
-    ViewWorld(&vx, &vy);
-    int z = g_cfg.z - 2, n = 0, tiles = 1 << z;
-    for (int j = (int)floor((vy / 4 - kFarHalf) / TILE); j <= (int)floor((vy / 4 + kFarHalf) / TILE); j++)
-        for (int i = (int)floor((vx / 4 - kFarHalf) / TILE); i <= (int)floor((vx / 4 + kFarHalf) / TILE); i++)
+    GeoToWorld(g_cfg.lon, g_cfg.lat, z, &vx, &vy);
+    for (int j = (int)floor((vy - half) / TILE); j <= (int)floor((vy + half) / TILE); j++)
+        for (int i = (int)floor((vx - half) / TILE); i <= (int)floor((vx + half) / TILE); i++)
             if (n < max && i >= 0 && j >= 0 && i < tiles && j < tiles) {
                 MapRequest k = { SRC_OSM, z, i, j };
                 out[n++] = k;
             }
     return n;
+}
+
+// The far ring's tiles (two zooms out round the view's centre) while the third person's view is on; their count
+static int FarKeys(MapRequest* out, int max)
+{
+    return Tilted() ? SquareKeys(-2, kFarHalf, out, max) : 0;
 }
 
 // Tiles of a source that touch the (rotated) map window, nearest to the view center first
@@ -512,15 +522,42 @@ static void LoadParent(const MapRequest& k)
 
 // Brings the map tiles of the view into memory (disk or download), then the traffic
 // overlay. Disk decodes are limited per call: each costs some 20-50 ms on the unit.
-static void LoadFromDisk(const MapRequest* keys, int n, int maxLoads)
+// Up to maxLoads of the keys not in memory from the disk; the loads left, -1: keys left untried
+static int LoadFromDisk(const MapRequest* keys, int n, int maxLoads)
 {
-    for (int i = 0; i < n && maxLoads > 0; i++) {
+    for (int i = 0; i < n; i++) {
         if (CacheFind(keys[i], false) || RingHas(s_missKeys, keys[i]))
             continue;
-        maxLoads--;
+        if (!maxLoads--)
+            return -1;
         if (!CacheFind(keys[i], true))
             RingAdd(s_missKeys, keys[i]);
     }
+    return maxLoads;
+}
+
+// One step of drawing what is at hand (the user 2026-10-29: no waiting, no scaled tiles where the data is here): the
+// view's tiles, then - while the memory has room - the far ring's, the next zooms' round the centre (+ / - show them
+// at once). *view: the view's got some; returns true: more to do.
+static bool DiskStep(bool* view)
+{
+    MapRequest keys[kMaxKeys];
+    int left = LoadFromDisk(keys, NeededKeys(SRC_OSM, keys, kMaxKeys), kDiskLoads);
+    *view = left != kDiskLoads;
+    if (left < 0)
+        return true;
+    for (int k = 0; k < 3 && CacheBytes() + TILE * TILE * 2 <= CACHE_BYTES; k++) {
+        int n = k == 0 ? FarKeys(keys, kMaxKeys) : SquareKeys(k == 1 ? 1 : -1, kAroundHalf, keys, kMaxKeys);
+        left = LoadFromDisk(keys, n, left);
+        if (left < 0)
+            return true;
+    }
+    return false;
+}
+
+static void DiskSteps()   // from now on, till done
+{
+    SetTimer(s_wnd, TIMER_DISK, kDiskStepMs, NULL);
 }
 
 static int JunctionKeys(MapRequest* out, double* mx, double* my);
@@ -552,6 +589,7 @@ static void Ensure(int mode)
         for (int i = 0; i < n; i++)
             Request(i == 0 ? mode : (mode == REQ_FORCE ? REQ_AUTO : mode), keys[i], CacheFind(keys[i], false));
     }
+    DiskSteps();
 }
 
 int MapLook()
@@ -595,6 +633,7 @@ static void UserChanged()
     s_lastSaveTick = GetTickCount();
     SetTimer(s_wnd, TIMER_USER, kUserDelayMs, NULL);
     s_userPending = true;
+    DiskSteps();
     InvalidateRect(s_wnd, NULL, FALSE);
 }
 
@@ -3883,6 +3922,7 @@ static void OnDestroy(HWND hwnd)
     KillTimer(hwnd, TIMER_TICK);
     KillTimer(hwnd, TIMER_USER);
     KillTimer(hwnd, TIMER_DOCK);
+    KillTimer(hwnd, TIMER_DISK);
     KillTimer(hwnd, TIMER_LONG);
     ConfigSave();
     if (s_taskbar)
@@ -4089,6 +4129,14 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_TIMER:
         if (wp == TIMER_DOCK) {
             DockStep();
+            return 0;
+        }
+        if (wp == TIMER_DISK) {
+            bool view;
+            if (!DiskStep(&view))
+                KillTimer(hwnd, TIMER_DISK);
+            if (view)
+                InvalidateRect(hwnd, NULL, FALSE);
             return 0;
         }
         if (wp == TIMER_LONG) {   // the finger stayed on the map: a point for a route

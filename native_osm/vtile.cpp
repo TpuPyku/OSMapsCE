@@ -1055,6 +1055,32 @@ bool VTileRenderFrom(const MapRequest& r, const MapRequest& key, const unsigned 
     return ok;
 }
 
+// A data tile drawn from: parsed already (nothing read), else from its pack, else (cached true) from the cache's file
+static bool LocalFrom(const MapRequest& r, const MapRequest& key, bool cached, Image* out)
+{
+    if (VTileRenderFrom(r, key, NULL, 0, out))
+        return true;
+    wchar_t file[MAX_PATH];
+    unsigned char* data = NULL;
+    int len = 0;
+    if (!VPackTile(key, &data, &len)) {
+        CachePath(file, key);
+        if (!cached || !ReadWholeFile(file, &data, &len))
+            return false;
+    }
+    bool ok = VTileRenderFrom(r, key, data, len, out);
+    free(data);
+    return ok;
+}
+
+// A shown tile from the data at hand (the user 2026-10-29: no waiting for the download thread's queue where the data
+// is here): the region's pack's z15 tile (the house numbers), else the z14 one - the pack's, the cache's file
+bool VTileLocal(const MapRequest& r, Image* out)
+{
+    MapRequest p = VTileDataAt(r, VEC_PACKZ), d = VTileData(r);
+    return (!SameKey(p, d) && LocalFrom(r, p, false, out)) || LocalFrom(r, d, true, out);
+}
+
 void VTileInit()   // before the download thread starts
 {
     InitializeCriticalSection(&s_cs);

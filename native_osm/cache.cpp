@@ -245,15 +245,8 @@ CacheEntry* CacheFind(const MapRequest& r, bool loadFromDisk)
     MapResult res;
     memset(&res, 0, sizeof(res));
     res.req = r;
-    if (g_cfg.vector) {   // the data tile's .pbf, drawn now (never expires: OpenFreeMap's data is versioned)
-        CachePath(path, VTileData(r));
-        unsigned char* data;
-        int len;
-        if (!ReadWholeFile(path, &data, &len))
-            return NULL;
-        bool ok = VTileRender(r, data, len, &res.img);
-        free(data);
-        return ok ? CacheAdd(&res, 0) : NULL;
+    if (g_cfg.vector) {   // the data at hand (a region's pack, the cache's .pbf: never expires, versioned), drawn now
+        return VTileLocal(r, &res.img) ? CacheAdd(&res, 0) : NULL;
     }
     CachePath(path, r);
     if (!ImageFromFile(path, &res.img))

@@ -273,6 +273,7 @@ MapRequest VTileData(const MapRequest& r);   // the data tile (VEC_ZBASE + z) a 
 MapRequest VTileDataAt(const MapRequest& r, int maxz);   // ... with data tiles up to zoom maxz (a pack: VEC_PACKZ)
 bool       VTileRender(const MapRequest& r, const unsigned char* data, int len, Image* out);   // data NULL: parsed already
 bool       VTileRenderFrom(const MapRequest& r, const MapRequest& d, const unsigned char* data, int len, Image* out);   // from data tile d
+bool       VTileLocal(const MapRequest& r, Image* out);   // from the data at hand (parsed, a pack, the cache); false: none
 void       VLabelsDraw(HDC dc, const RECT& mr, double cx, double cy, double vx, double vy, double angle, int z,
                        const RECT* avoid, int navoid);   // avoid: the controls over the map, no names under them
 const wchar_t* MapFace();

@@ -205,18 +205,11 @@ static int VecVersion()
 static void FetchVector(const MapRequest& r, MapResult* res)
 {
     res->look = MapLook();   // (read before drawing: a switch meanwhile drops this tile)
-    MapRequest d = VTileData(r), p = VTileDataAt(r, VEC_PACKZ);
-    wchar_t file[MAX_PATH];
-    CachePath(file, d);
+    if (VTileLocal(r, &res->img))
+        return;
+    MapRequest d = VTileData(r);
     unsigned char* body = NULL;
     int len = 0;
-    bool deep = VPackTile(p, &body, &len);
-    if (deep || VPackTile(d, &body, &len) || ReadWholeFile(file, &body, &len)) {   // the pack, the cache's copy
-        if (!VTileRenderFrom(r, deep ? p : d, body, len, &res->img))
-            res->err = NET_DECODE;
-        free(body);
-        return;
-    }
     DWORD t0 = GetTickCount();
     res->err = VecVersion();
     if (res->err != NET_OK)
