@@ -646,7 +646,9 @@ bool OnApiResult(ApiResult* r)
         else {
             if (!s_np)
                 s_state = ROUTE_FAIL;
-            _snwprintf(s_stateText, 64, r->err == NET_OK ? L"Ошибка сервера %d" : L"Нет связи с сервером",
+            // (the user 2026-10-29: Moscow - Samara, both regions on the card, no trunk roads: "no connection")
+            _snwprintf(s_stateText, 64, r->err == NET_OK ? L"Ошибка сервера %d" : OfflineHasTrunk() ?
+                       L"Нет связи с сервером" : L"Нет сети, а между областями нужны магистрали (КАРТЫ)",
                        r->httpStatus);
             s_stateText[63] = 0;
         }

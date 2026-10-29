@@ -186,6 +186,7 @@ int  MapsJob(wchar_t* text, int cap, int* gotKb, int* totalKb);   // MAPS_BUSY /
 // offline.cpp - routes from a region's road graph (OSMapsData\<region>\route.grf), answered as OSRM's JSON
 bool  OfflineRoute(const char* osrmPath, char** body, int* len);   // false: no region / no way - ask OSRM
 bool  OfflineTrunkRoute(const char* osrmPath, char** body, int* len);   // over the trunk roads (4b): after OSRM failed
+bool  OfflineHasTrunk();   // the trunk roads' graph is on a card
 bool  OfflineDir(const int* latLon, int n, wchar_t* dir);          // the region's folder holding the points
 bool  OfflineRoadAt(int lat, int lon, double maxM, char* name, int cap);   // the nearest road's name (1e-6 degrees)
 // offsearch.cpp - the search and the address of a point from a region's index (search.idx), answered as Photon's

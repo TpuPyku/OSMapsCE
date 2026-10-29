@@ -414,6 +414,15 @@ int main()
     b = Route("50.000,52.995;50.006,53.000");
     Check(!b, "trunk: no region holds the start", b);
     free(b);
+    wchar_t trunk[MAX_PATH], hidden[MAX_PATH];
+    PathInDir(trunk, L"..\\OSMapsData\\trunk\\trunk.grf");
+    PathInDir(hidden, L"..\\OSMapsData\\trunk\\trunk.hidden");
+    Check(OfflineHasTrunk(), "trunk: the card has the trunk roads", NULL);
+    MoveFile(trunk, hidden);
+    OffVolumes(false);   // (the folders listed again)
+    Check(!OfflineHasTrunk() && !TrunkRoute("50.000,52.995;50.006,53.000"), "trunk: none on the card - no way", NULL);
+    MoveFile(hidden, trunk);
+    OffVolumes(false);
     b = TrunkRoute("50.000,52.995;50.006,53.000");
     Check(b && Num(b, "\"distance\":") > 380 && Num(b, "\"distance\":") < 420 && First(b, 53000000, 50000000),
           "trunk: from the nearest trunk road, ~400 m", b);

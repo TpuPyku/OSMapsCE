@@ -1253,6 +1253,12 @@ static bool JoinedRoute(const Request& r, char** body, int* len, DWORD t0)
 // roads of Russia and the CIS (OSMapsData\trunk\trunk.grf: motorway / trunk / primary, offline/make_graph.py TRUNK),
 // from the trunk road nearest the start to the one nearest the end (SnapTo: within 9 x 9 of its 0.2 degree cells),
 // joined to the start's and the end's regions' roads when they are on the card (JoinedRoute), else the trunk alone.
+bool OfflineHasTrunk()   // the trunk roads' graph on a card (else no way between the regions without the internet)
+{
+    wchar_t dir[MAX_PATH];
+    return OffRegion(L"trunk.grf", AnyGraph, NULL, dir);
+}
+
 bool OfflineTrunkRoute(const char* path, char** body, int* len)
 {
     Request r;
