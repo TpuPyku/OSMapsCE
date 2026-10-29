@@ -144,6 +144,10 @@ static bool       s_pressedInside;
 static bool       s_dragging, s_dragMoved;
 static POINT      s_dragStart;
 static double     s_dragWx, s_dragWy;
+static bool       s_dragTilt;           // the drag began in the third person's view: it stays on
+static double     s_dragFx, s_dragFy;   // ... the flat point under the finger then (from the view's centre, turned)
+static DWORD      s_freeTick;           // the third person's view moved by hand: when (0: it follows the car)
+static const DWORD kFreeMs = 5000;      // then back to the car (the user 2026-10-29)
 
 static GpsState   s_gps;
 static bool       s_gpsRunning;
@@ -243,6 +247,9 @@ static void FollowGps()
 {
     if (g_cfg.follow == FOLLOW_OFF || !s_gps.valid)
         return;
+    if (s_freeTick && GetTickCount() - s_freeTick < kFreeMs)
+        return;   // moved by hand: the view (and its turn) stay a while
+    s_freeTick = 0;
     if (s_gps.speedKmh > kHeadingMinSpeed)
         s_heading = s_gps.course;
     double x, y;
@@ -759,6 +766,29 @@ static void PanBy(double dx, double dy)
     g_cfg.follow = FOLLOW_OFF;
 }
 
+// The flat map's point under a screen point (from the view's centre, the view turned); false: the sky or the fog
+static bool FlatAt(int x, int y, double* fx, double* fy)
+{
+    double sx = x - (g_cfg.mapX + g_cfg.mapW / 2.0), sy = y - (g_cfg.mapY + g_cfg.mapH / 2.0), k, fade;
+    const Tilt* t = ViewTilt();
+    if (!t || !TiltRow(*t, sy, fy, &k, &fade))
+        return false;
+    *fx = sx * k;
+    return true;
+}
+
+// The third person's view dragged (the user 2026-10-29: it stays on): the flat point first under the finger under it
+// again; the view comes back to the car kFreeMs after
+static void DragTilted(int x, int y)
+{
+    double fx, fy;
+    if (!FlatAt(x, y, &fx, &fy))
+        return;
+    double dx = s_dragFx - fx, dy = s_dragFy - fy, a = ViewAngle() * M_PI / 180.0, c = cos(a), sn = sin(a);
+    WorldToGeo(s_dragWx + c * dx - sn * dy, s_dragWy + sn * dx + c * dy, g_cfg.z, &g_cfg.lon, &g_cfg.lat);
+    s_freeTick = GetTickCount();
+}
+
 static void ZoomBy(int dz)
 {
     int z = g_cfg.z + dz;
@@ -805,6 +835,7 @@ static void Zoom(int dz)   // the user's
 static void NextFollowMode()
 {
     g_cfg.follow = (g_cfg.follow + 1) % 3;
+    s_freeTick = 0;
     FollowGps();
 }
 
@@ -4180,6 +4211,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             s_dragStart.x = x;
             s_dragStart.y = y;
             ViewWorld(&s_dragWx, &s_dragWy);
+            s_dragTilt = FlatAt(x, y, &s_dragFx, &s_dragFy);
         }
         InvalidateRect(hwnd, NULL, FALSE);
         return 0;
@@ -4199,7 +4231,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 s_dragMoved = true;
                 KillTimer(hwnd, TIMER_LONG);
             }
-            if (s_dragMoved) {
+            if (s_dragMoved && s_dragTilt) {
+                DragTilted(x, y);
+                InvalidateRect(hwnd, NULL, FALSE);
+            } else if (s_dragMoved) {
                 WorldToGeo(s_dragWx - dx, s_dragWy - dy, g_cfg.z, &g_cfg.lon, &g_cfg.lat);
                 g_cfg.follow = FOLLOW_OFF;
                 InvalidateRect(hwnd, NULL, FALSE);
