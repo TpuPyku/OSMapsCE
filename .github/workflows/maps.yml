@@ -6,6 +6,12 @@ name: maps
 
 on:
   workflow_dispatch:
+    inputs:
+      only:
+        description: 'Что собрать: all - всё; trunk - граф магистралей России и СНГ; app - программу для ПК'
+        default: all
+        type: choice
+        options: [all, trunk, app]
   schedule:
     - cron: '0 3 * * 1'   # Mondays, 03:00 UTC
 
@@ -14,6 +20,7 @@ permissions:
 
 jobs:
   list:
+    if: ${{ inputs.only == '' || inputs.only == 'all' }}
     runs-on: ubuntu-latest
     outputs:
       regions: ${{ steps.list.outputs.regions }}
@@ -49,7 +56,7 @@ jobs:
 
   publish:
     needs: build
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && (inputs.only == '' || inputs.only == 'all') }}
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
@@ -74,7 +81,7 @@ jobs:
       - run: gh release upload maps dist/*.zip dist/catalog.json --clobber
       - name: The zips no longer in the catalog (regions merged or gone) removed
         run: |
-          keep=" catalog.json $(python -c "import json; print(' '.join(r['zip'] for r in json.load(open('dist/catalog.json'))['regions']))") "
+          keep=" catalog.json trunk.zip $(python -c "import json; print(' '.join(r['zip'] for r in json.load(open('dist/catalog.json'))['regions']))") "
           for a in $(gh release view maps --json assets --jq '.assets[].name'); do
             case "$keep" in *" $a "*) ;; *) gh release delete-asset maps "$a" -y ;; esac
           done
@@ -82,7 +89,7 @@ jobs:
   app:   # the PC app that writes the maps to a flash drive, for users without Python (offline/build_app.bat) - in a
          # release of its own, maps-app (the user 2026-10-28: lost among the maps' zips), never the program's latest
     needs: publish
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && inputs.only != 'trunk' }}
     runs-on: windows-latest
     env:
       GH_TOKEN: ${{ github.token }}
@@ -100,3 +107,48 @@ jobs:
           gh release view maps-app >/dev/null 2>&1 || gh release create maps-app --latest=false --title "Карты OSMapsCE — программа для ПК"             --notes "Записывает карты областей для OSMapsCE на флешку или SD-карту: распакуйте архив, запустите OSMapsCE-Maps.exe, отметьте области щелчком, нажмите «Записать выбранные». Карты — в релизе maps. Данные © участники OpenStreetMap, ODbL."
       - run: gh release upload maps-app offline/app/OSMapsCE-Maps.zip --clobber
         shell: bash
+
+  trunk:   # 4b (the user 2026-10-29): the trunk roads of Russia and the CIS - motorway / trunk / primary with their
+           # links (offline/make_graph.py TRUNK) - for routes from one region to another without the internet.
+           # Geofabrik's countries, each cut to the trunk roads at once (the disk: Russia alone is 4 GB), merged.
+    if: ${{ inputs.only == '' || inputs.only == 'all' || inputs.only == 'trunk' }}
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: sudo apt-get install -y osmium-tool && pip install osmium
+      - name: The countries' trunk roads
+        run: |
+          df -h / | tail -1
+          mkdir -p cut dist
+          for c in russia europe/belarus europe/ukraine europe/moldova europe/georgia asia/kazakhstan asia/uzbekistan \
+                   asia/kyrgyzstan asia/tajikistan asia/turkmenistan asia/azerbaijan asia/armenia; do
+            n=$(basename $c)
+            curl -sSfL -o src.pbf "https://download.geofabrik.de/$c-latest.osm.pbf"
+            osmium tags-filter src.pbf w/highway=motorway,trunk,primary,motorway_link,trunk_link,primary_link \
+              -o cut/$n.pbf --overwrite
+            echo "$n: $(du -m src.pbf | cut -f1) MB -> $(du -m cut/$n.pbf | cut -f1) MB"
+            rm src.pbf
+          done
+          osmium merge cut/*.pbf -o trunk.pbf --overwrite
+          du -m trunk.pbf
+      - name: The graph
+        run: |
+          /usr/bin/time -v python offline/make_graph.py trunk.pbf dist/trunk.grf trunk 2>&1 | \
+            grep -E "nodes|Maximum resident|Elapsed"
+          printf 'name=trunk\ndate=%s\n' "$(date -u +%Y-%m-%d)" > dist/region.txt
+          (cd dist && zip -9 trunk.zip trunk.grf region.txt)
+          ls -l dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: trunk
+          path: dist/trunk.zip
+          retention-days: 7
+      - name: Into the release maps (and how big it is now)
+        run: |
+          gh release upload maps dist/trunk.zip --clobber
+          gh release view maps --json assets --jq '[.assets[].size] | add / 1e6 | "release maps: \(.) MB"'

@@ -1,6 +1,7 @@
 """The road graph of a region for OSMapsCE's offline routing (offline.cpp on the unit).
 
     python make_graph.py <region>.osm.pbf <out>/route.grf
+    python make_graph.py <country>.osm.pbf <out>/trunk.grf trunk      (4b: the trunk roads, see TRUNK)
 
 Car roads only (highway classes below, access / motor_vehicle not "no" / "private"), split at the junctions; each
 piece is an edge in both directions unless one-way. Times from the class's speed (or maxspeed, capped) plus the
@@ -90,15 +91,22 @@ def car_way(tags, ids):
     return Way(ids, cls, oneway_of(tags, rb), rb, speed_of(tags, cls), tags.get('name', ''), tags.get('ref', ''))
 
 
+# The trunk graph (4b, the user 2026-10-27/29: from one region to another, Vladivostok - Moscow, without the internet):
+# the main roads only, their shapes simplified, a coarse grid - for the whole country
+TRUNK = dict(classes={'motorway', 'trunk', 'primary', 'motorway_link', 'trunk_link', 'primary_link'},
+             simplify_m=50, cell=100000)
+
+
 class Ways(osmium.SimpleHandler):
-    def __init__(self):
+    def __init__(self, classes=None):
         super().__init__()
         self.ways = []
         self.uses = {}       # node id -> how many way ends (2 each) / passes (1)
+        self.keep = {kCls[c] for c in classes} if classes else None
 
     def way(self, w):
         way = car_way(w.tags, [n.ref for n in w.nodes])
-        if not way:
+        if not way or (self.keep is not None and way.cls not in self.keep):
             return
         self.ways.append(way)
         last = len(way.ids) - 1
@@ -125,6 +133,26 @@ def dist_m(a, b):
     dy = (b[0] - a[0]) * 0.111195
     dx = (b[1] - a[1]) * 0.111195 * math.cos(la)
     return math.hypot(dx, dy)
+
+
+def simplify(pts, tol_m):
+    """Douglas-Peucker: the points of the line within tol_m metres of it dropped (the ends kept)."""
+    if tol_m <= 0 or len(pts) < 3:
+        return list(pts)
+    a, b = pts[0], pts[-1]
+    k = math.cos(math.radians(a[0] / 1e6))
+    ax, ay, bx, by = a[1] * k, a[0], b[1] * k, b[0]
+    dx, dy = bx - ax, by - ay
+    span = math.hypot(dx, dy)
+    worst, at = -1.0, 0
+    for i in range(1, len(pts) - 1):
+        px, py = pts[i][1] * k - ax, pts[i][0] - ay
+        d = abs(px * dy - py * dx) / span if span else math.hypot(px, py)
+        if d > worst:
+            worst, at = d, i
+    if worst * 0.111195 <= tol_m:
+        return [a, b]
+    return simplify(pts[:at + 1], tol_m)[:-1] + simplify(pts[at:], tol_m)
 
 
 class Names:
@@ -166,24 +194,24 @@ def segments(ids, junction):
             start = i
 
 
-def make_piece(w, seg, nm, loc, signals, nodes):
-    """The way's run seg (junction to junction) as a piece of road."""
+def make_piece(w, seg, nm, loc, signals, nodes, tol_m=0):
+    """The way's run seg (junction to junction) as a piece of road; its shape within tol_m (its length the true one)."""
     pts = [loc[n] for n in seg]
     length = sum(dist_m(pts[k], pts[k + 1]) for k in range(len(pts) - 1))
     # a light: its wait on the piece that ends at it (the start node's: the previous piece's)
     sig = sum(1 for n in seg[1:] if n in signals)
-    return Piece(nodes.index(seg[0]), nodes.index(seg[-1]), pts[1:-1], length, w.cls, w.oneway, w.rb, w.speed, nm,
-                 sig)
+    return Piece(nodes.index(seg[0]), nodes.index(seg[-1]), simplify(pts, tol_m)[1:-1], length, w.cls, w.oneway, w.rb,
+                 w.speed, nm, sig)
 
 
-def make_pieces(ways, loc, signals, junction):
+def make_pieces(ways, loc, signals, junction, tol_m=0):
     nodes, names, pieces = Nodes(loc), Names(), []
     for w in ways:
         ids = [n for n in w.ids if n in loc]
         if len(ids) < 2:
             continue
         nm = names.add(w.name, w.ref)
-        pieces += [make_piece(w, seg, nm, loc, signals, nodes) for seg in segments(ids, junction)]
+        pieces += [make_piece(w, seg, nm, loc, signals, nodes, tol_m) for seg in segments(ids, junction)]
     return nodes.pts, names.data, pieces
 
 
@@ -217,12 +245,12 @@ def flatten(edges):
 
 def seg_cells(p, q, box):
     """The cells along a segment (sampled at half a cell: fine against the short segments)."""
-    min_lat, min_lon, gw = box
-    steps = int(max(abs(q[0] - p[0]), abs(q[1] - p[1])) // (kCell // 2)) + 1
+    min_lat, min_lon, gw, cell = box
+    steps = int(max(abs(q[0] - p[0]), abs(q[1] - p[1])) // (cell // 2)) + 1
     for s in range(steps + 1):
         la = p[0] + (q[0] - p[0]) * s // steps
         lo = p[1] + (q[1] - p[1]) * s // steps
-        yield ((la - min_lat) // kCell) * gw + (lo - min_lon) // kCell
+        yield ((la - min_lat) // cell) * gw + (lo - min_lon) // cell
 
 
 def make_grid(pieces, nodes, piece_edge, box, ncells):
@@ -246,14 +274,14 @@ def make_grid(pieces, nodes, piece_edge, box, ncells):
     return cstart, items
 
 
-def write(out, nodes, first, flat, geom, names, bbox, grid):
+def write(out, nodes, first, flat, geom, names, bbox, grid, cell=kCell):
     (min_lat, min_lon, max_lat, max_lon), (gw, gh, cstart, items) = bbox, grid
     off = [struct.calcsize(HEADER)]
     for size in (len(nodes) * 8, (len(nodes) + 1) * 4, len(flat) * 24, len(geom) * 8, (len(names) + 3) & ~3):
         off.append(off[-1] + size)
     with open(out, 'wb') as f:
         f.write(struct.pack(HEADER, b'OSMG', VERSION, len(nodes), len(flat), len(geom), len(names),
-                            min_lat, min_lon, max_lat, max_lon, gw, gh, kCell, len(items), *off))
+                            min_lat, min_lon, max_lat, max_lon, gw, gh, cell, len(items), *off))
         f.write(b''.join(struct.pack('<ii', *n) for n in nodes))
         f.write(struct.pack('<%dI' % len(first), *first))
         f.write(b''.join(struct.pack('<IIIIHBBI', *e[:8]) for e in flat))
@@ -264,23 +292,23 @@ def write(out, nodes, first, flat, geom, names, bbox, grid):
     return off[-1] + (len(cstart) + len(items)) * 4
 
 
-def build(src, out):
-    w = Ways()
+def build(src, out, classes=None, simplify_m=0, cell=kCell):
+    w = Ways(classes)
     w.apply_file(src)
     locs = Locs(set(w.uses))
     locs.apply_file(src)
     junction = {n for n, c in w.uses.items() if c > 1}   # shared by ways, or a way's end
-    nodes, names, pieces = make_pieces(w.ways, locs.loc, locs.signals, junction)
+    nodes, names, pieces = make_pieces(w.ways, locs.loc, locs.signals, junction, simplify_m)
     edges, geom = directed(pieces, len(nodes))
     first, flat, piece_edge = flatten(edges)
     lats, lons = [n[0] for n in nodes], [n[1] for n in nodes]
     bbox = (min(lats), min(lons), max(lats), max(lons))
-    gw, gh = (bbox[3] - bbox[1]) // kCell + 1, (bbox[2] - bbox[0]) // kCell + 1
-    cstart, items = make_grid(pieces, nodes, piece_edge, (bbox[0], bbox[1], gw), gw * gh)
-    size = write(out, nodes, first, flat, geom, names, bbox, (gw, gh, cstart, items))
+    gw, gh = (bbox[3] - bbox[1]) // cell + 1, (bbox[2] - bbox[0]) // cell + 1
+    cstart, items = make_grid(pieces, nodes, piece_edge, (bbox[0], bbox[1], gw, cell), gw * gh)
+    size = write(out, nodes, first, flat, geom, names, bbox, (gw, gh, cstart, items), cell)
     print('nodes %d, edges %d, geom %d, names %d B, grid %dx%d (%d items); file %.1f MB' % (
         len(nodes), len(flat), len(geom), len(names), gw, gh, len(items), size / 1e6))
 
 
 if __name__ == '__main__':
-    build(sys.argv[1], sys.argv[2])
+    build(sys.argv[1], sys.argv[2], **(TRUNK if sys.argv[3:] == ['trunk'] else {}))

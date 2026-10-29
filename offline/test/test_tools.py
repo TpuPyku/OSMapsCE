@@ -147,6 +147,29 @@ class Tools(unittest.TestCase):
         main = [dm for a, b, dm, _, n in edges if n == 'Главная улица' and a == (53000000, 50000000)]
         self.assertTrue(1300 < main[0] < 1400)        # ~134 m, in decimetres
 
+    def test_trunk_graph(self):
+        """4b (the user 2026-10-29): the trunk roads of the whole country - only the classes asked, the shapes
+        simplified (the lengths still the true ones), the grid's cell coarse."""
+        full, out = os.path.join(self.tmp, 'full.grf'), os.path.join(self.tmp, 'trunk.grf')
+        make_graph.build(TINY, full)
+        make_graph.build(TINY, out, classes={'primary'}, simplify_m=1000, cell=100000)
+        nodes, edges = graph(out)
+        self.assertEqual({n for _, _, _, _, n in edges}, {'Главная улица'})
+        self.assertLess(len(nodes), len(graph(full)[0]))
+        h = struct.unpack_from(make_graph.HEADER, read(out), 0)
+        self.assertEqual(h[4], 0)                     # no inner points left within 1 km
+        self.assertEqual(h[12], 100000)               # the cell
+        main = sorted(dm for a, b, dm, _, n in graph(full)[1] if n == 'Главная улица')
+        self.assertLessEqual(abs(sum(dm for _, _, dm, _, _ in edges) - sum(main)), 4)   # the same length, one piece
+        self.assertEqual(len(edges), 2)               # (the side roads' junctions gone: one piece, both ways)
+
+    def test_simplify(self):
+        line = [(0, 0), (10, 1000), (0, 2000), (0, 3000), (500, 4000)]   # 1e-6 degrees: ~1 m of latitude per 9
+        self.assertEqual(make_graph.simplify(line, 0), line)
+        self.assertEqual(make_graph.simplify(line, 5), [(0, 0), (0, 3000), (500, 4000)])
+        self.assertEqual(make_graph.simplify(line, 100), [(0, 0), (500, 4000)])
+        self.assertEqual(make_graph.simplify(line[:2], 100), line[:2])
+
     def test_speed_and_access(self):
         self.assertEqual(make_graph.maxspeed_kmh('40 mph'), 64)
         self.assertIsNone(make_graph.maxspeed_kmh('none'))
