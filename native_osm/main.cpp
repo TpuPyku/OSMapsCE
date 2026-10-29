@@ -3820,14 +3820,15 @@ static int VhReceive(const wchar_t* cmd)   // 2 = a button taken (VestaHome leav
         }
     }
     if (!wcsncmp(cmd, L"key", 3) && cmd[3] == L'\t') {
-        // The wheel's buttons (the user 2026-10-26): short presses stay VestaHome's (tracks, the phone); held "up" /
-        // "down" (0x12 / 0x14) - the zoom, while the map is in front (VestaHome asks only then).
+        // The wheel's buttons (the user 2026-10-26): short presses stay VestaHome's (tracks, the phone); held - the
+        // zoom (WheelZoom), while the map is in front (VestaHome asks only then).
         int code = VhField(cmd, L"code", v, 8) ? _wtoi(v) : 0;
         int st = VhField(cmd, L"st", v, 8) ? _wtoi(v) : 0;
         int kind = VhField(cmd, L"kind", v, 8) ? _wtoi(v) : 0;
-        if ((code == 0x12 || code == 0x14) && kind >= 2) {
+        int dz = WheelZoom(code, kind);
+        if (dz) {
             if (st == 0) {
-                Zoom(code == 0x12 ? 1 : -1);
+                Zoom(dz);
                 UserChanged();
                 InvalidateRect(s_wnd, NULL, FALSE);
             }

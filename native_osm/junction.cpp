@@ -30,6 +30,18 @@ int JunctionZoom(int userZ, bool heading, bool complex, int nextM, bool off)
     return JunctionShown(heading, complex, nextM, off) && userZ < kCloseZ ? kCloseZ : userZ;
 }
 
+// The wheel's buttons held, from VestaHome (kind: 1 short, 2 long, 3 repeat): up / down (8 / 9; the MCU's own held
+// codes 0x0A / 0x0B - HU 2026-10-29: up / down came as 8 / 9, the zoom waited for 0x12 / 0x14 only) and phone /
+// hang up (0x12 / 0x14) zoom in / out; short presses stay VestaHome's (tracks, the phone)
+int WheelZoom(int code, int kind)
+{
+    if (code == 0x0A || code == 0x0B)
+        return code == 0x0A ? 1 : -1;
+    if (kind < 2)
+        return 0;
+    return code == 8 || code == 0x12 ? 1 : code == 9 || code == 0x14 ? -1 : 0;
+}
+
 // Metres east and north from point a to b (a small piece: the plane at a's latitude)
 static void Metres(const double* a, const double* b, double* e, double* n)
 {

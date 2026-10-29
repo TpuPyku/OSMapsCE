@@ -820,6 +820,16 @@ static void Joints()
 
 // The junction card (the user 2026-10-28, on in the settings): the route round a complex maneuver - 110 m before it,
 // 70 m after - on the map turned so the way in points up
+static void WheelChecks()
+{
+    Check(WheelZoom(8, 2) == 1 && WheelZoom(9, 2) == -1 && WheelZoom(8, 3) == 1 && WheelZoom(9, 3) == -1,
+          "wheel: up / down held - zoom in / out");
+    Check(WheelZoom(0x0A, 1) == 1 && WheelZoom(0x0B, 1) == -1, "wheel: the MCU's held up / down (0x0A / 0x0B)");
+    Check(WheelZoom(0x12, 2) == 1 && WheelZoom(0x14, 2) == -1, "wheel: phone / hang up held - as before");
+    Check(!WheelZoom(8, 1) && !WheelZoom(9, 1) && !WheelZoom(0x12, 1) && !WheelZoom(0x14, 1) && !WheelZoom(7, 2),
+          "wheel: short presses and other keys - VestaHome's");
+}
+
 static void JunctionChecks()
 {
     Check(JunctionComplex("fork") && JunctionComplex("off ramp") && JunctionComplex("on ramp") &&
@@ -1148,6 +1158,7 @@ int main()
     Levels();
     Joints();
     JunctionChecks();
+    WheelChecks();
     TiltWarpChecks();
     RECT whole = { 0, 0, 800, 480 };
     // the Russian name when the tile has one (name:ru), else the local one: a frame named so equals one whose tile
