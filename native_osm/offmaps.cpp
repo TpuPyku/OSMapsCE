@@ -374,6 +374,11 @@ static bool Exists(const wchar_t* path, void*)   // OffRegion's test: the file i
     return GetFileAttributes(path) != 0xFFFFFFFF;
 }
 
+static int ByTitle(const void* a, const void* b)   // (UTF-8's bytes: the Cyrillic alphabet's order, ё aside)
+{
+    return strcmp(((const MapRegion*)a)->title, ((const MapRegion*)b)->title);
+}
+
 static DWORD WINAPI ListThread(LPVOID)
 {
     char url[256];
@@ -384,6 +389,7 @@ static DWORD WINAPI ListThread(LPVOID)
     static MapRegion got[kMaxRegions];
     int n = ok ? MapsCatalog((const char*)body, got, kMaxRegions) : 0;
     free(body);
+    qsort(got, n, sizeof(MapRegion), ByTitle);
     MapsHave(got, n);
     Lock();
     memcpy(s_reg, got, n * sizeof(MapRegion));

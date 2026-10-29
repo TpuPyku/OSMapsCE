@@ -194,7 +194,7 @@ static const int   kSetCacheCount = sizeof(kSetCacheMb) / sizeof(kSetCacheMb[0])
 // The settings screen as VestaHome's: a top bar with "back", one panel of rows; a row's stepper (port, speed,
 // cache) applies at once - no "Apply" / "Close". Rows at kSetRow0 + i * kSetRowH.
 enum { S_PORT_PREV, S_PORT_NEXT, S_BAUD_PREV, S_BAUD_NEXT, S_CACHE_PREV, S_CACHE_NEXT, S_MAP_PREV, S_MAP_NEXT,
-       S_JUNC_PREV, S_JUNC_NEXT, S_SCAN, S_EXIT, S_BACK, S_COUNT };
+       S_JUNC_PREV, S_JUNC_NEXT, S_SCAN, S_EXIT, S_MAPS, S_BACK, S_COUNT };
 enum { kSetRow0 = 76, kSetRowH = 50 };   // (6 rows: 50 px each since the junction card's, 2026-10-28)
 static const RECT kSetCtl[S_COUNT] = {
     { 512, 79, 560, 123 }, { 712, 79, 760, 123 },     // the steppers' arrows: rows 0..4
@@ -204,10 +204,25 @@ static const RECT kSetCtl[S_COUNT] = {
     { 512, 279, 560, 323 }, { 712, 279, 760, 323 },
     { 616, 329, 760, 373 },                            // find GPS
     { 600, 416, 784, 468 },                            // exit the program
+    { 416, 416, 592, 468 },                            // the regions' maps (their screen)
     { 8, 412, 80, 480 },                               // back: VestaHome's, at the bottom left
 };
 static const wchar_t* kSetCaption[S_COUNT] = { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, L"ПОИСК",
-                                               L"ЗАВЕРШИТЬ", NULL };
+                                               L"ЗАВЕРШИТЬ", L"КАРТЫ", NULL };
+
+// The regions' maps downloaded here (offmaps.cpp's job; the user 2026-10-29: the graphs for the routes and the
+// search without the internet; the map's picture - the raster tiles' cache): Settings -> "КАРТЫ" - the release's
+// catalog by its titles, kMapsRows a page, a row's button downloads it (the trunk roads after the first one)
+enum { M_ROW0, M_PREV = 6, M_NEXT, M_LIST, M_BACK, M_COUNT, kMapsRows = 6 };
+static const RECT kMapsCtl[M_COUNT] = {
+    { 600, 81, 760, 121 }, { 600, 131, 760, 171 }, { 600, 181, 760, 221 },   // the rows' buttons
+    { 600, 231, 760, 271 }, { 600, 281, 760, 321 }, { 600, 331, 760, 371 },
+    { 300, 420, 348, 468 }, { 452, 420, 500, 468 },                           // the pages
+    { 600, 416, 784, 468 },                                                   // the catalog again
+    { 8, 412, 80, 480 },                                                      // back to the settings
+};
+static bool s_maps;            // the maps' screen over the settings
+static int  s_mapsPressed = -1, s_mapsPage;
 
 // ---------------------------------------------------------------- view & tiles
 
@@ -678,11 +693,41 @@ static void OnSettingsCtl(int id)
     case S_EXIT:
         DestroyWindow(s_wnd);
         return;
+    case S_MAPS:
+        s_maps = true;
+        s_mapsPage = 0;
+        if (!MapsCount())
+            MapsList();
+        break;
     case S_BACK:
         s_settings = false;
         break;
     }
     InvalidateRect(s_wnd, NULL, FALSE);
+}
+
+static void OnMapsCtl(int id)
+{
+    int pages = (MapsCount() + kMapsRows - 1) / kMapsRows;
+    if (id < M_PREV)
+        MapsGetRegion(s_mapsPage * kMapsRows + id);
+    else if (id == M_PREV && s_mapsPage > 0)
+        s_mapsPage--;
+    else if (id == M_NEXT && s_mapsPage + 1 < pages)
+        s_mapsPage++;
+    else if (id == M_LIST)
+        MapsList();
+    else if (id == M_BACK)
+        s_maps = false;
+    InvalidateRect(s_wnd, NULL, FALSE);
+}
+
+static int HitMaps(int x, int y)
+{
+    for (int i = 0; i < M_COUNT; i++)
+        if (x >= kMapsCtl[i].left && x < kMapsCtl[i].right && y >= kMapsCtl[i].top && y < kMapsCtl[i].bottom)
+            return i;
+    return -1;
 }
 
 // The GPS thread finished a port search.
@@ -2427,6 +2472,7 @@ static void DrawSettings(HDC dc)
     SetRow(dc, kSetRow0 + 5 * kSetRowH, L"Найти GPS", L"перебрать COM1…COM9 и скорости", false);
     DrawCtl(dc, kSetCtl[S_SCAN], s_setPressed == S_SCAN, s_fontLabel, kSetCaption[S_SCAN]);
     DrawCtl(dc, kSetCtl[S_EXIT], s_setPressed == S_EXIT, s_fontLabel, kSetCaption[S_EXIT]);
+    DrawCtl(dc, kSetCtl[S_MAPS], s_setPressed == S_MAPS, s_fontLabel, kSetCaption[S_MAPS]);
 
     // live state of the receiver (the port's own state: under "Порт GPS"): the lines and the place in one line
     if (s_gps.valid)
@@ -2454,9 +2500,68 @@ static void DrawSettings(HDC dc)
                *Counter(SRC_YANDEX), Limit(SRC_YANDEX), *Counter(SRC_2GIS), Limit(SRC_2GIS), g_cfg.osmCount,
                g_cfg.apiCount, g_cfg.apiLimit);
     s[127] = 0;
-    Text(dc, s_fontTiny, kTextDim, 92, 418, 592, 442, DT_LEFT, s);
+    Text(dc, s_fontTiny, kTextDim, 92, 418, 408, 442, DT_LEFT, s);
     _snwprintf(s, 128, L"OSMapsCE %s", AppVersion(kRelease));   // VestaCore vversion.h
-    Text(dc, s_fontTiny, kTextDim, 92, 442, 592, 466, DT_LEFT, s);
+    Text(dc, s_fontTiny, kTextDim, 92, 442, 408, 466, DT_LEFT, s);
+}
+
+static void MapsRow(HDC dc, int r, const MapRegion& m)   // a region: its title, size and state, its button
+{
+    static const wchar_t* kState[3] = { L"нет на карте", L"есть новее", L"свежая" };
+    static const wchar_t* kBtn[3] = { L"СКАЧАТЬ", L"ОБНОВИТЬ", L"ЕСТЬ" };
+    wchar_t t[96], sub[64];
+    if (!MultiByteToWideChar(CP_UTF8, 0, m.title[0] ? m.title : m.name, -1, t, 96))
+        t[0] = 0;
+    t[95] = 0;
+    int st = MapState(m);
+    _snwprintf(sub, 64, L"%d,%d МБ · %s", m.sizeKb / 1024, m.sizeKb % 1024 * 10 / 1024, kState[st]);
+    sub[63] = 0;
+    SetRow(dc, kSetRow0 + r * kSetRowH, t, sub, r < kMapsRows - 1);
+    DrawCtl(dc, kMapsCtl[M_ROW0 + r], s_mapsPressed == M_ROW0 + r, s_fontLabel, kBtn[st]);
+}
+
+static void MapsLine(HDC dc)   // the job's line, with the download's progress while it goes
+{
+    wchar_t text[128], s[192];
+    int got, total;
+    bool busy = MapsJob(text, 128, &got, &total) == MAPS_BUSY;
+    if (busy && total > 0)
+        _snwprintf(s, 192, L"%s %d,%d из %d,%d МБ", text, got / 1024, got % 1024 * 10 / 1024, total / 1024,
+                   total % 1024 * 10 / 1024);
+    else
+        wcscpy(s, text);
+    s[191] = 0;
+    Text(dc, s_fontSmall, busy ? kOrange : kTextDim, 36, 378, s_cw - 36, 404, DT_LEFT, s);
+}
+
+// Over the settings, as they look: the title, the clock, a panel with the rows, the pages and "СПИСОК" below
+static void DrawMaps(HDC dc)
+{
+    RECT all = { 0, 0, s_cw, s_ch };
+    HBRUSH ink = CreateSolidBrush(kInk);
+    FillRect(dc, &all, ink);
+    DeleteObject(ink);
+    wchar_t s[32];
+    Text(dc, s_fontBig, kText, 20, 0, 500, 56, DT_LEFT, L"Карты областей");
+    SYSTEMTIME t;
+    GetLocalTime(&t);
+    _snwprintf(s, 32, L"%02d:%02d", t.wHour, t.wMinute);
+    Text(dc, s_fontClock, kText, s_cw - 160, 0, s_cw - 16, 56, DT_RIGHT, s);
+    BackDisc(dc, s_mapsPressed == M_BACK);
+    RECT panel = { 16, 64, s_cw - 16, 412 };
+    Tile(dc, panel, kPanel, kPanel, 32);
+    int n = MapsCount(), pages = n ? (n + kMapsRows - 1) / kMapsRows : 1;
+    if (s_mapsPage >= pages)
+        s_mapsPage = pages - 1;
+    MapRegion m;
+    for (int r = 0; r < kMapsRows && MapsAt(s_mapsPage * kMapsRows + r, &m); r++)
+        MapsRow(dc, r, m);
+    MapsLine(dc);
+    DrawCtl(dc, kMapsCtl[M_PREV], s_mapsPressed == M_PREV, s_fontBig, L"\x2039");
+    DrawCtl(dc, kMapsCtl[M_NEXT], s_mapsPressed == M_NEXT, s_fontBig, L"\x203A");
+    _snwprintf(s, 32, L"%d/%d", s_mapsPage + 1, pages);
+    Text(dc, s_fontLabel, kText, 348, 420, 452, 468, DT_CENTER, s);
+    DrawCtl(dc, kMapsCtl[M_LIST], s_mapsPressed == M_LIST, s_fontLabel, L"СПИСОК");
 }
 
 // Distance as the bar shows it: metres by 10 (by 50 above 100), km with a tenth up to 10 km.
@@ -3593,7 +3698,9 @@ static void Paint(HDC hdc)
         FillRect(dc, &r, (HBRUSH)GetStockObject(BLACK_BRUSH));
     }
     DrawMap(dc);
-    if (s_settings) {
+    if (s_settings && s_maps) {
+        DrawMaps(dc);
+    } else if (s_settings) {
         DrawSettings(dc);
     } else if (s_search) {
         DrawSearch(dc);
@@ -3962,6 +4069,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         } else {
             GpsGet(&s_gps);
             g_today = Today();
+            if (s_settings && s_maps)
+                InvalidateRect(hwnd, NULL, FALSE);   // the download's progress
             VhTick();   // VestaHome's map widget
             int sharedNight = NightShared();   // switched in VestaHome: follow it
             if (sharedNight >= 0 && (sharedNight != 0) != (g_cfg.night != 0))
@@ -4040,6 +4149,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         s_pressed = HitButton(x, y);
         if (s_pressed >= 0) {
             s_pressedInside = true;
+        } else if (s_settings && s_maps) {
+            s_mapsPressed = HitMaps(x, y);
         } else if (s_settings) {
             s_setPressed = HitSettings(x, y);
         } else if (s_search) {
@@ -4096,6 +4207,12 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             s_pressed = -1;
             if (inside)
                 OnButton(b);
+        } else if (s_mapsPressed >= 0) {
+            int c = s_mapsPressed;
+            s_mapsPressed = -1;
+            if (HitMaps(x, y) == c)
+                OnMapsCtl(c);
+            InvalidateRect(hwnd, NULL, FALSE);
         } else if (s_setPressed >= 0) {
             int c = s_setPressed;
             s_setPressed = -1;
