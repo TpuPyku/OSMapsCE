@@ -820,6 +820,13 @@ static void Joints()
 
 // The junction card (the user 2026-10-28, on in the settings): the route round a complex maneuver - 110 m before it,
 // 70 m after - on the map turned so the way in points up
+static void YoChecks()   // a device's font without Ё (Shturmann NSL 500, 2026-10-29: squares): Е instead
+{
+    wchar_t s[] = L"\x0401\x043B\x043A\x0438 \x0451\x0436 \x0415";
+    NoYo(s);
+    Check(!wcscmp(s, L"\x0415\x043B\x043A\x0438 \x0435\x0436 \x0415"), "yo: capital and small yo as ye");
+}
+
 static void WheelChecks()
 {
     Check(WheelZoom(8, 2) == 1 && WheelZoom(9, 2) == -1 && WheelZoom(8, 3) == 1 && WheelZoom(9, 3) == -1,
@@ -1159,6 +1166,7 @@ int main()
     Joints();
     JunctionChecks();
     WheelChecks();
+    YoChecks();
     TiltWarpChecks();
     RECT whole = { 0, 0, 800, 480 };
     // the Russian name when the tile has one (name:ru), else the local one: a frame named so equals one whose tile

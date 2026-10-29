@@ -1128,6 +1128,12 @@ static void Text(HDC dc, HFONT font, COLORREF color, int l, int t, int r, int b,
     RECT rc = { l, t, r, b };
     SelectObject(dc, font);
     SetTextColor(dc, color);
+    wchar_t ye[256];
+    if (g_noYo && wcslen(s) < 256) {
+        wcscpy(ye, s);
+        NoYo(ye);
+        s = ye;
+    }
     DrawText(dc, s, -1, &rc, align | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
 }
 
@@ -1743,7 +1749,10 @@ static void DrawAttribution(HDC dc, RECT mr)
           L"© OpenStreetMap contributors, пробки © 2ГИС" },
         { L"OpenFreeMap © OpenMapTiles © OpenStreetMap", L"OpenFreeMap © OpenMapTiles © OSM, пробки © Яндекс",
           L"OpenFreeMap © OpenMapTiles © OSM, пробки © 2ГИС" } };
-    const wchar_t* s = kCredit[g_cfg.vector ? 1 : 0][!g_cfg.traffic ? 0 : g_cfg.trafficSrc == TRF_2GIS ? 2 : 1];
+    wchar_t s[96];   // the view's zoom first (the user 2026-10-29: as small, in this line)
+    _snwprintf(s, 96, L"z%d · %s", g_cfg.z,
+               kCredit[g_cfg.vector ? 1 : 0][!g_cfg.traffic ? 0 : g_cfg.trafficSrc == TRF_2GIS ? 2 : 1]);
+    s[95] = 0;
     SelectObject(dc, s_fontTiny);
     RECT rc = { 0, 0, 0, 0 };
     DrawText(dc, s, -1, &rc, DT_SINGLELINE | DT_NOPREFIX | DT_CALCRECT);
@@ -3738,7 +3747,8 @@ static void FontsLoad()
     }
     if (ok == 2)
         s_face = L"Golos Text";
-    Log("ui: fonts %S", s_face);
+    g_noYo = ok != 2;   // (a device's own font may have no yo: Shturmann NSL 500's squares)
+    Log("ui: fonts %S%s", s_face, g_noYo ? " (yo as ye)" : "");
 }
 
 const wchar_t* MapFace()

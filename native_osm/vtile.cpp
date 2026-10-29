@@ -423,6 +423,16 @@ static bool DecodeGeometry(Pb geom, VTile& t, Feat& ft)
 
 // ---- names
 
+// Yo as ye (the user 2026-10-29: Shturmann NSL 500 drew squares for them - its font without them, our Golos Text not
+// loaded there): when g_noYo (main.cpp's FontsLoad)
+bool g_noYo;
+
+void NoYo(wchar_t* s)
+{
+    for (; *s; s++)
+        *s = *s == 0x401 ? 0x415 : *s == 0x451 ? 0x435 : *s;
+}
+
 static void AddName(VTile& t, Feat& ft, const Pb& nm)   // UTF-8 -> the tile's names, with its terminating 0
 {
     wchar_t w[64];
@@ -433,6 +443,8 @@ static void AddName(VTile& t, Feat& ft, const Pb& nm)   // UTF-8 -> the tile's n
     u[n] = 0;
     if (MultiByteToWideChar(CP_UTF8, 0, u, -1, w, 64)) {
         w[63] = 0;
+        if (g_noYo)
+            NoYo(w);
         ft.name = t.nnames;
         for (int i = 0; i == 0 || w[i - 1]; i++)
             Push(t.names, t.nnames, t.ncap, w[i]);
