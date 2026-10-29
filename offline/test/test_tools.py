@@ -278,7 +278,12 @@ class Tools(unittest.TestCase):
         self.assertEqual(steps[-1][0], 1.0)
         self.assertTrue(all(a[0] <= b[0] for a, b in zip(steps, steps[1:])))
         self.assertTrue(any('МБ' in t for _, t in steps))
-        self.assertEqual(steps[-2][0], 1.0)                         # the data's progress up to its end
+        got_mb = [p for p, t in steps if 'МБ' in t]
+        self.assertEqual(got_mb[-1], pmextract.kDataEnd)            # the data's progress up to its end, then
+        work = [(p, t) for p, t in steps if 'обработка' in t]       # (the user 2026-10-29: the bar was full long
+        self.assertGreater(len(work), 3)                            # before the file) the tiles' processing told
+        self.assertTrue(pmextract.kDataEnd < work[0][0] and work[-1][0] < 1.0, work[:2])
+        self.assertTrue(work[-1][1].endswith('из %d плиток' % len(tiles)), work[-1])
         self.assertTrue(all(l <= 4000 + 200 for o, l in asked[1:] if l > 600), asked[:5])   # the data's pieces
 
     def test_pmtiles_extract_through_leaf_directories(self):
