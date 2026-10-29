@@ -94,7 +94,7 @@ def car_way(tags, ids):
 # The trunk graph (4b, the user 2026-10-27/29: from one region to another, Vladivostok - Moscow, without the internet):
 # the main roads only, their shapes simplified, a coarse grid - for the whole country
 TRUNK = dict(classes={'motorway', 'trunk', 'primary', 'motorway_link', 'trunk_link', 'primary_link'},
-             simplify_m=50, cell=100000)
+             simplify_m=50, cell=200000, west=0)   # (west: Chukotka's east beyond 180 degrees left out)
 
 
 class Ways(osmium.SimpleHandler):
@@ -115,14 +115,15 @@ class Ways(osmium.SimpleHandler):
 
 
 class Locs(osmium.SimpleHandler):
-    def __init__(self, want):
+    def __init__(self, want, west=None):
         super().__init__()
         self.want = want
+        self.west = west   # 1e-6 degrees: the nodes west of it left out (None: none)
         self.loc = {}
         self.signals = set()
 
     def node(self, n):
-        if n.id in self.want:
+        if n.id in self.want and (self.west is None or n.location.lon * 1e6 >= self.west):
             self.loc[n.id] = (int(round(n.location.lat * 1e6)), int(round(n.location.lon * 1e6)))
             if n.tags.get('highway') == 'traffic_signals':
                 self.signals.add(n.id)
@@ -292,10 +293,10 @@ def write(out, nodes, first, flat, geom, names, bbox, grid, cell=kCell):
     return off[-1] + (len(cstart) + len(items)) * 4
 
 
-def build(src, out, classes=None, simplify_m=0, cell=kCell):
+def build(src, out, classes=None, simplify_m=0, cell=kCell, west=None):
     w = Ways(classes)
     w.apply_file(src)
-    locs = Locs(set(w.uses))
+    locs = Locs(set(w.uses), west)
     locs.apply_file(src)
     junction = {n for n, c in w.uses.items() if c > 1}   # shared by ways, or a way's end
     nodes, names, pieces = make_pieces(w.ways, locs.loc, locs.signals, junction, simplify_m)

@@ -163,6 +163,15 @@ class Tools(unittest.TestCase):
         self.assertLessEqual(abs(sum(dm for _, _, dm, _, _ in edges) - sum(main)), 4)   # the same length, one piece
         self.assertEqual(len(edges), 2)               # (the side roads' junctions gone: one piece, both ways)
 
+    def test_trunk_graph_west_cut(self):
+        """Chukotka's east beyond 180 degrees (negative longitudes) stretched the grid round the globe (2026-10-29:
+        3601 x 385 cells, 5.5 MB of 26): the nodes west of `west` left out."""
+        out = os.path.join(self.tmp, 'cut.grf')
+        make_graph.build(TINY, out, west=50002000)
+        nodes, _ = graph(out)
+        self.assertTrue(nodes and all(lon >= 50002000 for _, lon in nodes), nodes)
+        self.assertEqual(make_graph.TRUNK['west'], 0)
+
     def test_simplify(self):
         line = [(0, 0), (10, 1000), (0, 2000), (0, 3000), (500, 4000)]   # 1e-6 degrees: ~1 m of latitude per 9
         self.assertEqual(make_graph.simplify(line, 0), line)
@@ -507,10 +516,11 @@ class Tools(unittest.TestCase):
         self.assertEqual(make_region.region_links(page, 'B/'), {'samara_oblast': 'B/samara_oblast-latest.osm.pbf'})
         pages = {make_region.BASE: top, make_region.BASE + 'volga_federal_district/': page,
                  make_region.BASE + 'ural_federal_district/': ''}
-        self.assertEqual(sorted(make_region.regions(get=pages.get)), ['crimea', 'donetsk', 'luhansk', 'samara_oblast'])
+        russia = lambda got: sorted(n for n in got if n not in make_region.COUNTRIES)   # noqa: E731
+        self.assertEqual(russia(make_region.regions(get=pages.get)), ['crimea', 'donetsk', 'luhansk', 'samara_oblast'])
         pages[make_region.BASE + 'ural_federal_district/'] = '<a href="crimea_republic-latest.osm.pbf">c</a>'
         got = make_region.regions(get=pages.get)            # the disputed lands apart, by neutral names, whole
-        self.assertEqual(sorted(got), ['crimea', 'donetsk', 'luhansk', 'samara_oblast'])
+        self.assertEqual(russia(got), ['crimea', 'donetsk', 'luhansk', 'samara_oblast'])
         self.assertEqual(got['donetsk'], make_region.APART['donetsk'])
         self.assertEqual([u.rsplit('/', 1)[1] for u in got['crimea']],      # Sevastopol in Crimea, one region
                          ['crimea-latest.osm.pbf', 'sevastopol-latest.osm.pbf'])
@@ -522,6 +532,24 @@ class Tools(unittest.TestCase):
         self.assertNotIn('saint_petersburg', make_region.regions(get=pages.get))   # (in leningrad_oblast's already)
         self.assertEqual(got['moscow_oblast'], [make_region.BASE + 'ural_federal_district/moscow_oblast-latest.osm.pbf',
                                                 make_region.BASE + 'ural_federal_district/moscow-latest.osm.pbf'])
+
+    def test_cis_regions(self):
+        """The user 2026-10-29: the CIS too - Ukraine by its oblasts (openstreetmap.fr; Crimea, Donetsk, Luhansk stay
+        apart, Kyiv inside its oblast), the other countries whole (Geofabrik); each with a Russian title."""
+        ua = make_region.UKRAINE_DIR
+        pages = {make_region.BASE: '', ua: ''.join('<a href="%s-latest.osm.pbf">x</a>' % n for n in (
+            'lviv_oblast', 'kiev', 'kiev_oblast', 'crimea', 'sevastopol', 'donetsk_oblast', 'luhansk_oblast'))}
+        got = make_region.regions(get=pages.get)
+        self.assertEqual(got['lviv_oblast'], ua + 'lviv_oblast-latest.osm.pbf')
+        self.assertEqual(got['kiev_oblast'], [ua + 'kiev_oblast-latest.osm.pbf', ua + 'kiev-latest.osm.pbf'])
+        for gone in ('kiev', 'sevastopol', 'donetsk_oblast', 'luhansk_oblast'):
+            self.assertNotIn(gone, got)
+        self.assertEqual(got['crimea'], make_region.APART['crimea'])
+        self.assertEqual(got['belarus'], 'https://download.geofabrik.de/europe/belarus-latest.osm.pbf')
+        self.assertEqual(got['kazakhstan'], 'https://download.geofabrik.de/asia/kazakhstan-latest.osm.pbf')
+        self.assertEqual(len(make_region.COUNTRIES), 10)
+        for name in got:
+            self.assertNotEqual(release_regions.title(name), name, name)   # every one titled
 
 
 if __name__ == '__main__':
