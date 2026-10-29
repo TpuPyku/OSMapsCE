@@ -89,4 +89,12 @@
     <tag k="highway" v="tertiary"/>
     <tag k="name" v="Северная улица"/>
   </way>
+  <!-- a road of its own, joined to no other (as the Kremlin's inner roads: the user 2026-10-29) - not in the graph -->
+  <node id="41" lat="52.9988" lon="50.0020" version="1"/>
+  <node id="42" lat="52.9988" lon="50.0040" version="1"/>
+  <way id="40" version="1">
+    <nd ref="41"/><nd ref="42"/>
+    <tag k="highway" v="residential"/>
+    <tag k="name" v="Островная улица"/>
+  </way>
 </osm>

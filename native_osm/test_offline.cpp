@@ -392,6 +392,13 @@ int main()
           Count(b, "\"type\":\"arrive\"") == 1, "main street: depart, arrive, no turns", b);
     free(b);
 
+    // a point by a road joined to no other (the user's log 2026-10-29: the Kremlin - "2 nodes settled", or the whole
+    // region searched for 67 s): the nearest road of the network instead
+    b = Route("50.006,53.000;50.003,52.9988");
+    Check(b && !Has(b, L"Островная улица") && Num(b, "\"distance\":") > 150,
+          "a road joined to no other: the way to the network's nearest road", b);
+    free(b);
+
     // from the east end to the upper corner: right onto the one-way street (east -> west, then north)
     b = Route("50.006,53.000;50.004,53.002");
     Check(b && Num(b, "\"distance\":") > 330 && Num(b, "\"distance\":") < 380, "to the one-way: ~356 m", b);

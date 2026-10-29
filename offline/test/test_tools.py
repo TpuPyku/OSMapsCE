@@ -448,7 +448,8 @@ class Tools(unittest.TestCase):
         out = os.path.join(self.tmp, 'search.idx')
         make_search.build(TINY, out)
         h = struct.unpack_from(make_search.HEADER, read(out), 0)
-        self.assertEqual(h[2:6], (1, 9, 2, 1))        # places, streets (the ring has no name), houses, places to go
+        self.assertEqual(h[2:6], (1, 10, 2, 1))       # places, streets (the ring has no name; Островная too:
+                                                      # only the graph leaves it out), houses, places to go
         self.assertEqual(make_search.norm('Улица 22-го Партсъезда, ё'), 'улица 22 го партсъезда е')
 
     def test_search_building_address(self):

@@ -217,6 +217,69 @@ def make_pieces(ways, loc, signals, junction, tol_m=0):
     return nodes.pts, names.data, pieces
 
 
+def main_network(nodes, pieces):
+    """The nodes and pieces of the largest strongly connected part (the user's log 2026-10-29: a point snapped onto
+    the Kremlin's inner roads, joined to no other - no way, or the whole region searched for 67 s; OSRM keeps only
+    its main part too): a road one can drive to from anywhere and away again. Iterative Tarjan."""
+    adj = [[] for _ in nodes]
+    for p in pieces:
+        if p.oneway >= 0:
+            adj[p.a].append(p.b)
+        if p.oneway <= 0:
+            adj[p.b].append(p.a)
+    comp = scc(adj)
+    sizes = {}
+    for c in comp:
+        sizes[c] = sizes.get(c, 0) + 1
+    main = max(sizes, key=sizes.get) if sizes else -1
+    keep = [p for p in pieces if comp[p.a] == main and comp[p.b] == main]
+    new = {}
+    for p in keep:
+        for n in (p.a, p.b):
+            new.setdefault(n, len(new))
+    renumbered = [p._replace(a=new[p.a], b=new[p.b]) for p in keep]
+    order = sorted(new, key=new.get)
+    return [nodes[n] for n in order], renumbered
+
+
+def scc(adj):
+    """Each node's strongly connected part's number (Tarjan's, without recursion: a million nodes)."""
+    n = len(adj)
+    index, low, comp = [-1] * n, [0] * n, [-1] * n
+    stack, on, counter, parts = [], [False] * n, 0, 0
+    for root in range(n):
+        if index[root] >= 0:
+            continue
+        work = [(root, 0)]
+        while work:
+            v, i = work.pop()
+            if i == 0:
+                index[v] = low[v] = counter
+                counter += 1
+                stack.append(v)
+                on[v] = True
+            if i < len(adj[v]):
+                work.append((v, i + 1))
+                w = adj[v][i]
+                if index[w] < 0:
+                    work.append((w, 0))
+                elif on[w]:
+                    low[v] = min(low[v], index[w])
+                continue
+            for w in adj[v]:   # (done with v: its children's lows)
+                if on[w] and comp[w] < 0:
+                    low[v] = min(low[v], low[w])
+            if low[v] == index[v]:
+                while True:
+                    w = stack.pop()
+                    on[w] = False
+                    comp[w] = parts
+                    if w == v:
+                        break
+                parts += 1
+    return comp
+
+
 def directed(pieces, nnodes):
     """Each node's edges (to, dm, ds, geom, ngeom, cls, flags, name, piece) and the inner points."""
     geom, edges = [], [[] for _ in range(nnodes)]
@@ -301,6 +364,7 @@ def build(src, out, classes=None, simplify_m=0, cell=kCell, west=None, max_cells
     locs.apply_file(src)
     junction = {n for n, c in w.uses.items() if c > 1}   # shared by ways, or a way's end
     nodes, names, pieces = make_pieces(w.ways, locs.loc, locs.signals, junction, simplify_m)
+    nodes, pieces = main_network(nodes, pieces)
     edges, geom = directed(pieces, len(nodes))
     first, flat, piece_edge = flatten(edges)
     lats, lons = [n[0] for n in nodes], [n[1] for n in nodes]
