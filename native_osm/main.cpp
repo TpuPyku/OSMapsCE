@@ -202,7 +202,7 @@ static const int   kSetCacheCount = sizeof(kSetCacheMb) / sizeof(kSetCacheMb[0])
 // The settings screen as VestaHome's: a top bar with "back", one panel of rows; a row's stepper (port, speed,
 // cache) applies at once - no "Apply" / "Close". Rows at kSetRow0 + i * kSetRowH.
 enum { S_PORT_PREV, S_PORT_NEXT, S_BAUD_PREV, S_BAUD_NEXT, S_CACHE_PREV, S_CACHE_NEXT, S_MAP_PREV, S_MAP_NEXT,
-       S_JUNC_PREV, S_JUNC_NEXT, S_SCAN, S_EXIT, S_MAPS, S_BACK, S_COUNT };
+       S_JUNC_PREV, S_JUNC_NEXT, S_SCAN, S_LOG, S_EXIT, S_MAPS, S_BACK, S_COUNT };
 enum { kSetRow0 = 76, kSetRowH = 50 };   // (6 rows: 50 px each since the junction card's, 2026-10-28)
 static const RECT kSetCtl[S_COUNT] = {
     { 512, 79, 560, 123 }, { 712, 79, 760, 123 },     // the steppers' arrows: rows 0..4
@@ -211,12 +211,13 @@ static const RECT kSetCtl[S_COUNT] = {
     { 512, 229, 560, 273 }, { 712, 229, 760, 273 },
     { 512, 279, 560, 323 }, { 712, 279, 760, 323 },
     { 616, 329, 760, 373 },                            // find GPS
+    { 456, 329, 600, 373 },                            // the log on / off
     { 600, 416, 784, 468 },                            // exit the program
     { 416, 416, 592, 468 },                            // the regions' maps (their screen)
     { 8, 412, 80, 480 },                               // back: VestaHome's, at the bottom left
 };
 static const wchar_t* kSetCaption[S_COUNT] = { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, L"ПОИСК",
-                                               L"ЗАВЕРШИТЬ", L"КАРТЫ", NULL };
+                                               NULL, L"ЗАВЕРШИТЬ", L"КАРТЫ", NULL };   // (the log's: its state)
 
 // The regions' maps downloaded here (offmaps.cpp's job; the user 2026-10-29: the graphs for the routes and the
 // search without the internet; the map's picture - the raster tiles' cache): Settings -> "КАРТЫ" - the release's
@@ -726,6 +727,7 @@ static void OnSettingsCtl(int id)
     case S_MAP_NEXT:   MapStyleSet(!g_cfg.vector); break;
     case S_JUNC_PREV:
     case S_JUNC_NEXT:  g_cfg.junction = !g_cfg.junction; ConfigSave(); break;
+    case S_LOG:        g_cfg.log = !g_cfg.log; LogEnable(g_cfg.log != 0); ConfigSave(); break;
     case S_PORT_PREV:  s_setPort = s_setPort > 1 ? s_setPort - 1 : 9; ApplySettings(); break;
     case S_PORT_NEXT:  s_setPort = s_setPort < 9 ? s_setPort + 1 : 1; ApplySettings(); break;
     case S_BAUD_PREV:  s_setBaud = (s_setBaud + kSetBaudCount - 1) % kSetBaudCount; ApplySettings(); break;
@@ -2548,8 +2550,9 @@ static void DrawSettings(HDC dc)
     SetRow(dc, kSetRow0 + 4 * kSetRowH, L"Схема развязки", L"перед съездом, развилкой, кольцом", true);
     Stepper(dc, S_JUNC_PREV, S_JUNC_NEXT, g_cfg.junction ? L"Вкл" : L"Выкл");
 
-    SetRow(dc, kSetRow0 + 5 * kSetRowH, L"Найти GPS", L"перебрать COM1…COM9 и скорости", false);
+    SetRow(dc, kSetRow0 + 5 * kSetRowH, L"Найти GPS · журнал", L"COM1…COM9 · OSMapsCE.log", false);
     DrawCtl(dc, kSetCtl[S_SCAN], s_setPressed == S_SCAN, s_fontLabel, kSetCaption[S_SCAN]);
+    DrawCtl(dc, kSetCtl[S_LOG], s_setPressed == S_LOG, s_fontLabel, g_cfg.log ? L"ЖУРНАЛ ВКЛ" : L"ЖУРНАЛ ВЫКЛ");
     DrawCtl(dc, kSetCtl[S_EXIT], s_setPressed == S_EXIT, s_fontLabel, kSetCaption[S_EXIT]);
     DrawCtl(dc, kSetCtl[S_MAPS], s_setPressed == S_MAPS, s_fontLabel, kSetCaption[S_MAPS]);
 
@@ -4432,9 +4435,10 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int)
         return 0;
     }
 
-    LogInit();
+    bool cfg = ConfigLoad();
+    LogInit();   // (after the settings: the log only when asked for)
     Log("OSMapsCE start, dir %S", g_dir);
-    if (!ConfigLoad())
+    if (!cfg)
         Log("config: not found, using defaults");
     ConfigSave();
 

@@ -37,6 +37,7 @@ struct Config {
     int     night;          // dark map: lightness inverted, dimmed
     int     vector;         // the base map: 0 OSM raster tiles, 1 vector tiles (OpenFreeMap, vtile.cpp)
     int     junction;       // the junction card before complex maneuvers (junction.cpp; the user 2026-10-28: off by default)
+    int     log;            // OSMapsCE.log kept (the user 2026-10-29: off by default)
     int     tilt;           // the third person's view (its button: heading-up from z15; tilt.cpp, ring.cpp)
     int     trafficTtlMin;  // traffic image is considered fresh this long
     int     yandexLimit;    // requests per day per traffic provider
@@ -67,6 +68,7 @@ extern volatile int g_today;      // yyyymmdd from GPS (or a sane clock), 0 = un
 void PathInDir(wchar_t* out, const wchar_t* name);
 bool ReadWholeFile(const wchar_t* path, unsigned char** data, int* len);
 void LogInit();
+void LogEnable(bool on);   // the log opened / closed (Settings: "ЖУРНАЛ")
 void Log(const char* fmt, ...);
 void ConfigDefaults();
 bool ConfigLoad();

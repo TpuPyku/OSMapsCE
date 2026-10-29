@@ -42,11 +42,10 @@ static CRITICAL_SECTION s_logCs;
 
 static wchar_t s_logDir[MAX_PATH];   // VestaCore LogDir: the SD card / USB disk only
 
-void LogInit()
+static void LogOpen()
 {
-    InitializeCriticalSection(&s_logCs);
-    // on the unit the log goes only to removable media (VestaLogs on the SD card / USB disk), never the built-in
-    // flash; without a card or a disk at start there is no log
+    // on the Vesta's unit the log goes only to removable media (VestaLogs on the SD card / USB disk), never the
+    // built-in flash; without a card or a disk there is no log. Another device: its card, else beside the exe.
     if (!LogDir(s_logDir, g_dir))
         return;
     wchar_t path[MAX_PATH];
@@ -55,6 +54,24 @@ void LogInit()
     s_log = CreateFile(path, GENERIC_WRITE, FILE_SHARE_READ, NULL, OPEN_ALWAYS, 0, NULL);
     if (s_log != INVALID_HANDLE_VALUE)
         SetFilePointer(s_log, 0, NULL, FILE_END);
+}
+
+void LogInit()   // after ConfigLoad: the log only when asked for (g_cfg.log)
+{
+    InitializeCriticalSection(&s_logCs);
+    LogEnable(g_cfg.log != 0);
+}
+
+void LogEnable(bool on)
+{
+    EnterCriticalSection(&s_logCs);
+    if (on && s_log == INVALID_HANDLE_VALUE)
+        LogOpen();
+    else if (!on && s_log != INVALID_HANDLE_VALUE) {
+        CloseHandle(s_log);
+        s_log = INVALID_HANDLE_VALUE;
+    }
+    LeaveCriticalSection(&s_logCs);
 }
 
 // Full log becomes OSMapsCE.old.log (replacing the previous one), a new log starts.
@@ -170,6 +187,7 @@ static void ConfigSet(const char* key, const char* val)
     else if (!strcmp(key, "night"))        g_cfg.night = atoi(val) != 0;
     else if (!strcmp(key, "vector"))       g_cfg.vector = atoi(val) != 0;
     else if (!strcmp(key, "junction"))     g_cfg.junction = atoi(val) != 0;
+    else if (!strcmp(key, "log"))          g_cfg.log = atoi(val) != 0;
     else if (!strcmp(key, "tilt"))         g_cfg.tilt = atoi(val) != 0;
     else if (!strcmp(key, "map_x"))        g_cfg.mapX = atoi(val);
     else if (!strcmp(key, "map_y"))        g_cfg.mapY = atoi(val);
@@ -270,6 +288,8 @@ void ConfigSave()
         "; program to close when it holds the GPS port (empty = never)\r\n"
         "kill=%s\r\n"
         "hide_taskbar=%d\r\n"
+        "; OSMapsCE.log: 1 = kept (a card's VestaLogs, else beside the program; the Vesta's unit: removable media only)\r\n"
+        "log=%d\r\n"
         "map_x=%d\r\n"
         "map_y=%d\r\n"
         "map_w=%d\r\n"
@@ -278,7 +298,7 @@ void ConfigSave()
         g_cfg.follow, g_cfg.night, g_cfg.vector, g_cfg.junction, g_cfg.tilt, g_cfg.trafficTtlMin, g_cfg.yandexLimit, g_cfg.twogisLimit,
         g_cfg.autoReserve, g_cfg.cacheMb, g_cfg.cacheKb, g_cfg.cacheDays, g_cfg.reqDay,
         g_cfg.yandexCount, g_cfg.twogisCount, g_cfg.osmCount, g_cfg.apiLimit, g_cfg.apiCount,
-        g_cfg.gpsEnabled, port, g_cfg.gpsBaud, kill, g_cfg.hideTaskbar,
+        g_cfg.gpsEnabled, port, g_cfg.gpsBaud, kill, g_cfg.hideTaskbar, g_cfg.log,
         g_cfg.mapX, g_cfg.mapY, g_cfg.mapW, g_cfg.mapH);
     if (n < 0)
         return;
