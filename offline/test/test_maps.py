@@ -59,6 +59,11 @@ class Maps(unittest.TestCase):
         self.assertEqual(cat['version'], 1)
         self.assertEqual(cat['regions'], [{'name': 'a_krai'}, {'name': 'b_oblast'}, {'name': 'c_old'}])   # (kept)
         self.assertEqual(json.loads(read(os.path.join(self.dist, 'catalog.json'))), cat)
+        # a kept entry gets today's title (the user 2026-10-29: "Украина:" off the oblasts - not only when rebuilt)
+        previous = {'regions': [{'name': 'kiev_oblast', 'title': 'Украина: Киев и Киевская область'}]}
+        cat = release_regions.catalog(self.dist, previous, {'kiev_oblast'})
+        self.assertIn({'name': 'kiev_oblast', 'title': 'Киев и Киевская область'}, cat['regions'])
+        self.assertFalse([t for t in release_regions.TITLES.values() if t.startswith('Украина')])
 
     def test_release_command_line(self):
         known = {'tiny': pathlib.Path(TINY).as_uri(), 'other': ''}
