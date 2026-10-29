@@ -145,6 +145,16 @@ struct ApiResult {
 };
 DWORD NetApi(int kind, const char* host, bool https, const char* path);   // returns sequence number
 void  ApiFree(ApiResult* r);
+// json.cpp - JSON read in place, no tree: p points at a value
+const char* Ws(const char* p);                       // past the white space
+const char* JSkip(const char* p);                    // past the value
+const char* JKey(const char* p, const char* key);    // the object's value of key, NULL none
+const char* JFirst(const char* p);                   // the array's first item, NULL none
+const char* JNext(const char* p);                    // the next item, NULL none
+double      JNum(const char* p, double def);
+int         JStr(const char* p, char* out, int cap);   // a string, unescaped, UTF-8
+void        JWide(const char* p, wchar_t* out, int cap);
+
 // offline.cpp - routes from a region's road graph (OSMapsData\<region>\route.grf), answered as OSRM's JSON
 bool  OfflineRoute(const char* osrmPath, char** body, int* len);   // false: no region / no way - ask OSRM
 bool  OfflineTrunkRoute(const char* osrmPath, char** body, int* len);   // over the trunk roads (4b): after OSRM failed
