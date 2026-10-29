@@ -172,6 +172,18 @@ class Tools(unittest.TestCase):
         self.assertTrue(nodes and all(lon >= 50002000 for _, lon in nodes), nodes)
         self.assertEqual(make_graph.TRUNK['west'], 0)
 
+    def test_graph_grid_bounded(self):
+        """A big country at 0.005 degrees (2026-10-29: Kazakhstan's grid 2784 x 1696 cells - 19 MB of its 26.9 MB
+        graph): the cell doubled until the grid is at most max_cells."""
+        out = os.path.join(self.tmp, 'grid.grf')
+        make_graph.build(TINY, out, cell=100, max_cells=40)
+        h = struct.unpack_from(make_graph.HEADER, read(out), 0)
+        gw, gh, cell = h[10], h[11], h[12]
+        self.assertLessEqual(gw * gh, 40)
+        self.assertGreater(cell, 100)
+        self.assertEqual(cell % 100, 0)                     # (doubled)
+        self.assertEqual(make_graph.kMaxCells, 1 << 20)
+
     def test_simplify(self):
         line = [(0, 0), (10, 1000), (0, 2000), (0, 3000), (500, 4000)]   # 1e-6 degrees: ~1 m of latitude per 9
         self.assertEqual(make_graph.simplify(line, 0), line)
