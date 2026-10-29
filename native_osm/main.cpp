@@ -198,25 +198,34 @@ static const int   kSetBaudCount = sizeof(kSetBauds) / sizeof(kSetBauds[0]);
 static const int   kSetCacheMb[] = { 250, 500, 1000, 2000 };
 static const int   kSetCacheCount = sizeof(kSetCacheMb) / sizeof(kSetCacheMb[0]);
 
-// The settings screen as VestaHome's: a top bar with "back", one panel of rows; a row's stepper (port, speed,
-// cache) applies at once - no "Apply" / "Close". Rows at kSetRow0 + i * kSetRowH.
-enum { S_PORT_PREV, S_PORT_NEXT, S_BAUD_PREV, S_BAUD_NEXT, S_CACHE_PREV, S_CACHE_NEXT, S_MAP_PREV, S_MAP_NEXT,
-       S_JUNC_PREV, S_JUNC_NEXT, S_SCAN, S_LOG, S_EXIT, S_MAPS, S_BACK, S_COUNT };
-enum { kSetRow0 = 76, kSetRowH = 50 };   // (6 rows: 50 px each since the junction card's, 2026-10-28)
+// The settings screen as VestaHome's (the user 2026-10-29: all of it within its rules): the title and the clock on
+// top, one panel of six rows within 64..400 (a row's stepper applies at once), "back" / "КАРТЫ" / "ЗАВЕРШИТЬ" in the
+// bottom strip; what does not fit - the GPS port's settings, the requests' counters - in a sheet over the bottom
+// (VestaHome's windows: full width, the main action right, in the accent), a tap beside it closes it.
+// Rows at kSetRow0 + i * kSetRowH (the maps' screen has the same rows).
+enum { S_MAP_PREV, S_MAP_NEXT, S_JUNC_PREV, S_JUNC_NEXT, S_CACHE_PREV, S_CACHE_NEXT, S_LOG_PREV, S_LOG_NEXT, S_GPS,
+       S_INFO, S_EXIT, S_MAPS, S_BACK, S_PAGE_END,
+       S_PORT_PREV = S_PAGE_END, S_PORT_NEXT, S_BAUD_PREV, S_BAUD_NEXT, S_SCAN, S_GPS_DONE, S_GPS_END,
+       S_INFO_DONE = S_GPS_END, S_COUNT };
+enum { SHEET_NONE, SHEET_GPS, SHEET_INFO };
+enum { kSetRow0 = 76, kSetRowH = 50, kSheetY = 200 };
 static const RECT kSetCtl[S_COUNT] = {
-    { 512, 79, 560, 123 }, { 712, 79, 760, 123 },     // the steppers' arrows: rows 0..4
+    { 512, 79, 560, 123 }, { 712, 79, 760, 123 },     // the steppers' arrows: rows 0..3
     { 512, 129, 560, 173 }, { 712, 129, 760, 173 },
     { 512, 179, 560, 223 }, { 712, 179, 760, 223 },
     { 512, 229, 560, 273 }, { 712, 229, 760, 273 },
-    { 512, 279, 560, 323 }, { 712, 279, 760, 323 },
-    { 616, 329, 760, 373 },                            // find GPS
-    { 456, 329, 600, 373 },                            // the log on / off
+    { 576, 279, 760, 323 },                            // GPS: its sheet
+    { 576, 329, 760, 373 },                            // the requests: their sheet
     { 600, 416, 784, 468 },                            // exit the program
     { 416, 416, 592, 468 },                            // the regions' maps (their screen)
     { 8, 412, 80, 480 },                               // back: VestaHome's, at the bottom left
+    { 512, 259, 560, 303 }, { 712, 259, 760, 303 },   // the GPS sheet: the port, the speed
+    { 512, 309, 560, 353 }, { 712, 309, 760, 353 },
+    { 416, 416, 592, 468 },                            // ... find GPS
+    { 600, 416, 784, 468 },                            // ... done
+    { 600, 416, 784, 468 },                            // the requests' sheet: done
 };
-static const wchar_t* kSetCaption[S_COUNT] = { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, L"ПОИСК",
-                                               NULL, L"ЗАВЕРШИТЬ", L"КАРТЫ", NULL };   // (the log's: its state)
+static int s_setSheet;   // SHEET_*
 
 // The regions' maps downloaded here (offmaps.cpp's job; the user 2026-10-29: the graphs for the routes and the
 // search without the internet; the map's picture - the raster tiles' cache): Settings -> "КАРТЫ" - the release's
@@ -726,7 +735,12 @@ static void OnSettingsCtl(int id)
     case S_MAP_NEXT:   MapStyleSet(!g_cfg.vector); break;
     case S_JUNC_PREV:
     case S_JUNC_NEXT:  g_cfg.junction = !g_cfg.junction; ConfigSave(); break;
-    case S_LOG:        g_cfg.log = !g_cfg.log; LogEnable(g_cfg.log != 0); ConfigSave(); break;
+    case S_LOG_PREV:
+    case S_LOG_NEXT:   g_cfg.log = !g_cfg.log; LogEnable(g_cfg.log != 0); ConfigSave(); break;
+    case S_GPS:        s_setSheet = SHEET_GPS; break;
+    case S_INFO:       s_setSheet = SHEET_INFO; break;
+    case S_GPS_DONE:
+    case S_INFO_DONE:  s_setSheet = SHEET_NONE; break;
     case S_PORT_PREV:  s_setPort = s_setPort > 1 ? s_setPort - 1 : 9; ApplySettings(); break;
     case S_PORT_NEXT:  s_setPort = s_setPort < 9 ? s_setPort + 1 : 1; ApplySettings(); break;
     case S_BAUD_PREV:  s_setBaud = (s_setBaud + kSetBaudCount - 1) % kSetBaudCount; ApplySettings(); break;
@@ -793,9 +807,15 @@ static void OnGpsScanDone()
     SettingsLoad();
 }
 
+// The control at the point: the page's, or the open sheet's alone (beside the sheet: S_GPS_DONE / S_INFO_DONE -
+// a tap there closes it)
 static int HitSettings(int x, int y)
 {
-    return HitRects(kSetCtl, S_COUNT, x, y);
+    static const int kFrom[3] = { 0, S_PAGE_END, S_GPS_END }, kTo[3] = { S_PAGE_END, S_GPS_END, S_COUNT };
+    int hit = HitRects(kSetCtl + kFrom[s_setSheet], kTo[s_setSheet] - kFrom[s_setSheet], x, y);
+    if (hit >= 0)
+        return kFrom[s_setSheet] + hit;
+    return s_setSheet && y < kSheetY ? kTo[s_setSheet] - 1 : -1;
 }
 
 // ---------------------------------------------------------------- actions
@@ -934,6 +954,7 @@ static void OnButton(int b)
         return;
     case B_SETTINGS:
         s_settings = !s_settings;
+        s_setSheet = SHEET_NONE;
         s_dockShown = false;
         if (s_settings)
             SettingsLoad();
@@ -2488,104 +2509,147 @@ static void Stepper(HDC dc, int prev, int next, const wchar_t* value)
     Text(dc, s_fontBig, kText, a.right, a.top, b.left, a.bottom, DT_CENTER, value);
 }
 
-// Over the whole screen (the map's bars and buttons are off meanwhile), as VestaHome's settings: a top bar
-// with "back", the clock, one panel with the rows; centred on the 800 px screen.
+static void DrawGpsSheet(HDC dc);
+static void DrawInfoSheet(HDC dc);
+
+// The receiver's state in one line: its port and speed, open / busy / searching, the satellites
+static void GpsLine(wchar_t* s, int cap)
+{
+    wchar_t baud[16];
+    if (kSetBauds[s_setBaud])
+        _snwprintf(baud, 16, L"%lu", kSetBauds[s_setBaud]);
+    else
+        wcscpy(baud, L"как есть");
+    if (!s_gpsRunning)
+        _snwprintf(s, cap, L"выключен (gps=0)");
+    else if (s_gps.status == GPS_OPEN)
+        _snwprintf(s, cap, L"COM%d · %s · %d спутн.%s", s_setPort, baud, s_gps.sats, s_gps.valid ? L" · фикс" : L"");
+    else if (s_gps.status == GPS_BUSY)
+        _snwprintf(s, cap, L"COM%d занят другой программой", s_setPort);
+    else if (s_gps.status == GPS_SCANNING)
+        _snwprintf(s, cap, L"поиск: %s %lu…", s_gps.port, s_gps.baud);
+    else
+        _snwprintf(s, cap, L"COM%d не открывается", s_setPort);
+    s[cap - 1] = 0;
+}
+
+// Over the whole screen (the map's bars and buttons are off meanwhile), as VestaHome's settings: the title at the
+// top left, the clock at the right; the panel of rows; "back" at the bottom left; a sheet over it when open.
 static void DrawSettings(HDC dc)
 {
     RECT all = { 0, 0, s_cw, s_ch };
     HBRUSH ink = CreateSolidBrush(kInk);
     FillRect(dc, &all, ink);
     DeleteObject(ink);
-
-    // as VestaHome's screens: the title at the top left, the clock at the right, no line; "back" at the bottom left
-    wchar_t s[128];
+    wchar_t s[160];
     Text(dc, s_fontBig, kText, 20, 0, 500, 56, DT_LEFT, L"Настройки карты");
     SYSTEMTIME t;
     GetLocalTime(&t);
-    _snwprintf(s, 128, L"%02d:%02d", t.wHour, t.wMinute);
+    _snwprintf(s, 160, L"%02d:%02d", t.wHour, t.wMinute);
     Text(dc, s_fontClock, kText, s_cw - 160, 0, s_cw - 16, 56, DT_RIGHT, s);
     BackDisc(dc, s_setPressed == S_BACK);
-
-    RECT panel = { 16, 64, s_cw - 16, 412 };
+    RECT panel = { 16, 64, s_cw - 16, 400 };
     Tile(dc, panel, kPanel, kPanel, 32);
 
-    // the receiver's state, under "GPS port"
-    if (!s_gpsRunning)
-        wcscpy(s, L"GPS выключен (gps=0)");
-    else if (s_gps.status == GPS_OPEN)
-        _snwprintf(s, 128, L"открыт · %d спутн.%s", s_gps.sats, s_gps.valid ? L" · фикс" : L"");
-    else if (s_gps.status == GPS_BUSY)
-        wcscpy(s, L"занят другой программой");
-    else if (s_gps.status == GPS_SCANNING)
-        _snwprintf(s, 128, L"поиск: %s %lu ...", s_gps.port, s_gps.baud);
-    else
-        wcscpy(s, L"не открывается");
-    s[127] = 0;
-    SetRow(dc, kSetRow0, L"Порт GPS", s, true);
-    _snwprintf(s, 128, L"COM%d", s_setPort);
-    Stepper(dc, S_PORT_PREV, S_PORT_NEXT, s);
-
-    SetRow(dc, kSetRow0 + kSetRowH, L"Скорость порта", L"или как у оболочки", true);
-    if (kSetBauds[s_setBaud])
-        _snwprintf(s, 128, L"%lu", kSetBauds[s_setBaud]);
-    else
-        wcscpy(s, L"не менять");
-    Stepper(dc, S_BAUD_PREV, S_BAUD_NEXT, s);
-
+    SetRow(dc, kSetRow0, L"Карта", g_cfg.vector ? L"векторная, OpenFreeMap" : L"растровая, тайлы OSM", true);
+    Stepper(dc, S_MAP_PREV, S_MAP_NEXT, g_cfg.vector ? L"Вектор" : L"Растр");
+    SetRow(dc, kSetRow0 + kSetRowH, L"Схема развязки", L"перед съездом, развилкой, кольцом", true);
+    Stepper(dc, S_JUNC_PREV, S_JUNC_NEXT, g_cfg.junction ? L"Вкл" : L"Выкл");
     if (g_cfg.cacheKb >= 0)
-        _snwprintf(s, 128, L"занято %ld МБ", g_cfg.cacheKb / 1024);
+        _snwprintf(s, 160, L"занято %ld МБ", g_cfg.cacheKb / 1024);
     else
         wcscpy(s, L"занято ?");
     SetRow(dc, kSetRow0 + 2 * kSetRowH, L"Кэш карт", s, true);
     int mb = kSetCacheMb[s_setCache];
-    if (mb >= 1000)
-        _snwprintf(s, 128, L"%d ГБ", mb / 1000);
-    else
-        _snwprintf(s, 128, L"%d МБ", mb);
+    _snwprintf(s, 160, mb >= 1000 ? L"%d ГБ" : L"%d МБ", mb >= 1000 ? mb / 1000 : mb);
     Stepper(dc, S_CACHE_PREV, S_CACHE_NEXT, s);
-
-    SetRow(dc, kSetRow0 + 3 * kSetRowH, L"Карта", g_cfg.vector ? L"векторная, OpenFreeMap" : L"растровая, тайлы OSM",
-           true);
-    Stepper(dc, S_MAP_PREV, S_MAP_NEXT, g_cfg.vector ? L"Вектор" : L"Растр");
-
-    SetRow(dc, kSetRow0 + 4 * kSetRowH, L"Схема развязки", L"перед съездом, развилкой, кольцом", true);
-    Stepper(dc, S_JUNC_PREV, S_JUNC_NEXT, g_cfg.junction ? L"Вкл" : L"Выкл");
-
-    SetRow(dc, kSetRow0 + 5 * kSetRowH, L"Найти GPS · журнал", L"COM1…COM9 · OSMapsCE.log", false);
-    DrawCtl(dc, kSetCtl[S_SCAN], s_setPressed == S_SCAN, s_fontLabel, kSetCaption[S_SCAN]);
-    DrawCtl(dc, kSetCtl[S_LOG], s_setPressed == S_LOG, s_fontLabel, g_cfg.log ? L"ЖУРНАЛ ВКЛ" : L"ЖУРНАЛ ВЫКЛ");
-    DrawCtl(dc, kSetCtl[S_EXIT], s_setPressed == S_EXIT, s_fontLabel, kSetCaption[S_EXIT]);
-    DrawCtl(dc, kSetCtl[S_MAPS], s_setPressed == S_MAPS, s_fontLabel, kSetCaption[S_MAPS]);
-
-    // live state of the receiver (the port's own state: under "Порт GPS"): the lines and the place in one line
-    if (s_gps.valid)
-        _snwprintf(s, 128, L"NMEA %d (ошибок %d) · %.5f, %.5f · %d спутн.", s_gps.lines, s_gps.badLines, s_gps.lat,
-                   s_gps.lon, s_gps.sats);
+    // where it is written (the user 2026-10-29: "pressed, no log" - which card, which folder)
+    wchar_t path[MAX_PATH];
+    if (LogFile(path))   // (a long one: its end, "…" before it - the row's width)
+        _snwprintf(s, 160, wcslen(path) > 44 ? L"…%s" : L"%s", path + (wcslen(path) > 44 ? wcslen(path) - 43 : 0));
     else
-        _snwprintf(s, 128, L"NMEA %d (ошибок %d) · координат пока нет · %d спутн.", s_gps.lines, s_gps.badLines,
-                   s_gps.sats);
-    s[127] = 0;
-    Text(dc, s_fontSmall, s_gps.valid ? kText : kTextDim, 36, 374, 580, 392, DT_LEFT, s);
+        wcscpy(s, g_cfg.log ? L"некуда писать: нет карты памяти" : L"OSMapsCE.log: выключен");
+    SetRow(dc, kSetRow0 + 3 * kSetRowH, L"Журнал", s, true);
+    Stepper(dc, S_LOG_PREV, S_LOG_NEXT, g_cfg.log ? L"Вкл" : L"Выкл");
+    GpsLine(s, 160);
+    SetRow(dc, kSetRow0 + 4 * kSetRowH, L"GPS", s, true);
+    DrawCtl(dc, kSetCtl[S_GPS], s_setPressed == S_GPS, s_fontLabel, L"НАСТРОИТЬ");
+    _snwprintf(s, 160, L"OSMapsCE %s", AppVersion(kRelease));   // VestaCore vversion.h
+    SetRow(dc, kSetRow0 + 5 * kSetRowH, L"О программе", s, false);
+    DrawCtl(dc, kSetCtl[S_INFO], s_setPressed == S_INFO, s_fontLabel, L"ЗАПРОСЫ");
+    DrawCtl(dc, kSetCtl[S_MAPS], s_setPressed == S_MAPS, s_fontLabel, L"КАРТЫ");
+    DrawCtl(dc, kSetCtl[S_EXIT], s_setPressed == S_EXIT, s_fontLabel, L"ЗАВЕРШИТЬ");
+    if (s_setSheet == SHEET_GPS)
+        DrawGpsSheet(dc);
+    else if (s_setSheet == SHEET_INFO)
+        DrawInfoSheet(dc);
+}
 
+static void Sheet(HDC dc, const wchar_t* title)   // a sheet over the bottom: full width, its title
+{
+    RECT r = { 0, kSheetY, s_cw, s_ch + 40 };   // (the bottom corners off the screen)
+    Tile(dc, r, kPanel, kLine, 32);
+    Text(dc, s_fontBig, kText, 24, kSheetY + 4, s_cw - 24, kSheetY + 52, DT_LEFT, title);
+}
+
+// The GPS port: its number and speed, the lines as they come, the search over COM1..COM9
+static void DrawGpsSheet(HDC dc)
+{
+    wchar_t s[160];
+    GpsLine(s, 160);
+    Sheet(dc, L"GPS");
+    Text(dc, s_fontSmall, kTextDim, 120, kSheetY + 4, s_cw - 24, kSheetY + 52, DT_LEFT, s);
+    SetRow(dc, kSetCtl[S_PORT_PREV].top - 3, L"Порт", L"COM1…COM9", true);
+    _snwprintf(s, 160, L"COM%d", s_setPort);
+    Stepper(dc, S_PORT_PREV, S_PORT_NEXT, s);
+    SetRow(dc, kSetCtl[S_BAUD_PREV].top - 3, L"Скорость порта", L"или как у оболочки", false);
+    if (kSetBauds[s_setBaud])
+        _snwprintf(s, 160, L"%lu", kSetBauds[s_setBaud]);
+    else
+        wcscpy(s, L"не менять");
+    Stepper(dc, S_BAUD_PREV, S_BAUD_NEXT, s);
+    if (s_gps.valid)
+        _snwprintf(s, 160, L"NMEA %d (ошибок %d) · %.5f, %.5f", s_gps.lines, s_gps.badLines, s_gps.lat, s_gps.lon);
+    else
+        _snwprintf(s, 160, L"NMEA %d (ошибок %d) · координат пока нет", s_gps.lines, s_gps.badLines);
+    s[159] = 0;
+    Text(dc, s_fontSmall, s_gps.valid ? kText : kTextDim, 36, 358, s_cw - 36, 380, DT_LEFT, s);
+    COLORREF c = kTextDim;
     if (s_gps.found == 1) {
-        _snwprintf(s, 128, L"Найден GPS: %s %lu, настройки сохранены", s_gps.port, s_gps.baud);
-        Text(dc, s_fontSmall, RGB(120, 220, 120), 36, 392, 580, 410, DT_LEFT, s);
+        _snwprintf(s, 160, L"Найден GPS: %s %lu, настройки сохранены", s_gps.port, s_gps.baud);
+        c = RGB(120, 220, 120);
     } else if (s_gps.found == -1) {
-        Text(dc, s_fontSmall, kTextErr, 36, 392, 580, 410, DT_LEFT, L"GPS не найден на COM1..COM9");
+        wcscpy(s, L"GPS не найден на COM1…COM9");
+        c = kTextErr;
     } else {   // the last line as it came (no fix yet), or the hint
-        MultiByteToWideChar(CP_ACP, 0, s_gps.last, -1, s, 128);
-        s[127] = 0;
-        Text(dc, s_fontSmall, kTextDim, 36, 392, 580, 410, DT_LEFT,
-             s[0] && !s_gps.valid ? s : L"Нет строк - не тот порт. Строки с ошибкой - не та скорость.");
+        MultiByteToWideChar(CP_ACP, 0, s_gps.last, -1, s, 160);
+        if (s_gps.valid)
+            s[0] = 0;
+        else if (!s[0])
+            wcscpy(s, L"Нет строк — не тот порт. Строки с ошибкой — не та скорость.");
     }
+    s[159] = 0;
+    Text(dc, s_fontSmall, c, 36, 382, s_cw - 36, 404, DT_LEFT, s);
+    DrawCtl(dc, kSetCtl[S_SCAN], s_setPressed == S_SCAN, s_fontLabel, L"НАЙТИ GPS");
+    Tile(dc, kSetCtl[S_GPS_DONE], kOrange, kOrange, 20);
+    Text(dc, s_fontLabel, kInk, kSetCtl[S_GPS_DONE].left, kSetCtl[S_GPS_DONE].top, kSetCtl[S_GPS_DONE].right,
+         kSetCtl[S_GPS_DONE].bottom, DT_CENTER, L"ГОТОВО");
+}
 
-    _snwprintf(s, 128, L"Запросов: Яндекс %d/%d, 2ГИС %d/%d, OSM %d, поиск и маршрут %d/%d",
-               *Counter(SRC_YANDEX), Limit(SRC_YANDEX), *Counter(SRC_2GIS), Limit(SRC_2GIS), g_cfg.osmCount,
-               g_cfg.apiCount, g_cfg.apiLimit);
-    s[127] = 0;
-    Text(dc, s_fontTiny, kTextDim, 92, 418, 408, 442, DT_LEFT, s);
-    _snwprintf(s, 128, L"OSMapsCE %s", AppVersion(kRelease));   // VestaCore vversion.h
-    Text(dc, s_fontTiny, kTextDim, 92, 442, 408, 466, DT_LEFT, s);
+// The day's requests by their kind, against their limits
+static void DrawInfoSheet(HDC dc)
+{
+    Sheet(dc, L"Запросы за день");
+    wchar_t s[4][96];
+    _snwprintf(s[0], 96, L"Пробки Яндекса: %d из %d", *Counter(SRC_YANDEX), Limit(SRC_YANDEX));
+    _snwprintf(s[1], 96, L"Пробки 2ГИС: %d из %d", *Counter(SRC_2GIS), Limit(SRC_2GIS));
+    _snwprintf(s[2], 96, L"Плитки OSM: %d", g_cfg.osmCount);
+    _snwprintf(s[3], 96, L"Поиск и маршрут: %d из %d", g_cfg.apiCount, g_cfg.apiLimit);
+    for (int i = 0; i < 4; i++)
+        Text(dc, s_fontLabel, kText, 36, 262 + i * 36, s_cw - 36, 296 + i * 36, DT_LEFT, s[i]);
+    Tile(dc, kSetCtl[S_INFO_DONE], kOrange, kOrange, 20);
+    Text(dc, s_fontLabel, kInk, kSetCtl[S_INFO_DONE].left, kSetCtl[S_INFO_DONE].top, kSetCtl[S_INFO_DONE].right,
+         kSetCtl[S_INFO_DONE].bottom, DT_CENTER, L"ГОТОВО");
 }
 
 static void MapsRow(HDC dc, int r, const MapRegion& m)   // a region: its title, size and state, its button

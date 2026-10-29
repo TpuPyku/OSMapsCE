@@ -69,6 +69,7 @@ void PathInDir(wchar_t* out, const wchar_t* name);
 bool ReadWholeFile(const wchar_t* path, unsigned char** data, int* len);
 void LogInit();
 void LogEnable(bool on);   // the log opened / closed (Settings: "ЖУРНАЛ")
+bool LogFile(wchar_t* out);   // the open log's path (MAX_PATH); false: no log open
 void Log(const char* fmt, ...);
 void ConfigDefaults();
 bool ConfigLoad();

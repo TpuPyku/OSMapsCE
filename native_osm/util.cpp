@@ -74,6 +74,15 @@ void LogEnable(bool on)
     LeaveCriticalSection(&s_logCs);
 }
 
+bool LogFile(wchar_t* out)   // the open log's path (the settings show it: the user 2026-10-29 found no log)
+{
+    if (s_log == INVALID_HANDLE_VALUE)
+        return false;
+    _snwprintf(out, MAX_PATH, L"%s%s", s_logDir, kLogName);
+    out[MAX_PATH - 1] = 0;
+    return true;
+}
+
 // Full log becomes OSMapsCE.old.log (replacing the previous one), a new log starts.
 static void RotateLog()
 {
