@@ -10,30 +10,38 @@ const char* Ws(const char* p)
     return p;
 }
 
+static const char* SkipString(const char* p)   // p at its opening quote
+{
+    for (p++; *p && *p != '"'; p++)
+        if (*p == '\\' && p[1])
+            p++;
+    return *p ? p + 1 : p;
+}
+
+static const char* SkipNested(const char* p)   // p at its opening { or [
+{
+    int depth = 0;
+    while (*p) {
+        if (*p == '"') {
+            p = SkipString(p);
+            continue;
+        }
+        if (*p == '{' || *p == '[')
+            depth++;
+        else if ((*p == '}' || *p == ']') && --depth == 0)
+            return p + 1;
+        p++;
+    }
+    return p;
+}
+
 const char* JSkip(const char* p)
 {
     p = Ws(p);
-    if (*p == '"') {
-        for (p++; *p && *p != '"'; p++)
-            if (*p == '\\' && p[1])
-                p++;
-        return *p ? p + 1 : p;
-    }
-    if (*p == '{' || *p == '[') {
-        int depth = 0;
-        while (*p) {
-            if (*p == '"') {
-                p = JSkip(p);
-                continue;
-            }
-            if (*p == '{' || *p == '[')
-                depth++;
-            else if ((*p == '}' || *p == ']') && --depth == 0)
-                return p + 1;
-            p++;
-        }
-        return p;
-    }
+    if (*p == '"')
+        return SkipString(p);
+    if (*p == '{' || *p == '[')
+        return SkipNested(p);
     while (*p && *p != ',' && *p != '}' && *p != ']')
         p++;
     return p;
@@ -92,44 +100,55 @@ double JNum(const char* p, double def)
 }
 
 // A string value, unescaped, UTF-8 into out (cap bytes); "" if p is not a string.
+static int Utf8(unsigned u, char* out)   // the code point's bytes (surrogate pairs: not in Russian place names)
+{
+    if (u < 0x80) {
+        out[0] = (char)u;
+        return 1;
+    }
+    if (u < 0x800) {
+        out[0] = (char)(0xC0 | (u >> 6));
+        out[1] = (char)(0x80 | (u & 63));
+        return 2;
+    }
+    out[0] = (char)(0xE0 | (u >> 12));
+    out[1] = (char)(0x80 | ((u >> 6) & 63));
+    out[2] = (char)(0x80 | (u & 63));
+    return 3;
+}
+
+static unsigned Hex4(const char* p)   // \uXXXX's four digits at p (fewer: as many as there are)
+{
+    unsigned u = 0;
+    for (int i = 0; i < 4 && p[i]; i++) {
+        char c = p[i];
+        u = u * 16 + (c >= '0' && c <= '9' ? c - '0' : (c | 32) - 'a' + 10);
+    }
+    return u;
+}
+
+// The escape at p (the character after the backslash) into out at *n; returns the last character it took
+static const char* Escape(const char* p, char* out, int* n)
+{
+    switch (*p) {
+    case 'n': case 't': out[(*n)++] = ' '; return p;
+    case 'r': case 'b': case 'f': return p;
+    case 'u': *n += Utf8(Hex4(p + 1), out + *n); return p + 4;
+    case 0: return p - 1;
+    default: out[(*n)++] = *p; return p;   // \" \\ \/
+    }
+}
+
 int JStr(const char* p, char* out, int cap)
 {
     int n = 0;
-    if (p && *p == '"') {
+    if (p && *p == '"')
         for (p++; *p && *p != '"' && n < cap - 4; p++) {
-            if (*p != '\\') {
+            if (*p != '\\')
                 out[n++] = *p;
-                continue;
-            }
-            p++;
-            switch (*p) {
-            case 'n': out[n++] = ' '; break;
-            case 't': out[n++] = ' '; break;
-            case 'r': case 'b': case 'f': break;
-            case 'u': {
-                unsigned u = 0;
-                for (int i = 1; i <= 4 && p[i]; i++) {
-                    char c = p[i];
-                    u = u * 16 + (c >= '0' && c <= '9' ? c - '0' : (c | 32) - 'a' + 10);
-                }
-                p += 4;
-                if (u < 0x80) {
-                    out[n++] = (char)u;
-                } else if (u < 0x800) {
-                    out[n++] = (char)(0xC0 | (u >> 6));
-                    out[n++] = (char)(0x80 | (u & 63));
-                } else {   // (surrogate pairs: not in Russian place names)
-                    out[n++] = (char)(0xE0 | (u >> 12));
-                    out[n++] = (char)(0x80 | ((u >> 6) & 63));
-                    out[n++] = (char)(0x80 | (u & 63));
-                }
-                break;
-            }
-            case 0: p--; break;
-            default: out[n++] = *p; break;   // \" \\ \/
-            }
+            else
+                p = Escape(p + 1, out, &n);
         }
-    }
     out[n] = 0;
     return n;
 }

@@ -155,6 +155,18 @@ double      JNum(const char* p, double def);
 int         JStr(const char* p, char* out, int cap);   // a string, unescaped, UTF-8
 void        JWide(const char* p, wchar_t* out, int cap);
 
+// offmaps.cpp - the regions' maps downloaded on the unit: the release's catalog, the card's regions, a zip unpacked
+enum { MAP_NEW, MAP_UPDATE, MAP_OK };
+struct MapRegion {
+    char name[48], title[96], date[12], zip[64], have[12];   // title: UTF-8; have: the card's date, "" none
+    int  sizeKb;
+};
+int  MapsCatalog(const char* json, MapRegion* out, int cap);
+void MapsHave(MapRegion* r, int n);
+int  MapState(const MapRegion& r);
+bool UrlSplit(const char* url, char* host, int cap, bool* https, const char** path);
+bool ZipExtract(const wchar_t* zip, const wchar_t* dir, const char* const* files, int n);
+
 // offline.cpp - routes from a region's road graph (OSMapsData\<region>\route.grf), answered as OSRM's JSON
 bool  OfflineRoute(const char* osrmPath, char** body, int* len);   // false: no region / no way - ask OSRM
 bool  OfflineTrunkRoute(const char* osrmPath, char** body, int* len);   // over the trunk roads (4b): after OSRM failed

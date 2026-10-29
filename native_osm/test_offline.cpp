@@ -17,6 +17,8 @@ void Log(const char*, ...)
 {
 }
 
+bool ReadWholeFile(const wchar_t*, unsigned char**, int*) { return false; }   // (image.cpp's: its zlib is used here)
+
 static int s_failed, s_checks;
 
 static void Check(bool ok, const char* what, const char* body)
@@ -128,12 +130,92 @@ static int Count(const char* body, const char* s)
     return n;
 }
 
+static bool FileIs(const wchar_t* name, const char* want, int n)   // a file under the test folder holds want
+{
+    wchar_t path[MAX_PATH];
+    PathInDir(path, name);
+    HANDLE f = CreateFile(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    if (f == INVALID_HANDLE_VALUE)
+        return false;
+    static char buf[100000];
+    DWORD got = 0;
+    ReadFile(f, buf, sizeof(buf), &got, NULL);
+    CloseHandle(f);
+    return (int)got == n && !memcmp(buf, want, n);
+}
+
+// json.cpp (shared now: the catalog read with it): escapes, nesting, a string cut short
+static void JsonChecks()
+{
+    char s[64];
+    JStr("\"a\\nb\\t\\\"c\\\\\\/\\u0410\\u00e9z\\r\\b\\f\"", s, sizeof(s));
+    Check(!strcmp(s, "a b \"c\\/\xD0\x90\xC3\xA9z"), "json: the escapes (\\u to UTF-8, 2 and 1 bytes)", s);
+    JStr("\"\\u20ac\"", s, sizeof(s));
+    Check(!strcmp(s, "\xE2\x82\xAC"), "json: a 3-byte \\u", s);
+    JStr("\"ab\\", s, sizeof(s));
+    Check(!strcmp(s, "ab"), "json: cut after a backslash", s);
+    Check(JNum(JKey("{\"a\":[1,{\"b\":\"x]}\\\"\"}],\"c\":2}", "c"), 0) == 2, "json: past nested values and strings",
+          NULL);
+    Check(!JKey("{\"a\":1}", "b") && !JKey("[1]", "a") && !JFirst("[]") && !JFirst("{}"), "json: none where none",
+          NULL);
+}
+
+// The regions' maps on the unit (offmaps.cpp, the user 2026-10-29): the release's catalog, what the card has, a
+// region's zip unpacked, the download's URLs
+static void MapsChecks()
+{
+    static const char* kCat = "{\"version\":1,\"made\":\"x\",\"regions\":[{\"name\":\"tiny\",\"title\":\"\xD0\xA2\xD0\xB5"
+                              "\xD1\x81\xD1\x82\",\"date\":\"2026-10-27\",\"zip\":\"tiny.zip\",\"size\":2048000,"
+                              "\"bbox\":[1,2,3,4]},{\"name\":\"zz\",\"title\":\"Z\",\"date\":\"2026-10-28\","
+                              "\"zip\":\"zz.zip\",\"size\":100}]}";
+    MapRegion r[4];
+    int n = MapsCatalog(kCat, r, 4);
+    Check(n == 2 && !strcmp(r[0].name, "tiny") && !strcmp(r[0].title, "\xD0\xA2\xD0\xB5\xD1\x81\xD1\x82") &&
+          !strcmp(r[0].date, "2026-10-27") && !strcmp(r[0].zip, "tiny.zip") && r[0].sizeKb == 2000 &&
+          !strcmp(r[1].name, "zz") && r[1].sizeKb == 0, "maps: the catalog read", NULL);
+    Check(MapsCatalog(kCat, r, 1) == 1 && MapsCatalog("{}", r, 4) == 0 && MapsCatalog("garbage", r, 4) == 0,
+          "maps: the catalog bounded, nothing from a bad one", NULL);
+    n = MapsCatalog(kCat, r, 4);
+    MapsHave(r, n);   // tiny on the card (region.txt 2026-10-20), zz not
+    Check(!strcmp(r[0].have, "2026-10-20") && !r[1].have[0], "maps: the card's dates", NULL);
+    Check(MapState(r[0]) == MAP_UPDATE && MapState(r[1]) == MAP_NEW, "maps: newer in the catalog, not on the card", NULL);
+    strcpy(r[0].date, "2026-10-20");
+    Check(MapState(r[0]) == MAP_OK, "maps: the same date - up to date", NULL);
+
+    char host[64];
+    bool https = false;
+    const char* path = NULL;
+    Check(UrlSplit("https://release-assets.githubusercontent.com/a/b?x=1", host, 64, &https, &path) &&
+          !strcmp(host, "release-assets.githubusercontent.com") && https && !strcmp(path, "/a/b?x=1"),
+          "maps: an https URL split", NULL);
+    Check(UrlSplit("http://h.org/p", host, 64, &https, &path) && !https && !strcmp(path, "/p") &&
+          !UrlSplit("ftp://x/y", host, 64, &https, &path) && !UrlSplit("https://h.org", host, 64, &https, &path),
+          "maps: http too, nothing else", NULL);
+
+    static const char* kFiles[3] = { "route.grf", "search.idx", "region.txt" };
+    wchar_t zip[MAX_PATH], dir[MAX_PATH];
+    PathInDir(zip, L"..\\region.zip");
+    PathInDir(dir, L"..\\unzip");
+    Check(ZipExtract(zip, dir, kFiles, 3), "maps: a region's zip unpacked", NULL);
+    static char grf[256 * 300];
+    for (int i = 0; i < (int)sizeof(grf); i++)
+        grf[i] = (char)(i % 256);
+    Check(FileIs(L"..\\unzip\\route.grf", grf, sizeof(grf)), "maps: a deflated file whole", NULL);
+    Check(FileIs(L"..\\unzip\\search.idx", "IDXIDXIDXIDXIDXIDXIDXIDXIDXIDX", 30), "maps: a stored file whole", NULL);
+    Check(FileIs(L"..\\unzip\\region.txt", "name=zipped\ndate=2026-10-29\n", 28), "maps: region.txt", NULL);
+    static const char* kMissing[1] = { "nope.bin" };
+    Check(!ZipExtract(zip, dir, kMissing, 1), "maps: a file the zip has not - false", NULL);
+}
+
 int main()
 {
     GetModuleFileName(NULL, g_dir, MAX_PATH);
     wchar_t* s = wcsrchr(g_dir, L'\\');
     if (s)   // as from the program's folder obj\test\app\: its ..\OSMapsData is obj\test\OSMapsData
         wcscpy(s + 1, L"app\\");
+
+    JsonChecks();
+    MapsChecks();
 
     // along the main street, west to east: ~400 m, no turn on the way
     char* b = Route("50.000,53.000;50.006,53.000");

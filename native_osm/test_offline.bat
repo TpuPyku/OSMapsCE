@@ -19,6 +19,8 @@ if not "%1"=="build" (
   rem the trunk roads (4b): tiny's primary and tertiary streets (the residential ones only the region's)
   if not exist obj\test\OSMapsData\trunk mkdir obj\test\OSMapsData\trunk
   python ..\offline\test\make_test_trunk.py ..\offline\test\tiny.osm obj\test\OSMapsData\trunk\trunk.grf >nul || exit /b 1
+  rem a region's zip as the release has it (offmaps.cpp unpacks it), tiny's region.txt
+  python ..\offline\test\make_test_zip.py obj\test\region.zip %MAP% || exit /b 1
   if not exist obj\test\OSMapsData\old mkdir obj\test\OSMapsData\old
   python ..\offline\test\make_test_tiles.py %MAP%\tiles.vtp obj\test\OSMapsData\old\tiles.vtp >nul || exit /b 1
   rem the second region (only its search): the town Другоград 5 degrees north
@@ -28,10 +30,10 @@ if not "%1"=="build" (
 )
 set OPT=/O2
 if "%COVER%"=="1" set OPT=/Od /Zi
-"%VC%\bin\cl.exe" /nologo %OPT% /W3 /MT /TP test_offline.cpp offline.cpp offsearch.cpp offdata.cpp vpack.cpp /Foobj\test\ /Fdobj\test\ ^
+"%VC%\bin\cl.exe" /nologo %OPT% /W3 /MT /TP test_offline.cpp offline.cpp offsearch.cpp offdata.cpp vpack.cpp offmaps.cpp json.cpp image.cpp /Foobj\test\ /Fdobj\test\ ^
   /Feobj\test\test_offline.exe /DUNICODE /D_UNICODE /DWIN32 /DNDEBUG /D_CRT_SECURE_NO_WARNINGS ^
   /I"%CORE%" /I"%VC%\include" /I"%VC%\PlatformSDK\Include" /link /DEBUG /LIBPATH:"%VC%\lib" ^
-  /LIBPATH:"%VC%\PlatformSDK\Lib" kernel32.lib >obj\test\build.log
+  /LIBPATH:"%VC%\PlatformSDK\Lib" kernel32.lib user32.lib gdi32.lib >obj\test\build.log
 if errorlevel 1 type obj\test\build.log & exit /b 1
 if "%1"=="build" exit /b 0
 obj\test\test_offline.exe
