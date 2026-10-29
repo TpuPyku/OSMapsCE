@@ -118,6 +118,26 @@ class Maps(unittest.TestCase):
         self.assertEqual(info['tiles'], '20261027')                        # the tiles' build: newer online ones refresh them
         self.assertTrue(steps and steps[-1] == 1.0, steps)                  # the progress, to the end
 
+    def test_app_writes_the_trunk_graph(self):
+        """4b (2026-10-29): the trunk roads' graph of Russia and the CIS - with any regions written, once a build."""
+        def trunk_zip(date):
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, 'w') as z:
+                z.writestr('trunk.grf', b'OSMG' + date.encode())
+                z.writestr('region.txt', 'name=trunk\ndate=%s\n' % date)
+            return buf.getvalue()
+        drive = os.path.join(self.tmp, 'T')
+        assets = {release_regions.ASSETS + 'trunk.zip': trunk_zip('2026-10-29')}
+        self.assertEqual(maps_app.install_trunk(drive, assets.__getitem__), 'written')
+        folder = os.path.join(drive, 'OSMapsData', 'trunk')
+        self.assertEqual(sorted(os.listdir(folder)), ['region.txt', 'trunk.grf'])
+        self.assertEqual(maps_app.install_trunk(drive, assets.__getitem__), 'same')
+        assets[release_regions.ASSETS + 'trunk.zip'] = trunk_zip('2026-11-02')
+        self.assertEqual(maps_app.install_trunk(drive, assets.__getitem__), 'written')
+        self.assertEqual(read(os.path.join(folder, 'trunk.grf')), b'OSMG2026-11-02')
+        self.assertEqual(maps_app.install_trunk(drive, {}.__getitem__), 'none')   # no graph in the release yet
+        self.assertNotIn('trunk', maps_app.installed(drive))                     # not a region of the list
+
     def test_app_states(self):
         cat = {'regions': [{'name': 'a', 'date': '2026-10-27'}, {'name': 'b', 'date': '2026-10-27'},
                            {'name': 'c', 'date': '2026-10-27'}]}

@@ -37,6 +37,7 @@ kSignalS = 8   # a traffic light's wait, seconds (on average: half the time it i
 kNoAccess = {'no', 'private', 'agricultural', 'forestry', 'delivery', 'destination_no'}
 kNoService = {'parking_aisle', 'drive-through', 'emergency_access'}
 kCell = 5000   # the grid's cell, 1e-6 degrees: 0.005 degrees, ~550 x 330 m at 53 N
+kMaxCells = 1 << 20   # a bigger grid: its cell doubled (a whole country: Kazakhstan's 4.7 M cells were 19 MB)
 VERSION = 1
 HEADER = '<4s5I4i2IiI6I'
 
@@ -293,7 +294,7 @@ def write(out, nodes, first, flat, geom, names, bbox, grid, cell=kCell):
     return off[-1] + (len(cstart) + len(items)) * 4
 
 
-def build(src, out, classes=None, simplify_m=0, cell=kCell, west=None):
+def build(src, out, classes=None, simplify_m=0, cell=kCell, west=None, max_cells=kMaxCells):
     w = Ways(classes)
     w.apply_file(src)
     locs = Locs(set(w.uses), west)
@@ -305,6 +306,9 @@ def build(src, out, classes=None, simplify_m=0, cell=kCell, west=None):
     lats, lons = [n[0] for n in nodes], [n[1] for n in nodes]
     bbox = (min(lats), min(lons), max(lats), max(lons))
     gw, gh = (bbox[3] - bbox[1]) // cell + 1, (bbox[2] - bbox[0]) // cell + 1
+    while gw * gh > max_cells:
+        cell *= 2
+        gw, gh = (bbox[3] - bbox[1]) // cell + 1, (bbox[2] - bbox[0]) // cell + 1
     cstart, items = make_grid(pieces, nodes, piece_edge, (bbox[0], bbox[1], gw, cell), gw * gh)
     size = write(out, nodes, first, flat, geom, names, bbox, (gw, gh, cstart, items), cell)
     print('nodes %d, edges %d, geom %d, names %d B, grid %dx%d (%d items); file %.1f MB' % (
