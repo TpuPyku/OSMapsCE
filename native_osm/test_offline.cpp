@@ -580,7 +580,8 @@ int main()
     Check(Has(b, L"\"name\":\"Тестовск\""), "search: from where no region is - the regions on the card", b);
     free(b);
     b = Ask("/api/?q=%D0%A2%D0%B5%D1%81%D1%82%D0%BE%D0%B2%D1%81%D0%BA&limit=7&lat=53.0&lon=50.0");   // Тестовск again
-    Check(Has(b, L"\"name\":\"Тестовск\"") && !Has(b, L"Другоград"), "search: this region's first, the others not mixed in", b);
+    Check(Has(b, L"\"name\":\"Тестовск\"") && !Has(b, L"Другоград") && !Has(b, L"Главная улица"),
+          "search: this region's first, the others not mixed in (the town's name alone: the town, not its streets)", b);
     free(b);
     // here only a street of that name, there the town itself (the user 2026-10-29: "Жигулёвск" from Moscow - Moscow's
     // Жигулёвская streets, not the town): the regions' answers together, the town first
@@ -588,6 +589,13 @@ int main()
     const char* there = Find(b, L"\"name\":\"Тестовск\""), *here = Find(b, L"\"name\":\"Тестовская улица\"");
     Check(there && here && there < here && Num(b, "\"coordinates\":[") > 0,
           "search: no exact match here - the other regions too, the exact one first", b);
+    free(b);
+    // a place's name in the query: near it, the streets not its own (the user 2026-10-29: "балашиха кольцевая 5" -
+    // that Кольцевая is the next settlement's in OSM)
+    b = Ask("/api/?q=%D0%B4%D0%B0%D0%BB%D1%8C%D0%BD%D0%B5%D0%B5%20%D0%B3%D0%BB%D0%B0%D0%B2%D0%BD%D0%B0%D1%8F"
+            "&limit=7&lat=58.0&lon=50.0");   // дальнее главная
+    Check(Has(b, L"\"name\":\"Главная улица\"") && Has(b, L"\"city\":\"Другоград\""),
+          "search: a village named - the street near it, its own town's", b);
     free(b);
     b = Ask("/reverse?lon=10.0&lat=10.0&limit=1");
     Check(!b, "reverse: only the point's own region", b);

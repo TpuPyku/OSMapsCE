@@ -458,6 +458,40 @@ static void FindPois(const Query& q, int lat, int lon, Hit* hits, int* n)   // p
 
 static const double kNone = 1e30;   // Search's best score when nothing found; under 0: an exact place or house
 
+static const SPlace* PlaceNamed(const char* word)   // the region's biggest settlement of that name, NULL: none
+{
+    const SPlace* best = NULL;
+    for (DWORD i = 0; i < s_x.h.places; i++)
+        if (!strcmp(S(s_x.places[i].norm), word) && (!best || s_x.places[i].rank < best->rank))
+            best = &s_x.places[i];
+    return best;
+}
+
+static void DropWord(Query* q, int t)   // the query's word t out (the words joined again)
+{
+    for (int k = t + 1; k < q->nt; k++)
+        strcpy(q->tok[k - 1], q->tok[k]);
+    q->nt--;
+    q->all[0] = 0;
+    for (int k = 0; k < q->nt; k++)
+        Join(q->all, sizeof(q->all), q->tok[k]);
+}
+
+// A word of the query naming a settlement of the region (the biggest of that name): not to match - the search is
+// near it (the user 2026-10-29: "балашиха кольцевая 5" - that Кольцевая is the next settlement's in OSM)
+static void PlaceHint(Query* q, int* lat, int* lon)
+{
+    for (int t = 0; t < q->nt && q->nt > 1; t++) {
+        const SPlace* p = PlaceNamed(q->tok[t]);
+        if (p) {
+            *lat = p->lat;
+            *lon = p->lon;
+            DropWord(q, t);
+            return;
+        }
+    }
+}
+
 // The query in the loaded region: its best kAnswer hits into the answers (AddFound); the best score
 static double Search(const char* q8, int lat, int lon)
 {
@@ -465,6 +499,7 @@ static double Search(const char* q8, int lat, int lon)
     ParseQuery(q8, &q);
     if (!q.nt)
         return kNone;
+    PlaceHint(&q, &lat, &lon);
     static Hit hits[kHits];
     int n = 0;
     FindPlaces(q, lat, lon, hits, &n);

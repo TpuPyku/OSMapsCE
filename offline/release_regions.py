@@ -115,6 +115,16 @@ def build_region(name, url, dist, work):
     return entry
 
 
+def kept(previous, built, known):
+    """The previous catalog's entries not built now, still among the regions; with today's title (the user
+    2026-10-29: "Украина:" off the oblasts - not only those rebuilt)."""
+    out = [e for e in (previous or {'regions': []})['regions'] if e['name'] not in built and e['name'] in known]
+    for e in out:
+        if 'title' in e:
+            e['title'] = title(e['name'])
+    return out
+
+
 def catalog(dist, previous=None, known=()):
     """catalog.json of the entries in dist and the previous catalog's others still among the regions (known), by
     name."""
@@ -124,10 +134,7 @@ def catalog(dist, previous=None, known=()):
             with open(os.path.join(dist, f), encoding='utf-8') as e:
                 entries.append(json.load(e))
     built = {e['name'] for e in entries}
-    entries += [e for e in (previous or {'regions': []})['regions'] if e['name'] not in built and e['name'] in known]
-    for e in entries:   # (a kept one: today's title - the user 2026-10-29: "Украина:" off the oblasts)
-        if 'title' in e:
-            e['title'] = title(e['name'])
+    entries += kept(previous, built, known)
     cat = {'version': 1, 'made': time.strftime('%Y-%m-%d', time.gmtime()),
            'regions': sorted(entries, key=lambda e: e['name'])}
     with open(os.path.join(dist, 'catalog.json'), 'w', encoding='utf-8') as f:
