@@ -147,6 +147,42 @@ class Tools(unittest.TestCase):
         main = [dm for a, b, dm, _, n in edges if n == 'Главная улица' and a == (53000000, 50000000)]
         self.assertTrue(1300 < main[0] < 1400)        # ~134 m, in decimetres
 
+    def test_graph_barriers(self):
+        """The barriers on roads (the user 2026-10-29: a route through a hospital's grounds, closed by gates): a gate
+        with no access tag - 10 minutes more (no way through, unless going there), a block, a bollard, a private
+        gate - no way past (the road cut there), a lift gate, a toll booth, a cattle grid - passed."""
+        self.assertEqual([make_graph.barrier_of(t) for t in (
+            {}, {'barrier': 'gate'}, {'barrier': 'gate', 'access': 'private'}, {'barrier': 'gate', 'access': 'yes'},
+            {'barrier': 'lift_gate'}, {'barrier': 'block'}, {'barrier': 'bollard'}, {'barrier': 'toll_booth'},
+            {'barrier': 'cattle_grid'}, {'barrier': 'entrance'}, {'barrier': 'lift_gate', 'motor_vehicle': 'no'})],
+            [None, 'gate', 'block', None, None, 'block', 'block', None, None, None, 'block'])
+        osm = os.path.join(self.tmp, 'barriers.osm')
+        nodes = {1: (53.1, 50.000), 2: (53.1, 50.002), 3: (53.1, 50.004), 4: (53.1, 50.006),
+                 5: (53.101, 50.002), 6: (53.102, 50.002), 7: (53.101, 50.004), 8: (53.102, 50.004)}
+        tags = {5: {'barrier': 'gate'}, 7: {'barrier': 'block'}}
+        ways = [([1, 2, 3, 4], 'Главная'), ([2, 5, 6], 'Воротная'), ([3, 7, 8], 'Блочная'), ([6, 8], 'Верхняя')]
+        with open(osm, 'w', encoding='utf-8') as f:
+            f.write('<?xml version="1.0" encoding="UTF-8"?>\n<osm version="0.6">\n')
+            for i, (la, lo) in nodes.items():
+                f.write('<node id="%d" lat="%s" lon="%s" version="1">%s</node>\n' % (i, la, lo, ''.join(
+                    '<tag k="%s" v="%s"/>' % kv for kv in tags.get(i, {}).items())))
+            for k, (ids, name) in enumerate(ways, 1):
+                f.write('<way id="%d" version="1">%s<tag k="highway" v="residential"/><tag k="name" v="%s"/></way>\n'
+                        % (k, ''.join('<nd ref="%d"/>' % i for i in ids), name))
+            f.write('</osm>\n')
+        out = os.path.join(self.tmp, 'barriers.grf')
+        make_graph.build(osm, out)
+        got, edges = graph(out)
+        gate = [ds for a, b, dm, ds, n in edges if n == 'Воротная']
+        plain = [ds for a, b, dm, ds, n in edges if n == 'Блочная']
+        self.assertEqual(len(gate), 2)
+        self.assertTrue(all(ds > 6000 for ds in gate) and all(ds < 1000 for ds in plain), (gate, plain))
+        at7 = (53101000, 50004000)
+        self.assertEqual(got.count(at7), 2)                         # the block: each side's own end there
+        self.assertFalse([1 for a, b, _, _, n in edges if n == 'Блочная' and a == at7 and b == at7])
+        sides = {b for a, b, _, _, n in edges if n == 'Блочная' and a == at7}
+        self.assertEqual(sides, {(53100000, 50004000), (53102000, 50004000)})   # up to it from both, no further
+
     def test_trunk_graph(self):
         """4b (the user 2026-10-29): the trunk roads of the whole country - only the classes asked, the shapes
         simplified (the lengths still the true ones), the grid's cell coarse."""

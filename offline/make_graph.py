@@ -34,6 +34,14 @@ kClasses = [('motorway', 110), ('trunk', 90), ('primary', 60), ('secondary', 50)
              ('tertiary_link', 30), ('road', 30), ('track', 15)]
 kCls = {c: i for i, (c, _) in enumerate(kClasses)}
 kSignalS = 8   # a traffic light's wait, seconds (on average: half the time it is red)
+# The barriers on roads (the user 2026-10-29: a route through a hospital's grounds, closed by gates): a gate with no
+# access tag - kGateS more (a way through avoided, a place inside still reached), the passed ones - nothing, any
+# other (a block, a bollard, a gate closed by its access tag) - the road cut there
+kGateS = 600
+kGates = {'gate', 'swing_gate', 'sliding_gate', 'hampshire_gate', 'wicket_gate'}
+kPassed = {'lift_gate', 'toll_booth', 'cattle_grid', 'border_control', 'entrance', 'no', 'height_restrictor', 'kerb',
+           'sally_port', 'checkpoint'}
+kAccessKeys = ('access', 'motor_vehicle', 'motorcar', 'vehicle')
 kNoAccess = {'no', 'private', 'agricultural', 'forestry', 'delivery', 'destination_no'}
 kNoService = {'parking_aisle', 'drive-through', 'emergency_access'}
 kCell = 5000   # the grid's cell, 1e-6 degrees: 0.005 degrees, ~550 x 330 m at 53 N
@@ -44,7 +52,7 @@ HEADER = '<4s5I4i2IiI6I'
 # a car road as read: its node ids, class, one-way (1 forward, -1 backward, 0 both), roundabout, km/h, name, ref
 Way = namedtuple('Way', 'ids cls oneway rb speed name ref')
 # a junction-to-junction part of a way: node indices a -> b, inner points, metres, its way's data, lights on it
-Piece = namedtuple('Piece', 'a b inner length cls oneway rb speed name signals')
+Piece = namedtuple('Piece', 'a b inner length cls oneway rb speed name signals gates')
 
 
 def maxspeed_kmh(text):
@@ -80,6 +88,19 @@ def oneway_of(tags, rb):
     if ow in ('yes', 'true', '1') or rb or tags.get('highway') in ('motorway', 'motorway_link'):
         return 1
     return -1 if ow == '-1' else 0
+
+
+def barrier_of(tags):
+    """A node's barrier for cars: None (none, or passed), 'gate' (passed, kGateS more), 'block' (no way past)."""
+    b = tags.get('barrier')
+    if not b:
+        return None
+    access = [tags.get(k) for k in kAccessKeys if tags.get(k)]
+    if any(a in kNoAccess for a in access):
+        return 'block'
+    if access or b in kPassed:
+        return None
+    return 'gate' if b in kGates else 'block'
 
 
 def car_way(tags, ids):
@@ -122,12 +143,17 @@ class Locs(osmium.SimpleHandler):
         self.west = west   # 1e-6 degrees: the nodes west of it left out (None: none)
         self.loc = {}
         self.signals = set()
+        self.gates = set()     # barriers passed for kGateS more
+        self.blocks = set()    # barriers no car passes: the road cut there
 
     def node(self, n):
         if n.id in self.want and (self.west is None or n.location.lon * 1e6 >= self.west):
             self.loc[n.id] = (int(round(n.location.lat * 1e6)), int(round(n.location.lon * 1e6)))
             if n.tags.get('highway') == 'traffic_signals':
                 self.signals.add(n.id)
+            kind = barrier_of(n.tags)
+            if kind:
+                (self.gates if kind == 'gate' else self.blocks).add(n.id)
 
 
 def dist_m(a, b):
@@ -184,6 +210,10 @@ class Nodes:
             self.pts.append(self.loc[n])
         return self.idx[n]
 
+    def alone(self, n):   # a node of its own at n's place (a block: each side's end there, joined to nothing)
+        self.pts.append(self.loc[n])
+        return len(self.pts) - 1
+
 
 def segments(ids, junction):
     """The way's node runs from junction to junction (a closed 2-node run left out)."""
@@ -196,88 +226,116 @@ def segments(ids, junction):
             start = i
 
 
-def make_piece(w, seg, nm, loc, signals, nodes, tol_m=0):
-    """The way's run seg (junction to junction) as a piece of road; its shape within tol_m (its length the true one)."""
+Barriers = namedtuple('Barriers', 'gates blocks')
+NONE = Barriers(frozenset(), frozenset())
+
+
+def make_piece(w, seg, nm, loc, signals, nodes, tol_m=0, bars=NONE):
+    """The way's run seg (junction to junction) as a piece of road; its shape within tol_m (its length the true one);
+    its gates counted, an end at a block a node of its own."""
     pts = [loc[n] for n in seg]
     length = sum(dist_m(pts[k], pts[k + 1]) for k in range(len(pts) - 1))
     # a light: its wait on the piece that ends at it (the start node's: the previous piece's)
     sig = sum(1 for n in seg[1:] if n in signals)
-    return Piece(nodes.index(seg[0]), nodes.index(seg[-1]), simplify(pts, tol_m)[1:-1], length, w.cls, w.oneway, w.rb,
-                 w.speed, nm, sig)
+    end = lambda n: nodes.alone(n) if n in bars.blocks else nodes.index(n)   # noqa: E731
+    return Piece(end(seg[0]), end(seg[-1]), simplify(pts, tol_m)[1:-1], length, w.cls, w.oneway, w.rb,
+                 w.speed, nm, sig, sum(1 for n in seg if n in bars.gates))
 
 
-def make_pieces(ways, loc, signals, junction, tol_m=0):
+def make_pieces(ways, loc, signals, junction, tol_m=0, bars=NONE):
     nodes, names, pieces = Nodes(loc), Names(), []
     for w in ways:
         ids = [n for n in w.ids if n in loc]
         if len(ids) < 2:
             continue
         nm = names.add(w.name, w.ref)
-        pieces += [make_piece(w, seg, nm, loc, signals, nodes, tol_m) for seg in segments(ids, junction)]
+        pieces += [make_piece(w, seg, nm, loc, signals, nodes, tol_m, bars) for seg in segments(ids, junction)]
     return nodes.pts, names.data, pieces
 
 
 def main_network(nodes, pieces):
     """The nodes and pieces of the largest strongly connected part (the user's log 2026-10-29: a point snapped onto
     the Kremlin's inner roads, joined to no other - no way, or the whole region searched for 67 s; OSRM keeps only
-    its main part too): a road one can drive to from anywhere and away again. Iterative Tarjan."""
-    adj = [[] for _ in nodes]
+    its main part too): a road one can drive to from anywhere and away again."""
+    comp = scc(adjacency(pieces, len(nodes)))
+    sizes = {}
+    for c in comp:
+        sizes[c] = sizes.get(c, 0) + 1
+    main = max(sizes, key=sizes.get) if sizes else -1
+    return renumbered(nodes, [p for p in pieces if comp[p.a] == main and comp[p.b] == main])
+
+
+def adjacency(pieces, n):   # each node's next nodes by the pieces' directions
+    adj = [[] for _ in range(n)]
     for p in pieces:
         if p.oneway >= 0:
             adj[p.a].append(p.b)
         if p.oneway <= 0:
             adj[p.b].append(p.a)
-    comp = scc(adj)
-    sizes = {}
-    for c in comp:
-        sizes[c] = sizes.get(c, 0) + 1
-    main = max(sizes, key=sizes.get) if sizes else -1
-    keep = [p for p in pieces if comp[p.a] == main and comp[p.b] == main]
+    return adj
+
+
+def renumbered(nodes, keep):   # the kept pieces' nodes only, numbered in the order met
     new = {}
     for p in keep:
-        for n in (p.a, p.b):
-            new.setdefault(n, len(new))
-    renumbered = [p._replace(a=new[p.a], b=new[p.b]) for p in keep]
-    order = sorted(new, key=new.get)
-    return [nodes[n] for n in order], renumbered
+        new.setdefault(p.a, len(new))
+        new.setdefault(p.b, len(new))
+    return [nodes[n] for n in sorted(new, key=new.get)], [p._replace(a=new[p.a], b=new[p.b]) for p in keep]
 
 
-def scc(adj):
+class Tarjan:
     """Each node's strongly connected part's number (Tarjan's, without recursion: a million nodes)."""
-    n = len(adj)
-    index, low, comp = [-1] * n, [0] * n, [-1] * n
-    stack, on, counter, parts = [], [False] * n, 0, 0
-    for root in range(n):
-        if index[root] >= 0:
-            continue
+    def __init__(self, adj):
+        n = len(adj)
+        self.adj, self.index, self.low, self.comp = adj, [-1] * n, [0] * n, [-1] * n
+        self.stack, self.on, self.counter, self.parts = [], [False] * n, 0, 0
+
+    def run(self, root):
         work = [(root, 0)]
         while work:
             v, i = work.pop()
             if i == 0:
-                index[v] = low[v] = counter
-                counter += 1
-                stack.append(v)
-                on[v] = True
-            if i < len(adj[v]):
-                work.append((v, i + 1))
-                w = adj[v][i]
-                if index[w] < 0:
-                    work.append((w, 0))
-                elif on[w]:
-                    low[v] = min(low[v], index[w])
-                continue
-            for w in adj[v]:   # (done with v: its children's lows)
-                if on[w] and comp[w] < 0:
-                    low[v] = min(low[v], low[w])
-            if low[v] == index[v]:
-                while True:
-                    w = stack.pop()
-                    on[w] = False
-                    comp[w] = parts
-                    if w == v:
-                        break
-                parts += 1
-    return comp
+                self.enter(v)
+            if i < len(self.adj[v]):
+                self.step(v, i, work)
+            else:
+                self.leave(v)
+
+    def enter(self, v):
+        self.index[v] = self.low[v] = self.counter
+        self.counter += 1
+        self.stack.append(v)
+        self.on[v] = True
+
+    def step(self, v, i, work):   # v's edge i: its node to visit, or a node on the stack lowering v
+        work.append((v, i + 1))
+        w = self.adj[v][i]
+        if self.index[w] < 0:
+            work.append((w, 0))
+        elif self.on[w]:
+            self.low[v] = min(self.low[v], self.index[w])
+
+    def leave(self, v):   # v done: its children's lows; a root - its part off the stack
+        for w in self.adj[v]:
+            if self.on[w] and self.comp[w] < 0:
+                self.low[v] = min(self.low[v], self.low[w])
+        if self.low[v] != self.index[v]:
+            return
+        while True:
+            w = self.stack.pop()
+            self.on[w] = False
+            self.comp[w] = self.parts
+            if w == v:
+                break
+        self.parts += 1
+
+
+def scc(adj):
+    t = Tarjan(adj)
+    for root in range(len(adj)):
+        if t.index[root] < 0:
+            t.run(root)
+    return t.comp
 
 
 def directed(pieces, nnodes):
@@ -287,7 +345,7 @@ def directed(pieces, nnodes):
         g0 = len(geom)
         geom += p.inner
         dm = int(round(p.length * 10))
-        ds = int(round((p.length / (p.speed / 3.6) + p.signals * kSignalS) * 10))
+        ds = int(round((p.length / (p.speed / 3.6) + p.signals * kSignalS + p.gates * kGateS) * 10))
         flags = (2 if p.rb else 0) | (4 if kClasses[p.cls][0].endswith('_link') else 0)
         if p.oneway >= 0:
             edges[p.a].append((p.b, dm, ds, g0, len(p.inner), p.cls, flags, p.name, pi))
@@ -362,8 +420,9 @@ def build(src, out, classes=None, simplify_m=0, cell=kCell, west=None, max_cells
     w.apply_file(src)
     locs = Locs(set(w.uses), west)
     locs.apply_file(src)
-    junction = {n for n, c in w.uses.items() if c > 1}   # shared by ways, or a way's end
-    nodes, names, pieces = make_pieces(w.ways, locs.loc, locs.signals, junction, simplify_m)
+    junction = {n for n, c in w.uses.items() if c > 1} | locs.blocks   # shared by ways, a way's end, a block
+    nodes, names, pieces = make_pieces(w.ways, locs.loc, locs.signals, junction, simplify_m,
+                                       Barriers(locs.gates, locs.blocks))
     nodes, pieces = main_network(nodes, pieces)
     edges, geom = directed(pieces, len(nodes))
     first, flat, piece_edge = flatten(edges)
