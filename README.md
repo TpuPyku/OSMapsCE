@@ -1,7 +1,7 @@
 # OSMapsCE
 
 Карта [OpenStreetMap](https://www.openstreetmap.org) с пробками, поиском и маршрутом для навигаторов и
-магнитол на Windows CE (экран 800×480). Один exe, без Python, MortScript и GPSGate.
+магнитол на Windows CE (экран 800×480). Для MMC Лады Веста (до 2021 года) с оболочкой VestaHome поддерживаются цветовые темы и виджет главного экрана.
 
 ![Скриншот](OSMaps.jpg)
 
