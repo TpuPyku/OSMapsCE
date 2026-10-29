@@ -174,9 +174,11 @@ enum { kKbY = 66, kKbRowH = 81, kHitY = 62, kHitH = 58 };
 
 // The route editor (a long press on the map, the user's design 2026-10-26): "from" (the car by default, or an
 // address, or a point on the map), up to three stops, "to"; a field tapped opens its choices. With a route on, a
-// long press offers a stop there or a new route there. Slots: 0 from, 1..3 the stops, 4 to.
+// long press offers a stop there or a new route there; on a stop's sign - that stop out or earlier (the user
+// 2026-10-29: it set a new stop instead). The trip's card tapped: the editor with the route's points.
+// Slots: 0 from, 1..3 the stops, 4 to.
 enum { P_BACK = 1, P_ROW = 10, P_DEL = 20, P_ADDVIA = 30, P_GO, P_CH_GPS = 40, P_CH_SEARCH, P_CH_MAP, P_CH_CANCEL,
-       P_PICK_CANCEL = 50, M_VIA = 60, M_NEW, M_CANCEL, P_TRIP_X = 80 };
+       P_PICK_CANCEL = 50, M_VIA = 60, M_NEW, M_CANCEL, M_STOP_OUT, M_STOP_UP, M_STOP_CANCEL, P_TRIP_X = 80, P_TRIP };
 static bool       s_plan;
 static int        s_planChoose = -1;   // the slot whose choices are open
 static int        s_planPressed = -1;
@@ -184,6 +186,8 @@ static int        s_pickSlot = -1;     // the map picks a point for this slot
 static int        s_searchSlot = -1;   // the search picks a place for this slot
 static bool       s_lpMenu;            // the long press menu (a route is on)
 static double     s_lpLon, s_lpLat;
+static int        s_lpStop = -1;       // the stop whose sign was held (its menu), -1: none
+enum { kStopNearPx = 40 };             // a long press this near a stop's sign is on it
 static bool       s_longDone;          // the press became a long one: its release does nothing more
 static DWORD      s_downTick;          // when the finger went down on the map
 static const wchar_t* s_planMsg;
@@ -292,7 +296,7 @@ static DWORD FrameSig()
     int v[] = { (int)x, (int)y, (int)cx, (int)cy, g_cfg.z, (int)s_heading, s_gps.valid, s_gps.sats,
                 (int)(s_gps.speedKmh + 0.5), s_gps.status, s_gps.lines > 0, s_gpsRunning, s_limitHit,
                 s_lastErr && GetTickCount() - s_lastErrTick < 60000, s_inflight, (int)(GetTickCount() / 60000),
-                t.wMinute, g_cfg.night, s_settings, (int)RouteSig(), s_search, SearchState(), s_plan, s_pickSlot, s_lpMenu };
+                t.wMinute, g_cfg.night, s_settings, (int)RouteSig(), s_search, SearchState(), s_plan, s_pickSlot, s_lpMenu, s_lpStop };
     DWORD h = 2166136261u;   // FNV-1a over them
     for (int i = 0; i < (int)(sizeof(v) / sizeof(v[0])); i++)
         h = (h ^ (DWORD)v[i]) * 16777619u;
@@ -3043,7 +3047,7 @@ static bool TripShown()
 {
     RouteInfo ri;
     RouteGet(&ri);
-    return ri.state == ROUTE_ON && !s_dockShown && RouteAlts() < 2 && s_pickSlot < 0 && !s_lpMenu;
+    return ri.state == ROUTE_ON && !s_dockShown && RouteAlts() < 2 && s_pickSlot < 0 && !s_lpMenu && s_lpStop < 0;
 }
 
 static void DrawTrip(HDC dc)
@@ -3426,6 +3430,21 @@ static void PlanNew(double lon, double lat)
     s_plan = true;
 }
 
+// The stop whose sign is within kStopNearPx of the place (the view's zoom's pixels), -1: none
+static int StopAt(double lon, double lat)
+{
+    const RoutePlan* p = RoutePlanGet();
+    double x, y;
+    GeoToWorld(lon, lat, g_cfg.z, &x, &y);
+    for (int i = 0; i < p->nvia; i++) {
+        double sx, sy;
+        GeoToWorld(p->via[i].lon, p->via[i].lat, g_cfg.z, &sx, &sy);
+        if (p->via[i].kind == PL_PLACE && fabs(sx - x) < kStopNearPx && fabs(sy - y) < kStopNearPx)
+            return i;
+    }
+    return -1;
+}
+
 static void OnLongPress(int x, int y)
 {
     double lon, lat;
@@ -3434,11 +3453,13 @@ static void OnLongPress(int x, int y)
     RouteInfo ri;
     RouteGet(&ri);
     s_dockShown = false;
-    if (ri.state == ROUTE_ON || ri.state == ROUTE_BUSY) {
+    bool on = ri.state == ROUTE_ON || ri.state == ROUTE_BUSY;
+    s_lpStop = on ? StopAt(lon, lat) : -1;   // on a stop's sign: its menu
+    if (s_lpStop < 0 && on) {
         s_lpMenu = true;
         s_lpLon = lon;
         s_lpLat = lat;
-    } else {
+    } else if (s_lpStop < 0) {
         PlanNew(lon, lat);
     }
     InvalidateRect(s_wnd, NULL, FALSE);
@@ -3454,6 +3475,34 @@ static void PickAt(int x, int y)
     PlaceLookup(*p);
     s_pickSlot = -1;
     s_plan = true;
+}
+
+static void StopOut(int i)   // the plan's stop i out, the later ones up
+{
+    RoutePlan* p = RoutePlanGet();
+    for (int k = i + 1; k < p->nvia; k++)
+        p->via[k - 1] = p->via[k];
+    p->nvia--;
+}
+
+// The plan's route started (the editor's "go", a stop's menu); a plan not complete: why, in the editor
+static void PlanGo()
+{
+    RoutePlan* p = RoutePlanGet();
+    bool gps = s_gps.valid != 0;
+    if (p->to.kind != PL_PLACE)
+        s_planMsg = L"Выберите, куда ехать";
+    else if (!RouteStart(s_gps.lon, s_gps.lat, gps && s_gps.speedKmh > 10 ? s_gps.course : -1, gps))
+        s_planMsg = L"Нет GPS: выберите «Откуда» адресом или точкой на карте";
+    else {
+        s_plan = false;
+        if (p->from.kind == PL_PLACE) {   // a planned route: show its start
+            g_cfg.follow = FOLLOW_OFF;
+            g_cfg.lon = p->from.lon;
+            g_cfg.lat = p->from.lat;
+            UserChanged();
+        }
+    }
 }
 
 static void OnPlanCtl(int id)
@@ -3477,27 +3526,12 @@ static void OnPlanCtl(int id)
         s_planChoose = p->nvia;   // at once: where is it
     } else if (id == P_GO) {
         for (int i = 0; i < p->nvia;) {   // stops left empty: out
-            if (p->via[i].kind == PL_NONE) {
-                for (int k = i + 1; k < p->nvia; k++)
-                    p->via[k - 1] = p->via[k];
-                p->nvia--;
-            } else
+            if (p->via[i].kind == PL_NONE)
+                StopOut(i);
+            else
                 i++;
         }
-        bool gps = s_gps.valid != 0;
-        if (p->to.kind != PL_PLACE)
-            s_planMsg = L"Выберите, куда ехать";
-        else if (!RouteStart(s_gps.lon, s_gps.lat, gps && s_gps.speedKmh > 10 ? s_gps.course : -1, gps))
-            s_planMsg = L"Нет GPS: выберите «Откуда» адресом или точкой на карте";
-        else {
-            s_plan = false;
-            if (p->from.kind == PL_PLACE) {   // a planned route: show its start
-                g_cfg.follow = FOLLOW_OFF;
-                g_cfg.lon = p->from.lon;
-                g_cfg.lat = p->from.lat;
-                UserChanged();
-            }
-        }
+        PlanGo();
     } else if (id == P_CH_GPS) {
         p->from.kind = PL_GPS;
         s_planChoose = -1;
@@ -3592,11 +3626,12 @@ static bool PickRect(RECT* r)
 
 static bool MenuRect(int id, RECT* r)
 {
-    if (!s_lpMenu || id < M_VIA || id > M_CANCEL)
+    bool stop = s_lpStop >= 0 && id >= M_STOP_OUT && id <= M_STOP_CANCEL;
+    if (!stop && (!s_lpMenu || id < M_VIA || id > M_CANCEL))
         return false;
-    if (id == M_VIA && RoutePlanGet()->nvia >= kMaxVia)
+    if ((id == M_VIA && RoutePlanGet()->nvia >= kMaxVia) || (id == M_STOP_UP && s_lpStop == 0))
         return false;
-    int i = id - M_VIA;
+    int i = stop ? id - M_STOP_OUT - (id > M_STOP_UP && s_lpStop == 0) : id - M_VIA;   // (no "earlier": closed up)
     SetRect(r, 220, 300 + i * 58, 580, 300 + i * 58 + 50);
     return true;
 }
@@ -3613,9 +3648,11 @@ static int HitOverMap(int x, int y)
             return 70 + k;
     if (PickRect(&r) && x >= r.left && x < r.right && y >= r.top && y < r.bottom)
         return P_PICK_CANCEL;
-    for (int id = M_VIA; id <= M_CANCEL; id++)
+    for (int id = M_VIA; id <= M_STOP_CANCEL; id++)
         if (MenuRect(id, &r) && x >= r.left && x < r.right && y >= r.top && y < r.bottom)
             return id;
+    if (TripShown() && x >= 196 && x < 604 && y >= 400 && y < 466)   // the trip's card: the route's editor
+        return P_TRIP;
     return -1;
 }
 
@@ -3640,6 +3677,23 @@ static void OnOverMap(int id)
         PlanNew(s_lpLon, s_lpLat);
     } else if (id == M_CANCEL) {
         s_lpMenu = false;
+    } else if (id == M_STOP_OUT || id == M_STOP_UP) {   // the stop out / one earlier, the route again
+        RoutePlan* p = RoutePlanGet();
+        if (id == M_STOP_OUT)
+            StopOut(s_lpStop);
+        else {
+            RoutePlace t = p->via[s_lpStop - 1];
+            p->via[s_lpStop - 1] = p->via[s_lpStop];
+            p->via[s_lpStop] = t;
+        }
+        s_lpStop = -1;
+        PlanGo();
+    } else if (id == M_STOP_CANCEL) {
+        s_lpStop = -1;
+    } else if (id == P_TRIP) {
+        s_plan = true;
+        s_planChoose = -1;
+        s_planMsg = NULL;
     }
     InvalidateRect(s_wnd, NULL, FALSE);
 }
@@ -3658,6 +3712,18 @@ static void DrawOverMap(HDC dc)
         s[95] = 0;
         Text(dc, s_fontLabel, kText, bar.left + 16, bar.top, r.left - 8, bar.bottom, DT_LEFT, s);
         DrawCtl(dc, r, s_planPressed == P_PICK_CANCEL, s_fontLabel, L"ОТМЕНА");
+    }
+    if (s_lpStop >= 0) {
+        int n = s_lpStop > 0 ? 3 : 2;
+        RECT box = { 204, 288 - 40, 596, 300 + n * 58 + 4 };
+        Card(dc, box, 20);
+        wchar_t t[32];
+        _snwprintf(t, 32, L"«Заехать %d»", s_lpStop + 1);
+        Text(dc, s_fontLabel, kText, box.left, box.top + 4, box.right, box.top + 48, DT_CENTER, t);
+        static const wchar_t* kStop[3] = { L"УБРАТЬ ТОЧКУ", L"РАНЬШЕ", L"ОТМЕНА" };
+        for (int id = M_STOP_OUT; id <= M_STOP_CANCEL; id++)
+            if (MenuRect(id, &r))
+                DrawCtl(dc, r, s_planPressed == id, s_fontLabel, kStop[id - M_STOP_OUT]);
     }
     if (s_lpMenu) {
         RECT box = { 204, 288, 596, 300 + 3 * 58 + 4 };
@@ -4341,8 +4407,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             s_planPressed = HitPlan(x, y);
         } else if ((s_planPressed = HitOverMap(x, y)) >= 0) {
             // the picker's "cancel", the long press menu
-        } else if (s_lpMenu) {
+        } else if (s_lpMenu || s_lpStop >= 0) {
             s_lpMenu = false;   // a tap beside the menu closes it
+            s_lpStop = -1;
         } else if (InMap(x, y)) {
             SetTimer(hwnd, TIMER_LONG, kLongMs, NULL);
             s_longDone = false;
