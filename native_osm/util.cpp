@@ -196,6 +196,7 @@ static void ConfigSet(const char* key, const char* val)
     else if (!strcmp(key, "night"))        g_cfg.night = atoi(val) != 0;
     else if (!strcmp(key, "vector"))       g_cfg.vector = atoi(val) != 0;
     else if (!strcmp(key, "junction"))     g_cfg.junction = atoi(val) != 0;
+    else if (!strcmp(key, "no_toll"))      g_cfg.noToll = atoi(val) != 0;
     else if (!strcmp(key, "log"))          g_cfg.log = atoi(val) != 0;
     else if (!strcmp(key, "tilt"))         g_cfg.tilt = atoi(val) != 0;
     else if (!strcmp(key, "map_x"))        g_cfg.mapX = atoi(val);
@@ -268,6 +269,8 @@ void ConfigSave()
         "vector=%d\r\n"
         "; the junction card before a fork, a ramp, a roundabout: 1 on\r\n"
         "junction=%d\r\n"
+        "; routes off the toll roads: 1 (the offline graphs; online OSRM takes them anyway)\r\n"
+        "no_toll=%d\r\n"
         "; the third person's view (the 3D button: heading-up from z15): 1 on\r\n"
         "tilt=%d\r\n"
         "; minutes a traffic overlay stays fresh (auto refresh period)\r\n"
@@ -304,7 +307,7 @@ void ConfigSave()
         "map_w=%d\r\n"
         "map_h=%d\r\n",
         g_cfg.lon, g_cfg.lat, g_cfg.z, g_cfg.traffic, kTrafficNames[g_cfg.trafficSrc],
-        g_cfg.follow, g_cfg.night, g_cfg.vector, g_cfg.junction, g_cfg.tilt, g_cfg.trafficTtlMin, g_cfg.yandexLimit, g_cfg.twogisLimit,
+        g_cfg.follow, g_cfg.night, g_cfg.vector, g_cfg.junction, g_cfg.noToll, g_cfg.tilt, g_cfg.trafficTtlMin, g_cfg.yandexLimit, g_cfg.twogisLimit,
         g_cfg.autoReserve, g_cfg.cacheMb, g_cfg.cacheKb, g_cfg.cacheDays, g_cfg.reqDay,
         g_cfg.yandexCount, g_cfg.twogisCount, g_cfg.osmCount, g_cfg.apiLimit, g_cfg.apiCount,
         g_cfg.gpsEnabled, port, g_cfg.gpsBaud, kill, g_cfg.hideTaskbar, g_cfg.log,

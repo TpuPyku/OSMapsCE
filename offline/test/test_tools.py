@@ -183,6 +183,24 @@ class Tools(unittest.TestCase):
         sides = {b for a, b, _, _, n in edges if n == 'Блочная' and a == at7}
         self.assertEqual(sides, {(53100000, 50004000), (53102000, 50004000)})   # up to it from both, no further
 
+    def test_graph_toll(self):
+        """A toll road's edges flagged (8): the unit keeps off them when asked (the user 2026-10-29)."""
+        import make_test_toll
+        osm, out = os.path.join(self.tmp, 'toll.osm'), os.path.join(self.tmp, 'toll.grf')
+        with open(osm, 'w', encoding='utf-8') as f:
+            f.write(make_test_toll.osm())
+        make_graph.build(osm, out)
+        flags = {}
+        d = read(out)
+        h = struct.unpack_from(make_graph.HEADER, d, 0)
+        for e in range(h[3]):
+            to, dm, ds, g, ng, cls, fl, nm = struct.unpack_from('<IIIIHBBI', d, h[-6:][2] + e * 24)
+            name = d[h[-6:][4] + nm:d.index(b'\0', h[-6:][4] + nm)].decode().split('\t')[0]
+            flags.setdefault(name, set()).add(fl & 8)
+        self.assertEqual(flags, {'Платная дорога': {8}, 'Объезд': {0}, 'Тупик': {0}, 'Дальняя платная': {8}})
+        self.assertTrue(make_graph.toll_of({'toll': 'yes'}) and make_graph.toll_of({'toll:motorcar': 'yes'}))
+        self.assertFalse(make_graph.toll_of({'toll': 'no'}) or make_graph.toll_of({}))
+
     def test_trunk_graph(self):
         """4b (the user 2026-10-29): the trunk roads of the whole country - only the classes asked, the shapes
         simplified (the lengths still the true ones), the grid's cell coarse."""

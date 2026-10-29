@@ -399,6 +399,20 @@ int main()
           "a road joined to no other: the way to the network's nearest road", b);
     free(b);
 
+    // toll roads (the toll region, 60 N: A - B on a toll road ~555 m, round it ~1.7 km): taken; kept off when asked
+    b = Route("50.000,60.000;50.010,60.000");
+    Check(b && Num(b, "\"distance\":") < 600 && Has(b, L"Платная дорога"), "toll: the toll road, the shortest", b);
+    free(b);
+    b = Route("50.000,60.000;50.010,60.000", "&exclude=toll");
+    Check(b && Num(b, "\"distance\":") > 1500 && !Has(b, L"Платная дорога"), "toll: kept off when asked - round it", b);
+    free(b);
+    b = Route("50.010,60.000;50.000,60.000", "&exclude=toll");
+    Check(b && Num(b, "\"distance\":") > 1500 && !Has(b, L"Платная дорога"), "toll: kept off the other way too", b);
+    free(b);
+    b = Route("50.105,60.000;50.115,60.000", "&exclude=toll");   // by the far toll road alone: on it all the same
+    Check(b && Num(b, "\"distance\":") > 500 && Num(b, "\"distance\":") < 600, "toll: no free road near - the toll one", b);
+    free(b);
+
     // from the east end to the upper corner: right onto the one-way street (east -> west, then north)
     b = Route("50.006,53.000;50.004,53.002");
     Check(b && Num(b, "\"distance\":") > 330 && Num(b, "\"distance\":") < 380, "to the one-way: ~356 m", b);

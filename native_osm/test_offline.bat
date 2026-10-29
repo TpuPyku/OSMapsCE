@@ -28,6 +28,10 @@ if not "%1"=="build" (
   python ..\offline\test\make_twin.py ..\offline\test\tiny.osm obj\test\twin.osm || exit /b 1
   python ..\offline\make_search.py obj\test\twin.osm obj\test\OSMapsData\twin\search.idx >nul || exit /b 1
   python ..\offline\make_graph.py obj\test\twin.osm obj\test\OSMapsData\twin\route.grf >nul || exit /b 1
+  rem the toll region: a toll road and a free way round it, 60 degrees north
+  if not exist obj\test\OSMapsData\toll mkdir obj\test\OSMapsData\toll
+  python ..\offline\test\make_test_toll.py obj\test\toll.osm || exit /b 1
+  python ..\offline\make_graph.py obj\test\toll.osm obj\test\OSMapsData\toll\route.grf >nul || exit /b 1
 )
 set OPT=/O2
 if "%COVER%"=="1" set OPT=/Od /Zi

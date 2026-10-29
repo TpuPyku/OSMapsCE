@@ -240,6 +240,8 @@ static void Ask(double fromLon, double fromLat, double course)
         for (int i = 0; i <= s_plan.nvia && n > 0; i++)
             n += _snprintf(path + n, sizeof(path) - n, ";");
     }
+    if (n > 0 && g_cfg.noToll)   // (the unit's graphs keep off them; OSRM's servers cannot: net.cpp)
+        n += _snprintf(path + n, sizeof(path) - n, "&exclude=toll");
     (void)head;
     path[sizeof(path) - 1] = 0;
     s_wantAlts = false;   // (asked once: a new route off the line takes the best one)

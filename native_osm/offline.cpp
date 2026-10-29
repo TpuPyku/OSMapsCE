@@ -20,7 +20,7 @@ struct GHead {
 struct GEdge {
     DWORD to, lenDm, timeDs, geom;
     WORD  ngeom;
-    BYTE  cls, flags;   // flags: 1 geometry read backwards, 2 roundabout, 4 link
+    BYTE  cls, flags;   // flags: 1 geometry read backwards, 2 roundabout, 4 link, 8 toll
     DWORD name;
 };
 #pragma pack(pop)
@@ -223,6 +223,9 @@ static double SegM(const int* p)   // a segment's metres (p: its two points' lat
     return sqrt((bx - ax) * (bx - ax) + (by - ay) * (by - ay));
 }
 
+static bool s_noToll;   // the request's "exclude=toll" (the user 2026-10-29): the toll roads' edges not taken
+static bool s_snapToll;   // SnapTo's pass: the toll roads too (none free near, or tolls allowed)
+
 // The point's projection onto a segment (p: its two points): u = its share of the segment; returns the distance, m.
 static double Project(int lat, int lon, const int* p, double* u)
 {
@@ -240,6 +243,8 @@ static double Project(int lat, int lon, const int* p, double* u)
 // The point onto an edge's nearest segment: best replaced when nearer.
 static void SnapEdge(int lat, int lon, DWORD e, Snap* best)
 {
+    if (!s_snapToll && (s_g.edges[e].flags & 8))
+        return;
     DWORD from = FromNode(e);
     int n = EdgePts(from, e, s_pts, kPtsCap);
     double len = 0, total = 0;
@@ -271,7 +276,7 @@ static void SnapCell(int lat, int lon, int x, int y, Snap* best)   // the grid c
         SnapEdge(lat, lon, s_g.items[i], best);
 }
 
-static bool SnapTo(int lat, int lon, Snap* best)
+static bool SnapNear(int lat, int lon, Snap* best)
 {
     const GHead& h = s_g.h;
     best->distM = 1e18;
@@ -281,6 +286,18 @@ static bool SnapTo(int lat, int lon, Snap* best)
             for (int x = cx - r; x <= cx + r; x++)
                 SnapCell(lat, lon, x, y, best);
     return best->distM < 1e17;
+}
+
+// The point onto the nearest road: tolls kept off - a free one, unless none is near
+static bool SnapTo(int lat, int lon, Snap* best)
+{
+    s_snapToll = !s_noToll;
+    bool ok = SnapNear(lat, lon, best);
+    if (!ok && !s_snapToll) {
+        s_snapToll = true;
+        ok = SnapNear(lat, lon, best);
+    }
+    return ok;
 }
 
 // The snap seen from the other direction of its road (twin edge): false = one-way.
@@ -454,6 +471,8 @@ static bool Relax(DWORD n, DWORD d)   // node n's edges; false = no memory
 {
     for (DWORD e = s_g.first[n]; e < s_g.first[n + 1]; e++) {
         const GEdge& g = s_g.edges[e];
+        if (s_noToll && (g.flags & 8))
+            continue;
         DWORD c = d + g.timeDs;
         if (c < s_dist[g.to]) {
             s_dist[g.to] = c;
@@ -903,6 +922,7 @@ static bool ParseRequest(const char* path, Request* r)
         r->n++;
     }
     r->course = Course(path);
+    s_noToll = strstr(path, "exclude=toll") != NULL;   // (this request's searches)
     return r->n >= 2;
 }
 

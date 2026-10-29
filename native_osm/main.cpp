@@ -207,15 +207,16 @@ static const int   kSetCacheCount = sizeof(kSetCacheMb) / sizeof(kSetCacheMb[0])
 // bottom strip; what does not fit - the GPS port's settings, the requests' counters - in a sheet over the bottom
 // (VestaHome's windows: full width, the main action right, in the accent), a tap beside it closes it.
 // Rows at kSetRow0 + i * kSetRowH (the maps' screen has the same rows).
-enum { S_MAP_PREV, S_MAP_NEXT, S_JUNC_PREV, S_JUNC_NEXT, S_CACHE_PREV, S_CACHE_NEXT, S_LOG_PREV, S_LOG_NEXT, S_GPS,
+enum { S_MAP_PREV, S_MAP_NEXT, S_ROUTE, S_CACHE_PREV, S_CACHE_NEXT, S_LOG_PREV, S_LOG_NEXT, S_GPS,
        S_INFO, S_EXIT, S_MAPS, S_BACK, S_PAGE_END,
        S_PORT_PREV = S_PAGE_END, S_PORT_NEXT, S_BAUD_PREV, S_BAUD_NEXT, S_SCAN, S_GPS_DONE, S_GPS_END,
-       S_INFO_DONE = S_GPS_END, S_COUNT };
-enum { SHEET_NONE, SHEET_GPS, SHEET_INFO };
+       S_INFO_DONE = S_GPS_END, S_INFO_END,
+       S_JUNC_PREV = S_INFO_END, S_JUNC_NEXT, S_TOLL_PREV, S_TOLL_NEXT, S_ROUTE_DONE, S_COUNT };
+enum { SHEET_NONE, SHEET_GPS, SHEET_INFO, SHEET_ROUTE };
 enum { kSetRow0 = 76, kSetRowH = 50, kSheetY = 200 };
 static const RECT kSetCtl[S_COUNT] = {
-    { 512, 79, 560, 123 }, { 712, 79, 760, 123 },     // the steppers' arrows: rows 0..3
-    { 512, 129, 560, 173 }, { 712, 129, 760, 173 },
+    { 512, 79, 560, 123 }, { 712, 79, 760, 123 },     // the steppers' arrows: rows 0, 2, 3
+    { 576, 129, 760, 173 },                            // the route: its sheet (the junction card, the tolls)
     { 512, 179, 560, 223 }, { 712, 179, 760, 223 },
     { 512, 229, 560, 273 }, { 712, 229, 760, 273 },
     { 576, 279, 760, 323 },                            // GPS: its sheet
@@ -228,6 +229,9 @@ static const RECT kSetCtl[S_COUNT] = {
     { 416, 416, 592, 468 },                            // ... find GPS
     { 600, 416, 784, 468 },                            // ... done
     { 600, 416, 784, 468 },                            // the requests' sheet: done
+    { 512, 259, 560, 303 }, { 712, 259, 760, 303 },   // the route's sheet: the junction card, the tolls
+    { 512, 309, 560, 353 }, { 712, 309, 760, 353 },
+    { 600, 416, 784, 468 },                            // ... done
 };
 static int s_setSheet;   // SHEET_*
 
@@ -739,12 +743,16 @@ static void OnSettingsCtl(int id)
     case S_MAP_NEXT:   MapStyleSet(!g_cfg.vector); break;
     case S_JUNC_PREV:
     case S_JUNC_NEXT:  g_cfg.junction = !g_cfg.junction; ConfigSave(); break;
+    case S_TOLL_PREV:
+    case S_TOLL_NEXT:  g_cfg.noToll = !g_cfg.noToll; ConfigSave(); break;
+    case S_ROUTE:      s_setSheet = SHEET_ROUTE; break;
     case S_LOG_PREV:
     case S_LOG_NEXT:   g_cfg.log = !g_cfg.log; LogEnable(g_cfg.log != 0); ConfigSave(); break;
     case S_GPS:        s_setSheet = SHEET_GPS; break;
     case S_INFO:       s_setSheet = SHEET_INFO; break;
     case S_GPS_DONE:
-    case S_INFO_DONE:  s_setSheet = SHEET_NONE; break;
+    case S_INFO_DONE:
+    case S_ROUTE_DONE: s_setSheet = SHEET_NONE; break;
     case S_PORT_PREV:  s_setPort = s_setPort > 1 ? s_setPort - 1 : 9; ApplySettings(); break;
     case S_PORT_NEXT:  s_setPort = s_setPort < 9 ? s_setPort + 1 : 1; ApplySettings(); break;
     case S_BAUD_PREV:  s_setBaud = (s_setBaud + kSetBaudCount - 1) % kSetBaudCount; ApplySettings(); break;
@@ -815,7 +823,8 @@ static void OnGpsScanDone()
 // a tap there closes it)
 static int HitSettings(int x, int y)
 {
-    static const int kFrom[3] = { 0, S_PAGE_END, S_GPS_END }, kTo[3] = { S_PAGE_END, S_GPS_END, S_COUNT };
+    static const int kFrom[4] = { 0, S_PAGE_END, S_GPS_END, S_INFO_END },
+                     kTo[4] = { S_PAGE_END, S_GPS_END, S_INFO_END, S_COUNT };
     int hit = HitRects(kSetCtl + kFrom[s_setSheet], kTo[s_setSheet] - kFrom[s_setSheet], x, y);
     if (hit >= 0)
         return kFrom[s_setSheet] + hit;
@@ -2515,6 +2524,8 @@ static void Stepper(HDC dc, int prev, int next, const wchar_t* value)
 
 static void DrawGpsSheet(HDC dc);
 static void DrawInfoSheet(HDC dc);
+static void DrawRouteSheet(HDC dc);
+static void DoneButton(HDC dc, int id);
 
 // The receiver's state in one line: its port and speed, open / busy / searching, the satellites
 static void GpsLine(wchar_t* s, int cap)
@@ -2557,8 +2568,10 @@ static void DrawSettings(HDC dc)
 
     SetRow(dc, kSetRow0, L"Карта", g_cfg.vector ? L"векторная, OpenFreeMap" : L"растровая, тайлы OSM", true);
     Stepper(dc, S_MAP_PREV, S_MAP_NEXT, g_cfg.vector ? L"Вектор" : L"Растр");
-    SetRow(dc, kSetRow0 + kSetRowH, L"Схема развязки", L"перед съездом, развилкой, кольцом", true);
-    Stepper(dc, S_JUNC_PREV, S_JUNC_NEXT, g_cfg.junction ? L"Вкл" : L"Выкл");
+    _snwprintf(s, 160, L"схема развязки: %s · платные: %s", g_cfg.junction ? L"вкл" : L"выкл",
+               g_cfg.noToll ? L"объезжать" : L"можно");
+    SetRow(dc, kSetRow0 + kSetRowH, L"Маршрут", s, true);
+    DrawCtl(dc, kSetCtl[S_ROUTE], s_setPressed == S_ROUTE, s_fontLabel, L"НАСТРОИТЬ");
     if (g_cfg.cacheKb >= 0)
         _snwprintf(s, 160, L"занято %ld МБ", g_cfg.cacheKb / 1024);
     else
@@ -2587,6 +2600,8 @@ static void DrawSettings(HDC dc)
         DrawGpsSheet(dc);
     else if (s_setSheet == SHEET_INFO)
         DrawInfoSheet(dc);
+    else if (s_setSheet == SHEET_ROUTE)
+        DrawRouteSheet(dc);
 }
 
 static void Sheet(HDC dc, const wchar_t* title)   // a sheet over the bottom: full width, its title
@@ -2635,9 +2650,28 @@ static void DrawGpsSheet(HDC dc)
     s[159] = 0;
     Text(dc, s_fontSmall, c, 36, 382, s_cw - 36, 404, DT_LEFT, s);
     DrawCtl(dc, kSetCtl[S_SCAN], s_setPressed == S_SCAN, s_fontLabel, L"НАЙТИ GPS");
-    Tile(dc, kSetCtl[S_GPS_DONE], kOrange, kOrange, 20);
-    Text(dc, s_fontLabel, kInk, kSetCtl[S_GPS_DONE].left, kSetCtl[S_GPS_DONE].top, kSetCtl[S_GPS_DONE].right,
-         kSetCtl[S_GPS_DONE].bottom, DT_CENTER, L"ГОТОВО");
+    DoneButton(dc, S_GPS_DONE);
+}
+
+static void DoneButton(HDC dc, int id)   // a sheet's main action: in the accent
+{
+    const RECT& r = kSetCtl[id];
+    Tile(dc, r, kOrange, kOrange, 20);
+    Text(dc, s_fontLabel, kInk, r.left, r.top, r.right, r.bottom, DT_CENTER, L"ГОТОВО");
+}
+
+// The route's choices: the junction card; the toll roads (the user 2026-10-29) - kept off by the graphs of the card
+// (the regions', the trunk roads'); OSRM online cannot
+static void DrawRouteSheet(HDC dc)
+{
+    Sheet(dc, L"Маршрут");
+    SetRow(dc, kSetCtl[S_JUNC_PREV].top - 3, L"Схема развязки", L"перед съездом, развилкой, кольцом", true);
+    Stepper(dc, S_JUNC_PREV, S_JUNC_NEXT, g_cfg.junction ? L"Вкл" : L"Выкл");
+    SetRow(dc, kSetCtl[S_TOLL_PREV].top - 3, L"Платные дороги", L"объезд — по картам на флешке", false);
+    Stepper(dc, S_TOLL_PREV, S_TOLL_NEXT, g_cfg.noToll ? L"Объезжать" : L"Можно");
+    Text(dc, s_fontSmall, kTextDim, 36, 362, s_cw - 36, 404, DT_LEFT,
+         L"Без карт области и магистралей маршрут строит сервер — он платные не исключает.");
+    DoneButton(dc, S_ROUTE_DONE);
 }
 
 // The day's requests by their kind, against their limits
@@ -2651,9 +2685,7 @@ static void DrawInfoSheet(HDC dc)
     _snwprintf(s[3], 96, L"Поиск и маршрут: %d из %d", g_cfg.apiCount, g_cfg.apiLimit);
     for (int i = 0; i < 4; i++)
         Text(dc, s_fontLabel, kText, 36, 262 + i * 36, s_cw - 36, 296 + i * 36, DT_LEFT, s[i]);
-    Tile(dc, kSetCtl[S_INFO_DONE], kOrange, kOrange, 20);
-    Text(dc, s_fontLabel, kInk, kSetCtl[S_INFO_DONE].left, kSetCtl[S_INFO_DONE].top, kSetCtl[S_INFO_DONE].right,
-         kSetCtl[S_INFO_DONE].bottom, DT_CENTER, L"ГОТОВО");
+    DoneButton(dc, S_INFO_DONE);
 }
 
 static void MapsRow(HDC dc, int r, const MapRegion& m)   // a region: its title, size and state, its button

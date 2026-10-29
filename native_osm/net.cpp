@@ -349,12 +349,19 @@ static DWORD WINAPI NetThread(LPVOID)
                 ar->kind = job.kind;
                 ar->seq = apiSeq;
                 DWORD t0 = GetTickCount();
-                if ((job.kind == API_ROUTE && OfflineRoute(job.path, &ar->body, &ar->len)) ||   // a region's data
+                // tolls kept off (the user 2026-10-29): OSRM's servers cannot - the trunk roads' graph before them
+                char* noToll = strstr(job.path, "&exclude=toll");
+                if ((job.kind == API_ROUTE && (OfflineRoute(job.path, &ar->body, &ar->len) ||   // a region's data
+                                               (noToll && OfflineTrunkRoute(job.path, &ar->body, &ar->len)))) ||
                     ((job.kind == API_SEARCH || job.kind == API_REVERSE) && OfflineSearch(job.path, &ar->body, &ar->len))) {
                     ar->err = NET_OK;
                     ar->httpStatus = 200;
                 } else {
-                    ar->err = HttpGet(job.host, job.https, job.path, (unsigned char**)&ar->body, &ar->len,
+                    char path[sizeof(job.path)];
+                    strcpy(path, job.path);
+                    if (noToll)   // (FOSSGIS: "Exclude flag combination is not supported" - the route as it is)
+                        memmove(path + (noToll - job.path), noToll + 13, strlen(noToll + 13) + 1);
+                    ar->err = HttpGet(job.host, job.https, path, (unsigned char**)&ar->body, &ar->len,
                                       &ar->httpStatus);
                     char* trunk = NULL;   // OSRM did not answer (no internet): over the trunk roads (4b), if there
                     int trunkLen = 0;

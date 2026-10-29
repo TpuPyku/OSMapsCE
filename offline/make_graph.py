@@ -50,9 +50,9 @@ VERSION = 1
 HEADER = '<4s5I4i2IiI6I'
 
 # a car road as read: its node ids, class, one-way (1 forward, -1 backward, 0 both), roundabout, km/h, name, ref
-Way = namedtuple('Way', 'ids cls oneway rb speed name ref')
+Way = namedtuple('Way', 'ids cls oneway rb speed name ref toll')
 # a junction-to-junction part of a way: node indices a -> b, inner points, metres, its way's data, lights on it
-Piece = namedtuple('Piece', 'a b inner length cls oneway rb speed name signals gates')
+Piece = namedtuple('Piece', 'a b inner length cls oneway rb speed name signals gates toll')
 
 
 def maxspeed_kmh(text):
@@ -103,6 +103,10 @@ def barrier_of(tags):
     return 'gate' if b in kGates else 'block'
 
 
+def toll_of(tags):   # a toll road (the user 2026-10-29: an option to keep off them; the edges' flag 8)
+    return tags.get('toll') == 'yes' or tags.get('toll:motorcar') == 'yes'
+
+
 def car_way(tags, ids):
     """The Way of a car road, None for anything else."""
     hw = tags.get('highway')
@@ -110,7 +114,8 @@ def car_way(tags, ids):
         return None
     rb = tags.get('junction') in ('roundabout', 'circular')
     cls = kCls[hw]
-    return Way(ids, cls, oneway_of(tags, rb), rb, speed_of(tags, cls), tags.get('name', ''), tags.get('ref', ''))
+    return Way(ids, cls, oneway_of(tags, rb), rb, speed_of(tags, cls), tags.get('name', ''), tags.get('ref', ''),
+               toll_of(tags))
 
 
 # The trunk graph (4b, the user 2026-10-27/29: from one region to another, Vladivostok - Moscow, without the internet):
@@ -239,7 +244,7 @@ def make_piece(w, seg, nm, loc, signals, nodes, tol_m=0, bars=NONE):
     sig = sum(1 for n in seg[1:] if n in signals)
     end = lambda n: nodes.alone(n) if n in bars.blocks else nodes.index(n)   # noqa: E731
     return Piece(end(seg[0]), end(seg[-1]), simplify(pts, tol_m)[1:-1], length, w.cls, w.oneway, w.rb,
-                 w.speed, nm, sig, sum(1 for n in seg if n in bars.gates))
+                 w.speed, nm, sig, sum(1 for n in seg if n in bars.gates), w.toll)
 
 
 def make_pieces(ways, loc, signals, junction, tol_m=0, bars=NONE):
@@ -346,7 +351,7 @@ def directed(pieces, nnodes):
         geom += p.inner
         dm = int(round(p.length * 10))
         ds = int(round((p.length / (p.speed / 3.6) + p.signals * kSignalS + p.gates * kGateS) * 10))
-        flags = (2 if p.rb else 0) | (4 if kClasses[p.cls][0].endswith('_link') else 0)
+        flags = (2 if p.rb else 0) | (4 if kClasses[p.cls][0].endswith('_link') else 0) | (8 if p.toll else 0)
         if p.oneway >= 0:
             edges[p.a].append((p.b, dm, ds, g0, len(p.inner), p.cls, flags, p.name, pi))
         if p.oneway <= 0:
