@@ -360,9 +360,20 @@ static DWORD WINAPI NetThread(LPVOID)
                     ((job.kind == API_SEARCH || job.kind == API_REVERSE) && OfflineSearch(job.path, &ar->body, &ar->len))) {
                     ar->err = NET_OK;
                     ar->httpStatus = 200;
-                } else
+                } else {
                     ar->err = HttpGet(job.host, job.https, job.path, (unsigned char**)&ar->body, &ar->len,
                                       &ar->httpStatus);
+                    char* trunk = NULL;   // OSRM did not answer (no internet): over the trunk roads (4b), if there
+                    int trunkLen = 0;
+                    if (job.kind == API_ROUTE && (ar->err != NET_OK || ar->httpStatus != 200) &&
+                        OfflineTrunkRoute(job.path, &trunk, &trunkLen)) {
+                        free(ar->body);
+                        ar->body = trunk;
+                        ar->len = trunkLen;
+                        ar->err = NET_OK;
+                        ar->httpStatus = 200;
+                    }
+                }
                 Log("net: api %s%.120s -> %d (HTTP %d, %d bytes, %lu ms)", job.host, job.path, ar->err,
                     ar->httpStatus, ar->len, GetTickCount() - t0);
                 if (s_stop || !PostMessage(s_notify, WM_APP_API, 0, (LPARAM)ar))

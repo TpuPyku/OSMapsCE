@@ -978,6 +978,8 @@ static void PutGeometry(JBuf& b, const Line& line)   // the line as polyline6
     }
 }
 
+static bool Answer(const Request& r, char** body, int* len, DWORD t0);
+
 // "/routed-car/route/v1/driving/lon,lat;lon,lat...?...&bearings=deg,60;..." -> an OSRM answer, or false (no region
 // holds the points, no road near, no way): then OSRM is asked.
 bool OfflineRoute(const char* path, char** body, int* len)
@@ -986,8 +988,32 @@ bool OfflineRoute(const char* path, char** body, int* len)
     if (!ParseRequest(path, &r))
         return false;
     DWORD t0 = GetTickCount();
-    if (!Region(r.pts, r.n))
+    return Region(r.pts, r.n) && Answer(r, body, len, t0);
+}
+
+static bool AnyGraph(const wchar_t* path, void*)   // OffRegion's test: a graph there
+{
+    GHead h;
+    return ReadHead(path, &h);
+}
+
+// 4b (the user 2026-10-29): a route no region holds, asked when OSRM did not answer (no internet) - over the trunk
+// roads of Russia and the CIS (OSMapsData\trunk\trunk.grf: motorway / trunk / primary, offline/make_graph.py TRUNK),
+// from the trunk road nearest the start to the one nearest the end (SnapTo: within 9 x 9 of its 0.2 degree cells).
+bool OfflineTrunkRoute(const char* path, char** body, int* len)
+{
+    Request r;
+    wchar_t dir[MAX_PATH], file[MAX_PATH];
+    if (!ParseRequest(path, &r) || !OffRegion(L"trunk.grf", AnyGraph, NULL, dir))
         return false;
+    DWORD t0 = GetTickCount();
+    _snwprintf(file, MAX_PATH, L"%s\\trunk.grf", dir);
+    file[MAX_PATH - 1] = 0;
+    return Load(file) && Answer(r, body, len, t0);
+}
+
+static bool Answer(const Request& r, char** body, int* len, DWORD t0)   // the route on the graph loaded
+{
     s_kx = 0.111195 * cos(r.pts[0] / 1e6 * M_PI / 180);
     JBuf b = { NULL, 0, 0 };
     Line line = { NULL, 0, 0 };

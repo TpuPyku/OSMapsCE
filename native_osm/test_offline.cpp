@@ -37,6 +37,15 @@ static char* Route(const char* lonLat, const char* extra = "")
     return OfflineRoute(path, &body, &len) ? body : NULL;
 }
 
+static char* TrunkRoute(const char* lonLat)   // as asked when OSRM did not answer (no internet)
+{
+    char path[300], *body = NULL;
+    int len = 0;
+    _snprintf(path, sizeof(path), "/routed-car/route/v1/driving/%s?overview=full&geometries=polyline6&steps=true",
+              lonLat);
+    return OfflineTrunkRoute(path, &body, &len) ? body : NULL;
+}
+
 // The line as route.cpp reads it: the JSON string unescaped, then Google's polyline (1e-6 degrees, lat first)
 static int Line(const char* body, int* out, int max)
 {
@@ -141,6 +150,21 @@ int main()
     // a point outside every region: not answered (OSRM is asked)
     b = Route("37.6,55.7;37.7,55.8");
     Check(!b, "outside the regions: no answer", b);
+    free(b);
+
+    // 4b: the trunk roads (obj\test\OSMapsData\trunk: tiny's primary street alone) - a start south of every region
+    // (no region's answer), from the trunk road nearest it: along the main street, ~400 m from its west end
+    b = Route("50.000,52.995;50.006,53.000");
+    Check(!b, "trunk: no region holds the start", b);
+    free(b);
+    b = TrunkRoute("50.000,52.995;50.006,53.000");
+    Check(b && Num(b, "\"distance\":") > 380 && Num(b, "\"distance\":") < 420 && First(b, 53000000, 50000000),
+          "trunk: from the nearest trunk road, ~400 m", b);
+    Check(b && Count(b, "\"type\":\"depart\"") == 1 && Count(b, "\"type\":\"arrive\"") == 1,
+          "trunk: an OSRM answer (depart, arrive)", b);
+    free(b);
+    b = Route("50.000,53.000;50.006,53.000");   // and the region again after it (the graphs swapped back)
+    Check(b && Num(b, "\"distance\":") > 380 && Num(b, "\"distance\":") < 420, "trunk: the region after it", b);
     free(b);
 
     // off the road: the ends snapped onto it (the line starts at the start's projection)
