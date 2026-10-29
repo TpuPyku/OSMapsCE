@@ -1,4 +1,4 @@
-#include "yamaps.h"
+﻿#include "yamaps.h"
 #include "stb_image.h"   // (its zlib: the zips' deflated files; the implementation is image.cpp's)
 
 // The regions' maps downloaded on the unit (the user 2026-10-29: "пусть хотя бы графы будут", from OSMapsCE itself,

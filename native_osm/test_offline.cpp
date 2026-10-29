@@ -196,6 +196,25 @@ static int FakeGet(const char* host, bool, const char* path, unsigned char** bod
     return NET_OK;
 }
 
+// offdata.cpp's file: mapped (the user 2026-10-29: Moscow's 99 MB graph read into memory failed on a Shturmann) -
+// an aligned part straight from the view, an unaligned one copied, one past the end refused
+static void OffFileChecks()
+{
+    wchar_t path[MAX_PATH];
+    PathInDir(path, L"..\\region.zip");
+    OffFile f;
+    char head[4];
+    Check(OffOpen(&f, path, head, 4) && f.view && !memcmp(head, "PK\x03\x04", 4), "file: opened, mapped", NULL);
+    const char* a = (const char*)OffPart(&f, 4, 8);
+    Check(a == (const char*)f.view + 4 && f.nparts == 0, "file: an aligned part - the view itself", NULL);
+    const char* u = (const char*)OffPart(&f, 1, 8);
+    Check(u && u != (const char*)f.view + 1 && !memcmp(u, (const char*)f.view + 1, 8) && f.nparts == 1,
+          "file: an unaligned part - copied", NULL);
+    Check(!OffPart(&f, f.size, 4) && f.bad, "file: past the end - refused, marked", NULL);
+    OffClose(&f);
+    Check(!f.view && !f.file && !f.nparts, "file: closed, all zero", NULL);
+}
+
 static bool WaitMaps()   // the job's thread done (5 s at most)
 {
     wchar_t t[128];
@@ -360,6 +379,8 @@ int main()
     if (s)   // as from the program's folder obj\test\app\: its ..\OSMapsData is obj\test\OSMapsData
         wcscpy(s + 1, L"app\\");
 
+    OffVolumes(false);   // (this PC's own disks' maps - a card in its reader - left out)
+    OffFileChecks();
     JsonChecks();
     MapsChecks();
     DownloadChecks();

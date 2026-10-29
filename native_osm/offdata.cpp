@@ -9,6 +9,26 @@ bool OffRead(HANDLE f, DWORD off, void* to, DWORD bytes)
     return SetFilePointer(f, off, NULL, FILE_BEGIN) != 0xFFFFFFFF && ReadFile(f, to, bytes, &got, NULL) && got == bytes;
 }
 
+// The file mapped read-only (the user 2026-10-29: on a Shturmann NSL 500 no route and no search in a region -
+// Moscow's oblast's graph is 99 MB, 77 MB of it were read into memory; mapped, its pages come as they are read and
+// go when memory is short). Not mapped: its parts are read into memory as before.
+static void Map(OffFile* f, const wchar_t* path)
+{
+#ifdef UNDER_CE
+    f->mfile = CreateFileForMapping(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
+                                    NULL);
+#else
+    f->mfile = CreateFile(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+#endif
+    if (f->mfile == INVALID_HANDLE_VALUE) {
+        f->mfile = NULL;
+        return;
+    }
+    f->map = CreateFileMapping(f->mfile, NULL, PAGE_READONLY, 0, 0, NULL);
+    f->view = f->map ? (const BYTE*)MapViewOfFile(f->map, FILE_MAP_READ, 0, 0, 0) : NULL;
+    f->size = f->view ? GetFileSize(f->file, NULL) : 0;
+}
+
 bool OffOpen(OffFile* f, const wchar_t* path, void* head, DWORD bytes)
 {
     memset(f, 0, sizeof(*f));
@@ -17,14 +37,24 @@ bool OffOpen(OffFile* f, const wchar_t* path, void* head, DWORD bytes)
         f->file = NULL;
         return false;
     }
-    if (OffRead(f->file, 0, head, bytes))
-        return true;
-    OffClose(f);
-    return false;
+    if (!OffRead(f->file, 0, head, bytes)) {
+        OffClose(f);
+        return false;
+    }
+    Map(f, path);
+    return true;
 }
 
+static bool InView(const OffFile* f, DWORD off, DWORD bytes)   // mapped there and 4-byte aligned (ARM's loads)
+{
+    return f->view && !(off & 3) && off + bytes <= f->size && off + bytes >= off;
+}
+
+// A part of the file: in its mapped view, else read into memory
 void* OffPart(OffFile* f, DWORD off, DWORD bytes)
 {
+    if (InView(f, off, bytes))
+        return (void*)(f->view + off);
     void* p = f->nparts < kOffParts ? malloc(bytes ? bytes : 1) : NULL;
     if (p && !OffRead(f->file, off, p, bytes)) {
         free(p);
@@ -41,6 +71,14 @@ void OffClose(OffFile* f)
 {
     for (int i = 0; i < f->nparts; i++)
         free(f->part[i]);
+    if (f->view)
+        UnmapViewOfFile((LPVOID)f->view);
+    if (f->map)
+        CloseHandle(f->map);
+#ifndef UNDER_CE
+    if (f->mfile)   // (CE: CreateFileForMapping's handle closes with its mapping)
+        CloseHandle(f->mfile);
+#endif
     if (f->file)
         CloseHandle(f->file);
     memset(f, 0, sizeof(*f));
@@ -92,10 +130,19 @@ static bool HasData(const wchar_t* root, wchar_t* dir)   // root's \OSMapsData, 
     return GetFileAttributes(dir) != 0xFFFFFFFF;
 }
 
+static int  s_nDirs;          // the data folders listed (0: to list)
+static bool s_volumes = true;   // false: the program's folder only (the tests: not the PC's own disks' maps)
+
+void OffVolumes(bool on)
+{
+    s_volumes = on;
+    s_nDirs = 0;   // (listed again)
+}
+
 static int ListDirs(wchar_t dirs[][MAX_PATH])
 {
     Volume v[kMaxVols];
-    int nv = Volumes(v, kMaxVols), nd = 0;
+    int nv = s_volumes ? Volumes(v, kMaxVols) : 0, nd = 0;
     for (int i = 0; i < nv; i++)
         nd += HasData(v[i].root, dirs[nd]) ? 1 : 0;
     PathInDir(dirs[nd++], L"OSMapsData");
@@ -108,7 +155,6 @@ static int ListDirs(wchar_t dirs[][MAX_PATH])
 static CRITICAL_SECTION s_dirsCs;
 static volatile LONG    s_dirsCsDone;
 static wchar_t          s_dirs[kMaxDirs][MAX_PATH];
-static int              s_nDirs;
 static DWORD            s_dirsTick;
 
 // The folders the regions' folders may be in (the volumes' first, the program's last); returns their count.
