@@ -350,11 +350,17 @@ class Tools(unittest.TestCase):
         lon = lambda x: x / n * 360 - 180                           # noqa: E731
         lat = lambda y: math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * y / n))))   # noqa: E731
         out = os.path.join(self.tmp, 'big.vtp')
-        pmextract.extract(get_bytes, (lon(16100.5), lat(10199.5), lon(16199.5), lat(10100.5)), 15, out)
+        steps = []
+        pmextract.extract(get_bytes, (lon(16100.5), lat(10199.5), lon(16199.5), lat(10100.5)), 15, out,
+                          lambda part, text: steps.append((part, text)))
         _, _, got = pack_tiles(out)
         want = {k: v for k, v in tiles.items() if 16100 <= k[1] < 16200 and 10100 <= k[2] < 10200}
         self.assertEqual(got, want)
         self.assertEqual(len(asked), len(set(asked)))
+        dirs = [(p, t) for p, t in steps if 'каталог архива:' in t]   # (the user 2026-10-29: no sign of life at the
+        self.assertGreater(len(dirs), 1, steps[:4])                    # start) each directory read told
+        self.assertTrue(0 < dirs[0][0] and dirs[-1][0] <= pmextract.kDirsPart, dirs)
+        self.assertTrue(all(a[0] <= b[0] for a, b in zip(steps, steps[1:])))
 
     def test_merged_bounds(self):
         """Data ranges as one fetch up to kGap apart and kMaxGroup long - not a byte more."""

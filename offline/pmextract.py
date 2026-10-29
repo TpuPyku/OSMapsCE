@@ -50,18 +50,24 @@ class Archive:
         self.h = deserialize_header(get_bytes(0, 127))
         self.dirs = {}
 
-    def prefetch(self, spans, pool):
-        """The directories not read yet, read at once (kThreads at a time), each once."""
+    def prefetch(self, spans, pool, tell=None):
+        """The directories not read yet, read at once (kThreads at a time), each once; tell(done, count) after each."""
         need = sorted({d for d in spans if d not in self.dirs})
-        for d, raw in zip(need, pool.map(lambda d: self.get_bytes(*d), need)):
+        for i, (d, raw) in enumerate(zip(need, pool.map(lambda d: self.get_bytes(*d), need)), 1):
             self.dirs[d] = deserialize_directory(raw)   # (it ungzips: Protomaps' internal compression)
+            if tell:
+                tell(i, len(need))
 
-    def locate_all(self, tile_ids, pool):
-        """{tile id: (data offset, length)} of the tiles the archive has: a level of directories at a time."""
+    def locate_all(self, tile_ids, pool, progress=None):
+        """{tile id: (data offset, length)} of the tiles the archive has: a level of directories at a time;
+        progress(part, text) after each directory read (the user 2026-10-29: no sign of life at the start) - the
+        root and the leaves (Protomaps' builds: two levels) halves of kDirsPart."""
         pending = {t: (self.h['root_offset'], self.h['root_length']) for t in tile_ids}
         found = {}
-        for _ in range(4):   # (the spec's depth limit)
-            self.prefetch(pending.values(), pool)
+        for level in range(4):   # (the spec's depth limit)
+            tell = progress and (lambda i, n, lv=level: progress(
+                kDirsPart * min(1.0, (lv + i / n) / 2), 'каталог архива: %d из %d частей' % (i, n)))
+            self.prefetch(pending.values(), pool, tell)
             deeper = {}
             for t, d in pending.items():
                 e = find_tile(self.dirs[d], t)
@@ -123,7 +129,7 @@ def extract(get_bytes, bbox, maxzoom, out, progress=None, keep=lambda tile: tile
         archive = Archive(get_bytes)
         keys = {zxy_to_tileid(z, x, y): (z, x, y) for z in range(0, maxzoom + 1)
                 for xs, ys in [tile_range(bbox, z)] for x in xs for y in ys}
-        located = {keys[t]: span for t, span in archive.locate_all(keys, pool).items()}
+        located = {keys[t]: span for t, span in archive.locate_all(keys, pool, tell).items()}
         tell(kDirsPart, 'каталог: %d плиток' % len(located))
         data = fetch(archive, located, pool, tell)
     unzip = archive.h['tile_compression'] == Compression.GZIP
