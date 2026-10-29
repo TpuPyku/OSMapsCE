@@ -37,12 +37,12 @@ static char* Route(const char* lonLat, const char* extra = "")
     return OfflineRoute(path, &body, &len) ? body : NULL;
 }
 
-static char* TrunkRoute(const char* lonLat)   // as asked when OSRM did not answer (no internet)
+static char* TrunkRoute(const char* lonLat, const char* extra = "")   // as asked when OSRM did not answer (no internet)
 {
     char path[300], *body = NULL;
     int len = 0;
-    _snprintf(path, sizeof(path), "/routed-car/route/v1/driving/%s?overview=full&geometries=polyline6&steps=true",
-              lonLat);
+    _snprintf(path, sizeof(path), "/routed-car/route/v1/driving/%s?overview=full&geometries=polyline6&steps=true%s",
+              lonLat, extra);
     return OfflineTrunkRoute(path, &body, &len) ? body : NULL;
 }
 
@@ -85,6 +85,13 @@ static int Points(const char* body)
 {
     static int p[4096 * 2];
     return Line(body, p, 4096);
+}
+
+static bool Last(const char* body, int lat, int lon)   // the line ends there (within 2e-6 degrees)
+{
+    static int p[4096 * 2];
+    int n = Line(body, p, 4096);
+    return n > 0 && abs(p[n * 2 - 2] - lat) <= 2 && abs(p[n * 2 - 1] - lon) <= 2;
 }
 
 static char* Ask(const char* photonPath)
@@ -162,6 +169,48 @@ int main()
           "trunk: from the nearest trunk road, ~400 m", b);
     Check(b && Count(b, "\"type\":\"depart\"") == 1 && Count(b, "\"type\":\"arrive\"") == 1,
           "trunk: an OSRM answer (depart, arrive)", b);
+    free(b);
+    // joined: from the upper street (a residential one - the region's, not a trunk road) to a point south of every
+    // region: the region's roads to the trunk, then the trunk - one leg, its line from the start's own street
+    b = Route("50.003,53.002;50.012,52.996");
+    Check(!b, "joined: no region holds the end", b);
+    free(b);
+    b = TrunkRoute("50.003,53.002;50.012,52.996");
+    Check(b && First(b, 53002000, 50003000), "joined: the line from the start's own street (the region's part)", b);
+    Check(b && Count(b, "\"steps\":") == 1 && Count(b, "\"type\":\"depart\"") == 1 &&
+          Count(b, "\"type\":\"arrive\"") == 1, "joined: one leg, one depart, one arrive", b);
+    // west 67 m, the side street 222, the main 267, the curve 393, the turn 67, the roundabout ~100, the south 155
+    Check(b && Num(b, "\"distance\":") > 1230 && Num(b, "\"distance\":") < 1310, "joined: ~1270 m, as walked", b);
+    free(b);
+    // joined the other way: the trunk from the south, the region's roads to the upper street at the end
+    b = TrunkRoute("50.012,52.996;50.003,53.002");
+    Check(b && Last(b, 53002000, 50003000) && Count(b, "\"steps\":") == 1 && Count(b, "\"type\":\"depart\"") == 1 &&
+          Count(b, "\"type\":\"arrive\"") == 1, "joined backwards: the end on its own street, one leg", b);
+    // the south 155, the roundabout one way round 3/4 ~285, the turn 67, the curve 393, the main 133, up the one-way
+    // 222 (north: allowed), the upper 67
+    Check(b && Num(b, "\"distance\":") > 1290 && Num(b, "\"distance\":") < 1350, "joined backwards: ~1322 m", b);
+    free(b);
+    // both ends in the region: its roads at both, the trunk between (the upper street to the north street's end)
+    b = TrunkRoute("50.003,53.002;50.012,53.002");
+    Check(b && First(b, 53002000, 50003000) && Last(b, 53002000, 50012000) && Count(b, "\"steps\":") == 1 &&
+          Count(b, "\"type\":\"arrive\"") == 1, "joined both ends: from its street to its street, one leg", b);
+    char* whole = Route("50.003,53.002;50.012,53.002");   // the region alone: the same way, the same time and length
+    Check(b && whole && fabs(Num(b, "\"distance\":") - Num(whole, "\"distance\":")) < 2 &&
+          fabs(Num(b, "\"duration\":") - Num(whole, "\"duration\":")) < 1.0, "joined both ends: as the region's own", b);
+    free(whole);
+    free(b);
+    // the car's course east (the region's part starts its way): to the upper street's corner and back, 2 x 67 m more
+    b = TrunkRoute("50.003,53.002;50.012,52.996", "&bearings=90,60;");
+    Check(b && Num(b, "\"distance\":") > 1370 && Num(b, "\"distance\":") < 1430 && First(b, 53002000, 50003000),
+          "joined, course east: the start's way kept, ~1401 m", b);
+    free(b);
+    // a stop on the way: not joined - the trunk alone, two legs (from the trunk roads nearest the points)
+    b = TrunkRoute("50.000,53.000;50.006,53.000;50.010,53.000");
+    Check(b && Count(b, "\"steps\":") == 2 && First(b, 53000000, 50000000), "trunk with a stop: two legs", b);
+    free(b);
+    // far from every trunk road: no answer
+    b = TrunkRoute("37.6,55.7;37.7,55.8");
+    Check(!b, "trunk: nothing near - no answer", b);
     free(b);
     b = Route("50.000,53.000;50.006,53.000");   // and the region again after it (the graphs swapped back)
     Check(b && Num(b, "\"distance\":") > 380 && Num(b, "\"distance\":") < 420, "trunk: the region after it", b);

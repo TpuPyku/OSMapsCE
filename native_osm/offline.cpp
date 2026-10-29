@@ -38,6 +38,7 @@ struct Graph {
     DWORD*  cstart;    // gw * gh + 1
     DWORD*  items;
     OffFile d;         // the parts above; the geometry is read from its file
+    bool    region;    // a region's route.grf (not the trunk roads' graph: its box holds everything)
 };
 
 static Graph s_g;      // the region loaded (one at a time)
@@ -80,6 +81,7 @@ static bool Load(const wchar_t* path)
         return false;
     }
     wcsncpy(s_g.path, path, MAX_PATH - 1);
+    s_g.region = wcsstr(path, L"route.grf") != NULL;
     Log("offline: %S: %lu nodes, %lu edges, %lu ms", path, h.nodes, h.edges, GetTickCount() - t0);
     return true;
 }
@@ -112,7 +114,7 @@ bool OfflineDir(const int* pts, int n, wchar_t* dir)
 // The region whose graph holds all the points: loaded; false = none.
 static bool Region(const int* pts, int n)
 {
-    if (s_g.nodes && HoldsAll(s_g.h, pts, n))
+    if (s_g.nodes && s_g.region && HoldsAll(s_g.h, pts, n))
         return true;
     wchar_t dir[MAX_PATH], path[MAX_PATH];
     if (!OfflineDir(pts, n, dir))
@@ -299,6 +301,7 @@ static bool Flip(const Snap& s, Snap* o)
 
 static DWORD* s_dist;
 static DWORD* s_prevE;    // the edge that reached the node; 0xFFFFFFFF = from the start
+static DWORD  s_distN;    // their size, nodes (a bigger graph loaded: made again - 2026-10-29, the trunk after a region)
 static DWORD* s_heapK;
 static DWORD* s_heapN;
 static DWORD  s_heapCap, s_heapN0;
@@ -388,14 +391,17 @@ static int Sides(const Snap& s, bool both, Snap* out)   // the snap, and its oth
     return both && Flip(s, &out[1]) ? 2 : 1;
 }
 
-static bool Prepare(const Snap& target)   // the search's arrays (made once: one region at a time), the estimate's target
+static bool Prepare(const Snap& target)   // the search's arrays (as big as the graph), the estimate's target
 {
     DWORD N = s_g.h.nodes;
-    if (!s_dist) {
+    if (N > s_distN || !s_dist || !s_prevE) {
+        free(s_dist);
+        free(s_prevE);
         s_dist = (DWORD*)malloc(N * 4);
         s_prevE = (DWORD*)malloc(N * 4);
+        s_distN = s_dist && s_prevE ? N : 0;
     }
-    if (!s_dist || !s_prevE)
+    if (!s_distN)
         return false;
     memset(s_dist, 0xFF, N * 4);
     s_heapN0 = 0;
@@ -800,9 +806,10 @@ static void Maneuver(JBuf& b, bool& first, const Way& w, int i, int cnt, const P
 }
 
 // One leg's steps: depart, the maneuvers at the nodes between its edges, arrive. The line grows.
-static void Steps(JBuf& b, Line& line, const Way& w)
+// The way's steps (first: none written before them - no comma; depart / arrive: a route's start / end - a part of a
+// route joined to another (4b) has neither at the joint)
+static void Steps(JBuf& b, Line& line, const Way& w, bool& first, bool depart, bool arrive)
 {
-    bool first = true;
     int cnt = w.same ? 1 : w.n + 2;
     double b0, b1;
     Prev prev = { 0, 0, 0 };
@@ -810,17 +817,18 @@ static void Steps(JBuf& b, Line& line, const Way& w)
         Piece pc = PieceAt(w, i, cnt);
         int before = line.n;
         AddEdge(line, pc.from, pc.e, pc.a, pc.z, &b0, &b1);
-        if (i == 0)
+        if (i == 0 && depart)
             Step(b, first, "depart", "straight", 0, b0, line.p[before * 2], line.p[before * 2 + 1],
                  s_g.edges[pc.e].name, 0);
-        else
+        else if (i > 0)
             Maneuver(b, first, w, i, cnt, pc, prev, b0);
         prev.e = pc.e;
         prev.from = pc.from;
         prev.after = b1;
     }
-    Step(b, first, "arrive", "straight", prev.after, 0, line.p[(line.n - 1) * 2], line.p[(line.n - 1) * 2 + 1],
-         s_g.edges[prev.e].name, 0);
+    if (arrive)
+        Step(b, first, "arrive", "straight", prev.after, 0, line.p[(line.n - 1) * 2], line.p[(line.n - 1) * 2 + 1],
+             s_g.edges[prev.e].name, 0);
 }
 
 static void FreeWay(Way& w)
@@ -951,7 +959,8 @@ static bool RouteLeg(const Request& r, int leg, JBuf& b, Line& line, DWORD* tota
         JPut(b, ",");
     JPut(b, "{\"steps\":[");
     int lineFrom = line.n;
-    Steps(b, line, w);
+    bool first = true;
+    Steps(b, line, w, first, true, true);
     JPut(b, "]}");
     *totalM += LineM(line, lineFrom);
     *totalDs += w.timeDs;
@@ -997,9 +1006,235 @@ static bool AnyGraph(const wchar_t* path, void*)   // OffRegion's test: a graph 
     return ReadHead(path, &h);
 }
 
+// ---------------------------------------------------------------- 4b: the regions' roads at the ends, the trunk between
+
+// The trunk joined this far from an end (straight; a third of the whole way when shorter), inside that end's region:
+// the region's roads take the car from its own street to the trunk, the trunk takes it on (a trunk road is in the
+// region's graph too - their nodes at the same places).
+enum { kJoinM = 25000 };
+
+static bool RegionBox(const int* pt, int* box)   // the box of the region holding the point (its graph's head)
+{
+    wchar_t dir[MAX_PATH], path[MAX_PATH];
+    GHead h;
+    if (!OfflineDir(pt, 1, dir))
+        return false;
+    _snwprintf(path, MAX_PATH, L"%s\\route.grf", dir);
+    path[MAX_PATH - 1] = 0;
+    if (!ReadHead(path, &h))
+        return false;
+    memcpy(box, &h.minLat, 4 * sizeof(int));
+    return true;
+}
+
+static double StraightM(const int* a, const int* b)
+{
+    double dx = (b[1] - a[1]) * s_kx, dy = (b[0] - a[0]) * 0.111195;
+    return sqrt(dx * dx + dy * dy);
+}
+
+static const int* NodeAfter(const Way& w, int i, int cnt)   // the node the way's piece i ends at
+{
+    return s_g.nodes + s_g.edges[PieceAt(w, i, cnt).e].to * 2;
+}
+
+// The joint for an end (pt, its region's box): the way's node after piece i, from the end inwards (dir +1 from the
+// start, -1 from the end) - the first one joinM away, or the last one in the box before it; -1: none.
+static int Joint(const Way& w, int cnt, const int* pt, const int* box, int dir, double joinM)
+{
+    int inside = -1;
+    for (int k = 0; k < cnt - 1; k++) {
+        int i = dir > 0 ? k : cnt - 2 - k;
+        const int* n = NodeAfter(w, i, cnt);
+        if (!OffInside(box, n[0], n[1]))
+            return inside;
+        inside = i;
+        if (StraightM(pt, n) >= joinM)
+            return i;
+    }
+    return -1;
+}
+
+static int JointOf(const Way& w, int cnt, const int* pt, int dir, double joinM)   // -1: no region there, no joint
+{
+    int box[4];
+    return RegionBox(pt, box) ? Joint(w, cnt, pt, box, dir, joinM) : -1;
+}
+
+static Snap NodeSnap(const Way& w, int piece, int cnt, bool atStart)   // a piece's start (or end) node as a snap
+{
+    Piece pc = PieceAt(w, piece, cnt);
+    const GEdge& g = s_g.edges[pc.e];
+    Snap s;
+    memset(&s, 0, sizeof(s));
+    s.e = pc.e;
+    s.from = pc.from;
+    s.seg = atStart ? 0 : g.ngeom;
+    s.t = atStart ? 0 : 1;
+    const int* n = s_g.nodes + (atStart ? pc.from : g.to) * 2;
+    s.lat = n[0];
+    s.lon = n[1];
+    return s;
+}
+
+static DWORD WayDs(const Way& m)   // a way's time, its end edges' parts and its whole ones
+{
+    if (m.same)
+        return Part(s_g.edges[m.a.e], m.b.t - m.a.t);
+    DWORD ds = Part(s_g.edges[m.a.e], 1 - m.a.t) + Part(s_g.edges[m.b.e], m.b.t);
+    for (int i = 0; i < m.n; i++)
+        ds += s_g.edges[m.e[i]].timeDs;
+    return ds;
+}
+
+// The way between the joints (k1: after its piece k1, -1 its start; k2: after its piece k2, -1 its end): its pieces
+// k1 + 1 .. k2 - its edges' arrays shared with w (not freed); false: nothing between.
+static bool Between(const Way& w, int cnt, int k1, int k2, Way* m)
+{
+    int p0 = k1 < 0 ? 0 : k1 + 1, p1 = k2 < 0 ? cnt - 1 : k2;
+    if (w.same || p0 > p1)
+        return false;
+    memset(m, 0, sizeof(*m));
+    m->a = k1 < 0 ? w.a : NodeSnap(w, p0, cnt, true);
+    m->b = k2 < 0 ? w.b : NodeSnap(w, p1, cnt, false);
+    m->same = p0 == p1;
+    m->n = m->same ? 0 : p1 - p0 - 1;
+    m->e = w.e + p0;       // pieces p0 + 1 .. p1 - 1 = w.e[p0 .. p1 - 2]
+    m->from = w.from + p0;
+    m->timeDs = WayDs(*m);
+    return true;
+}
+
+static bool RegionSnaps(const int* a, const int* b, Snap* sa, Snap* sb)   // a region holding both, within 2 km
+{
+    int pts[4] = { a[0], a[1], b[0], b[1] };
+    return Region(pts, 2) && SnapTo(a[0], a[1], sa) && SnapTo(b[0], b[1], sb) && sa->distM <= 2000 &&
+           sb->distM <= 2000;
+}
+
+// A region's part: from a to b on the region's roads, its steps after the others
+static bool RegionPart(const int* a, const int* b, double course, JBuf& out, bool& first, Line& line, DWORD* ds,
+                       bool depart, bool arrive)
+{
+    Snap sa, sb;
+    if (!RegionSnaps(a, b, &sa, &sb))
+        return false;
+    bool any = depart ? AnyStart(&sa, course) : true;
+    Way w;
+    memset(&w, 0, sizeof(w));
+    bool ok = Search(sa, sb, any, &w) || (!any && Search(sa, sb, true, &w));
+    if (ok) {
+        Steps(out, line, w, first, depart, arrive);
+        *ds += w.timeDs;
+    }
+    FreeWay(w);
+    return ok;
+}
+
+struct Joined {           // the trunk's part (written first: the joints come from it), then the regions' around it
+    JBuf  steps;
+    Line  line;
+    DWORD ds;
+    int   j1[2], j2[2];   // the joints
+    bool  start, end;     // a region's part at the start / the end
+};
+
+static bool TrunkWay(const int* s, const int* e, Way* w)   // the trunk's way between the ends' nearest trunk roads
+{
+    Snap sa, sb;
+    memset(w, 0, sizeof(*w));
+    return SnapTo(s[0], s[1], &sa) && SnapTo(e[0], e[1], &sb) && Search(sa, sb, true, w);
+}
+
+// The way's joints at the start (k1) and the end (k2), -1 where none; false - they cross (a short way)
+static bool Joints(const Way& w, const int* s, const int* e, int* cnt, int* k1, int* k2)
+{
+    *cnt = w.same ? 1 : w.n + 2;
+    double joinM = StraightM(s, e) / 3 < kJoinM ? StraightM(s, e) / 3 : kJoinM;
+    *k1 = JointOf(w, *cnt, s, 1, joinM);
+    *k2 = JointOf(w, *cnt, e, -1, joinM);
+    return *k1 < 0 || *k2 < 0 || *k1 < *k2;
+}
+
+// The trunk's way start - end (the trunk graph loaded), its joints, its part between them written
+static bool TrunkPart(const Request& r, Joined* j)
+{
+    const int* s = r.pts, *e = r.pts + (r.n - 1) * 2;
+    Way w, m;
+    int cnt, k1, k2;
+    bool ok = TrunkWay(s, e, &w) && Joints(w, s, e, &cnt, &k1, &k2) && Between(w, cnt, k1, k2, &m);
+    if (ok) {
+        bool first = true;
+        j->start = k1 >= 0;
+        j->end = k2 >= 0;
+        j->j1[0] = m.a.lat, j->j1[1] = m.a.lon;
+        j->j2[0] = m.b.lat, j->j2[1] = m.b.lon;
+        Steps(j->steps, j->line, m, first, !j->start, !j->end);
+        j->ds = m.timeDs;
+    }
+    FreeWay(w);
+    return ok;
+}
+
+// The parts in order into one leg's steps and one line: the start's region, the trunk's, the end's region
+static bool JoinParts(const Request& r, Joined& j, JBuf& b, Line& line, DWORD* ds)
+{
+    bool first = true, ok = !j.start || RegionPart(r.pts, j.j1, r.course, b, first, line, ds, true, false);
+    if (ok && j.steps.n) {
+        JPut(b, first ? "" : ",");
+        JPut(b, j.steps.p, j.steps.n);
+        first = false;
+    }
+    for (int i = 0; ok && i < j.line.n; i++)
+        LineAdd(line, j.line.p[i * 2], j.line.p[i * 2 + 1]);
+    return ok && (!j.end || RegionPart(j.j2, r.pts + 2, -1, b, first, line, ds, false, true));
+}
+
+// The answer's end (its legs written up to close): the duration, the length, the line; false - not found (freed)
+static bool Finish(JBuf& b, Line& line, bool ok, const char* close, DWORD ds, char** body, int* len, DWORD t0)
+{
+    ok = ok && line.n >= 2 && b.p;
+    double m = ok ? LineM(line, 0) : 0;
+    if (ok) {
+        JPutf(b, "%s,\"duration\":%.1f,\"distance\":%.1f,\"geometry\":\"", close, ds / 10.0, m);
+        PutGeometry(b, line);
+        JPut(b, "\"}]}");
+        Log("offline: route %d points, %.1f km, %lu min, %lu ms", line.n, m / 1000, ds / 600, GetTickCount() - t0);
+        *body = b.p;
+        *len = b.n;
+    } else {
+        free(b.p);
+        Log("offline: no route (%lu ms)", GetTickCount() - t0);
+    }
+    free(line.p);
+    return ok;
+}
+
+// The route start - end: the start's region to the trunk, the trunk, the trunk to the end's region (each when there),
+// one leg; false - no trunk way, a region's part not found (then the trunk alone).
+static bool JoinedRoute(const Request& r, char** body, int* len, DWORD t0)
+{
+    Joined j;
+    memset(&j, 0, sizeof(j));
+    if (r.n != 2 || !TrunkPart(r, &j) || (!j.start && !j.end)) {
+        free(j.steps.p);
+        free(j.line.p);
+        return false;
+    }
+    JBuf b = { NULL, 0, 0 };
+    Line line = { NULL, 0, 0 };
+    DWORD ds = j.ds;
+    JPut(b, "{\"code\":\"Ok\",\"routes\":[{\"legs\":[{\"steps\":[");
+    bool ok = JoinParts(r, j, b, line, &ds);
+    free(j.steps.p);
+    free(j.line.p);
+    return Finish(b, line, ok, "]}]", ds, body, len, t0);
+}
+
 // 4b (the user 2026-10-29): a route no region holds, asked when OSRM did not answer (no internet) - over the trunk
 // roads of Russia and the CIS (OSMapsData\trunk\trunk.grf: motorway / trunk / primary, offline/make_graph.py TRUNK),
-// from the trunk road nearest the start to the one nearest the end (SnapTo: within 9 x 9 of its 0.2 degree cells).
+// from the trunk road nearest the start to the one nearest the end (SnapTo: within 9 x 9 of its 0.2 degree cells),
+// joined to the start's and the end's regions' roads when they are on the card (JoinedRoute), else the trunk alone.
 bool OfflineTrunkRoute(const char* path, char** body, int* len)
 {
     Request r;
@@ -1009,7 +1244,10 @@ bool OfflineTrunkRoute(const char* path, char** body, int* len)
     DWORD t0 = GetTickCount();
     _snwprintf(file, MAX_PATH, L"%s\\trunk.grf", dir);
     file[MAX_PATH - 1] = 0;
-    return Load(file) && Answer(r, body, len, t0);
+    if (!Load(file))
+        return false;
+    s_kx = 0.111195 * cos(r.pts[0] / 1e6 * M_PI / 180);
+    return JoinedRoute(r, body, len, t0) || (Load(file) && Answer(r, body, len, t0));
 }
 
 static bool Answer(const Request& r, char** body, int* len, DWORD t0)   // the route on the graph loaded
@@ -1021,19 +1259,5 @@ static bool Answer(const Request& r, char** body, int* len, DWORD t0)   // the r
     DWORD totalDs = 0;
     double totalM = 0;
     bool ok = RouteLegs(r, b, line, &totalDs, &totalM);
-    if (ok && line.n >= 2) {
-        JPutf(b, "],\"duration\":%.1f,\"distance\":%.1f,\"geometry\":\"", totalDs / 10.0, totalM);
-        PutGeometry(b, line);
-        JPut(b, "\"}]}");
-    }
-    free(line.p);
-    if (!ok || !b.p) {
-        free(b.p);
-        Log("offline: no route (%lu ms)", GetTickCount() - t0);
-        return false;
-    }
-    Log("offline: route %d points, %.1f km, %lu min, %lu ms", line.n, totalM / 1000, totalDs / 600, GetTickCount() - t0);
-    *body = b.p;
-    *len = b.n;
-    return true;
+    return Finish(b, line, ok, "]", totalDs, body, len, t0);
 }
