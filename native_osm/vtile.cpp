@@ -1068,7 +1068,9 @@ static bool LocalFrom(const MapRequest& r, const MapRequest& key, bool cached, I
         if (!cached || !ReadWholeFile(file, &data, &len))
             return false;
     }
-    bool ok = VTileRenderFrom(r, key, data, len, out);
+    // not a vector tile (its first field a layer's: 0x1A) - as none (the user's card 2026-10-29: tiles written 512
+    // bytes off, a layer's middle first - roads gone, pieces of other places)
+    bool ok = (!len || data[0] == 0x1A) && VTileRenderFrom(r, key, data, len, out);
     free(data);
     return ok;
 }

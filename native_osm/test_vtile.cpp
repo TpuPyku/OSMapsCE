@@ -1102,6 +1102,22 @@ static void LocalChecks(const unsigned char* tile, int tileLen, const unsigned c
     MapRequest r15 = { SRC_OSM, 15, 81, 41 };
     Check(VTileLocal(r15, &im) && Px(im, 128, 128) != water, "local: z15 with no pack z15 tile - the z14 one");
     ImageFree(&im);
+    // a pack's tile not a vector tile (the user's card 2026-10-29: blobs 512 bytes off - a layer's middle first):
+    // as none, the z14 one drawn
+    static const unsigned char broken[] = { 0x82, 0xD0, 0xBE, 0xD0, 0xB2, 0x22, 0x21, 0x0A, 0x1F, 0xD0 };
+    MapRequest pb = { SRC_OSM, VEC_ZBASE + 15, 82, 40 }, db = { SRC_OSM, VEC_ZBASE + 14, 41, 20 };
+    s_packKey[0] = pb;
+    s_packData[0] = broken;
+    s_packLen[0] = sizeof(broken);
+    s_packKey[1] = db;
+    MapRequest r16c = { SRC_OSM, 16, 164, 80 };
+    Check(VTileLocal(r16c, &im) && Px(im, 128, 128) == water, "local: a broken pack tile - the z14 one instead");
+    ImageFree(&im);
+    s_packData[1] = broken;
+    s_packLen[1] = sizeof(broken);
+    MapRequest r14b = { SRC_OSM, 14, 42, 20 }, db2 = { SRC_OSM, VEC_ZBASE + 14, 42, 20 };
+    s_packKey[1] = db2;
+    Check(!VTileLocal(r14b, &im) && !im.bmp, "local: only a broken tile - none (to download)");
     s_nPack = 0;
     s_reads = 0;
 }
