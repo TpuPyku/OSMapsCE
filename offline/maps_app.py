@@ -34,7 +34,34 @@ def installed(drive):
     root = os.path.join(drive, 'OSMapsData')
     names = os.listdir(root) if os.path.isdir(root) else []
     return {n: release_regions.region_info(os.path.join(root, n, 'region.txt')).get('date') for n in names
-            if os.path.exists(os.path.join(root, n, 'region.txt'))}
+            if n != TRUNK and os.path.exists(os.path.join(root, n, 'region.txt'))}
+
+
+TRUNK = 'trunk'   # the trunk roads of Russia and the CIS (4b): routes from one region to another
+
+
+def install_trunk(drive, get_file):
+    """The trunk roads' graph on the drive (\\OSMapsData\\trunk\\, region.txt last): 'written', 'same' (that build
+    there already) or 'none' (no graph in the release)."""
+    try:
+        data = get_file(release_regions.ASSETS + TRUNK + '.zip')
+    except Exception:
+        return 'none'
+    dst = os.path.join(drive, 'OSMapsData', TRUNK)
+    with zipfile.ZipFile(io.BytesIO(data)) as z:
+        info = z.read('region.txt')
+        if os.path.exists(os.path.join(dst, 'region.txt')) and read_bytes(os.path.join(dst, 'region.txt')) == info:
+            return 'same'
+        os.makedirs(dst, exist_ok=True)
+        for f in ('trunk.grf', 'region.txt'):
+            with open(os.path.join(dst, f), 'wb') as out:
+                out.write(z.read(f))
+    return 'written'
+
+
+def read_bytes(path):
+    with open(path, 'rb') as f:
+        return f.read()
 
 
 def states(cat, have):
@@ -254,6 +281,8 @@ class App:
             self.news.put(('status', head + ': начало…'))
             install(e, drive, http_get, get_bytes, MAXZOOM, lambda part, text, h=head: self.tell(h, part, text), day)
             self.news.put(('status', head + ': граф и поиск записаны'))
+        self.news.put(('status', 'Магистрали России и СНГ (маршрут между областями)…'))
+        install_trunk(drive, http_get)
         self.news.put(('status', 'Готово: %d. Флешку — в ГУ (папка OSMapsData в корне).' % len(entries)))
         self.news.put(('catalog', self.cat))
 
