@@ -27,6 +27,7 @@ kGap = 128 * 1024          # data ranges closer than this are fetched as one
 kMaxGroup = 2 * 1024 * 1024   # ... up to this much: a region's data is pieces, fetched kThreads at a time
 kThreads = 8               # (each range of Protomaps' server takes seconds: 8 at a time ~8 times faster - 2026-10-28)
 kDirsPart = 0.1            # the progress's part the directories take
+kDataEnd = 0.6             # ... the data up to here; the rest - the tiles' processing (slim) and the pack's writing
 
 
 def tile_range(bbox, z):
@@ -98,8 +99,19 @@ def fetch(archive, located, pool, progress=None):
             data[(off, n)] = chunk[off - start:off - start + n]
         done += end - start
         if progress:
-            progress(kDirsPart + (1 - kDirsPart) * done / total, 'плитки: %.1f из %.1f МБ' % (done / 1e6, total / 1e6))
+            progress(kDirsPart + (kDataEnd - kDirsPart) * done / total,
+                     'плитки: %.1f из %.1f МБ' % (done / 1e6, total / 1e6))
     return data
+
+
+def processed(items, total, tell):
+    """The (key, tile) pairs passed on, the progress told about every 2 % (the user 2026-10-29: the bar was full
+    and the button still busy for minutes - the slimming of every tile, nothing told)."""
+    step = max(1, total // 50)
+    for i, item in enumerate(items, 1):
+        yield item
+        if i % step == 0 and i < total:
+            tell(kDataEnd + (1 - kDataEnd) * i / total, 'обработка: %d из %d плиток' % (i, total))
 
 
 def extract(get_bytes, bbox, maxzoom, out, progress=None, keep=lambda tile: tile):
@@ -115,8 +127,8 @@ def extract(get_bytes, bbox, maxzoom, out, progress=None, keep=lambda tile: tile
         tell(kDirsPart, 'каталог: %d плиток' % len(located))
         data = fetch(archive, located, pool, tell)
     unzip = archive.h['tile_compression'] == Compression.GZIP
-    make_tiles.write_pack(out, ((make_tiles.key(*t), keep(gzip.decompress(data[s]) if unzip else data[s]))
-                                for t, s in located.items()))
+    make_tiles.write_pack(out, processed(((make_tiles.key(*t), keep(gzip.decompress(data[s]) if unzip else data[s]))
+                                          for t, s in located.items()), len(located), tell))
     tell(1.0, 'плитки записаны')
 
 
