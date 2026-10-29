@@ -1,4 +1,5 @@
 ﻿#include "yamaps.h"
+#include "vkeys.h"     // VestaCore: the keyboard's text and cursor (VestaHome's)
 #include "vversion.h"   // VestaCore: the version "major.minor.YYMMDD" (the date: this file's build)
 static const wchar_t* const kRelease = L"1.03";   // raise by hand: minor - significant changes, major - big releases
 
@@ -163,14 +164,12 @@ static bool       s_settings;
 // places found; a place tapped - the route to it from the car (no fix: from the map's center).
 static bool       s_search;
 static bool       s_showHits;       // the places found instead of the keyboard
-static wchar_t    s_query[64];
-static int        s_kbLang;         // 0 Russian, 1 Latin
+// The query and its cursor - VestaHome's keyboard (VestaCore vkeys; the user 2026-10-29: a cursor to move): its
+// keys, the cursor put and dragged by the finger on the field, the text scrolled to keep the cursor in sight.
+static VKeys      s_kb;
 static int        s_kbPressed = -1;
-enum { K_LANG = 100, K_SPACE, K_BS, K_FIND, K_BACK, K_FIELD, K_HIT = 200 };
-static const wchar_t* kKeys[2][4] = {
-    { L"1234567890-", L"йцукенгшщзхъ", L"фывапролджэ", L"ячсмитьбю.," },
-    { L"1234567890-", L"qwertyuiop", L"asdfghjkl", L"zxcvbnm.," },
-};
+enum { kQueryCap = 120 };   // (SearchStart: 256 bytes of UTF-8 - 120 Russian letters fit)
+enum { K_SHIFT = 100, K_LANG, K_SPACE, K_BS, K_FIND, K_BACK, K_FIELD, K_HIT = 200 };
 enum { kKbY = 66, kKbRowH = 81, kHitY = 62, kHitH = 58 };
 
 // The route editor (a long press on the map, the user's design 2026-10-26): "from" (the car by default, or an
@@ -770,12 +769,17 @@ static void OnMapsCtl(int id)
     InvalidateRect(s_wnd, NULL, FALSE);
 }
 
-static int HitMaps(int x, int y)
+static int HitRects(const RECT* r, int n, int x, int y)   // the first of the rectangles at the point; -1: none
 {
-    for (int i = 0; i < M_COUNT; i++)
-        if (x >= kMapsCtl[i].left && x < kMapsCtl[i].right && y >= kMapsCtl[i].top && y < kMapsCtl[i].bottom)
+    for (int i = 0; i < n; i++)
+        if (x >= r[i].left && x < r[i].right && y >= r[i].top && y < r[i].bottom)
             return i;
     return -1;
+}
+
+static int HitMaps(int x, int y)
+{
+    return HitRects(kMapsCtl, M_COUNT, x, y);
 }
 
 // The GPS thread finished a port search.
@@ -791,10 +795,7 @@ static void OnGpsScanDone()
 
 static int HitSettings(int x, int y)
 {
-    for (int i = 0; i < S_COUNT; i++)
-        if (x >= kSetCtl[i].left && x < kSetCtl[i].right && y >= kSetCtl[i].top && y < kSetCtl[i].bottom)
-            return i;
-    return -1;
+    return HitRects(kSetCtl, S_COUNT, x, y);
 }
 
 // ---------------------------------------------------------------- actions
@@ -3041,10 +3042,7 @@ static void DrawTrip(HDC dc)
 }
 
 // ---- the search screen
-static int KbRowLen(int row)
-{
-    return row < 4 ? (int)wcslen(kKeys[s_kbLang][row]) : 4;
-}
+enum { kFieldX = 92, kFieldR = 800 - 24 };   // the query's text on the field (from its left: VKeysLayout's x)
 
 // Where control id of the search screen is; false if it is not there now.
 static bool SearchRect(int id, RECT* r)
@@ -3065,17 +3063,17 @@ static bool SearchRect(int id, RECT* r)
         return true;
     }
     int row, col;
-    if (id >= K_LANG && id <= K_FIND) {   // the bottom row: language, space, backspace, find
-        static const int x[5] = { 8, 156, 524, 656, 792 };
-        int k = id - K_LANG;
+    if (id >= K_SHIFT && id <= K_FIND) {   // the bottom row: Shift, language, space, backspace, find
+        static const int x[6] = { 8, 128, 248, 548, 668, 792 };
+        int k = id - K_SHIFT;
         SetRect(r, x[k], kKbY + 4 * kKbRowH, x[k + 1] - 6, kKbY + 5 * kKbRowH - 6);
         return true;
     }
     row = id / 16;
     col = id % 16;
-    if (row > 3 || col >= KbRowLen(row))
+    if (row > 3 || col >= VKeysRowLen(&s_kb, row))
         return false;
-    int n = KbRowLen(row), w = (784 - (n - 1) * 6) / n, x0 = 8 + (784 - (n * w + (n - 1) * 6)) / 2;
+    int n = VKeysRowLen(&s_kb, row), w = (784 - (n - 1) * 6) / n, x0 = 8 + (784 - (n * w + (n - 1) * 6)) / 2;
     SetRect(r, x0 + col * (w + 6), kKbY + row * kKbRowH, x0 + col * (w + 6) + w, kKbY + (row + 1) * kKbRowH - 6);
     return true;
 }
@@ -3098,7 +3096,7 @@ static void SearchFrom(double* lon, double* lat)
 
 static void OnSearchKey(int id)
 {
-    int n = (int)wcslen(s_query);
+    int n = (int)wcslen(s_kb.text), c = s_kb.cur < n ? s_kb.cur : n;
     if (id == K_BACK) {
         if (s_showHits)
             s_showHits = false;
@@ -3111,19 +3109,20 @@ static void OnSearchKey(int id)
         }
     } else if (id == K_FIELD) {
         s_showHits = false;
+    } else if (id == K_SHIFT) {
+        s_kb.shift = !s_kb.shift;
     } else if (id == K_LANG) {
-        s_kbLang = !s_kbLang;
+        s_kb.en = !s_kb.en;
     } else if (id == K_SPACE) {
-        if (n && n < 62 && s_query[n - 1] != L' ')
-            wcscat(s_query, L" ");
+        if (c > 0 && s_kb.text[c - 1] != L' ' && s_kb.text[c] != L' ')   // (no doubled spaces, none first)
+            VKeysType(&s_kb, L' ');
     } else if (id == K_BS) {
-        if (n)
-            s_query[n - 1] = 0;
+        VKeysBack(&s_kb);
     } else if (id == K_FIND) {
         double lon, lat;
         SearchFrom(&lon, &lat);
         if (n) {
-            SearchStart(s_query, lon, lat);
+            SearchStart(s_kb.text, lon, lat);
             s_showHits = true;   // (the query is in the log as the request's URL)
         }
     } else if (id >= K_HIT) {
@@ -3149,11 +3148,41 @@ static void OnSearchKey(int id)
                 UserChanged();
             }
         }
-    } else if (id / 16 < 4 && n < 62) {
-        s_query[n] = kKeys[s_kbLang][id / 16][id % 16];
-        s_query[n + 1] = 0;
+    } else if (id / 16 < 4) {
+        VKeysType(&s_kb, VKeysChar(&s_kb, id / 16, id % 16));
     }
     InvalidateRect(s_wnd, NULL, FALSE);
+}
+
+static void Bar(HDC dc, int x, int y, int w, int h, COLORREF c)   // the cursor's line
+{
+    RECT b = { x, y, x + w, y + h };
+    Tile(dc, b, c, c, 0);
+}
+
+// The query on the field from the part in sight, the cursor (keyboard shown) where it is, "‹ ›" where more is
+static void DrawQuery(HDC dc, const RECT& r)
+{
+    if (!s_kb.text[0]) {
+        Text(dc, s_fontBig, kTextDim, kFieldX, r.top, kFieldR, r.bottom, DT_LEFT,
+             s_showHits ? L"" : L"Адрес или место");
+        if (!s_showHits)
+            Bar(dc, kFieldX, r.top + 10, 2, r.bottom - r.top - 20, kOrange);
+        return;
+    }
+    HGDIOBJ of = SelectObject(dc, s_fontBig);
+    int cx = kFieldX + VKeysLayout(&s_kb, dc, kFieldR - kFieldX);
+    SelectObject(dc, of);
+    wchar_t shown[VKEYS_MAX];
+    wcsncpy(shown, s_kb.text + s_kb.view, s_kb.visN);
+    shown[s_kb.visN] = 0;
+    Text(dc, s_fontBig, kText, kFieldX, r.top, kFieldR + 8, r.bottom, DT_LEFT, shown);
+    if (s_kb.view > 0)
+        Text(dc, s_fontBig, kOrange, r.left + 2, r.top, kFieldX, r.bottom, DT_CENTER, L"‹");
+    if (s_kb.view + s_kb.visN < (int)wcslen(s_kb.text))
+        Text(dc, s_fontBig, kOrange, kFieldR, r.top, r.right, r.bottom, DT_CENTER, L"›");
+    if (!s_showHits)
+        Bar(dc, cx - 1, r.top + 8, 3, r.bottom - r.top - 16, kOrange);
 }
 
 static void DrawSearch(HDC dc)
@@ -3172,11 +3201,7 @@ static void DrawSearch(HDC dc)
                   (r.top + r.bottom - s_arrow[0][0]->h) / 2);
     SearchRect(K_FIELD, &r);
     Tile(dc, r, kPanel2, s_showHits ? kPanel2 : kOrange, 20);
-    wchar_t s[128];
-    _snwprintf(s, 128, s_showHits ? L"%s" : L"%s|", s_query);
-    s[127] = 0;
-    Text(dc, s_fontBig, s_query[0] ? kText : kTextDim, r.left + 16, r.top, r.right - 12, r.bottom, DT_LEFT,
-         s_query[0] || s_showHits ? s : L"Адрес или место|");
+    DrawQuery(dc, r);
 
     if (s_showHits) {
         int st = SearchState(), n = SearchCount();
@@ -3203,20 +3228,20 @@ static void DrawSearch(HDC dc)
         }
         return;
     }
-    static const wchar_t* kBottom[4] = { NULL, L"ПРОБЕЛ", L"СТЕРЕТЬ", L"НАЙТИ" };
+    static const wchar_t* kBottom[5] = { L"Aa", NULL, L"ПРОБЕЛ", L"СТЕРЕТЬ", L"НАЙТИ" };
     for (int id = 0; id <= K_FIND; id++) {
         if (!SearchRect(id, &r))
             continue;
-        bool p = s_kbPressed == id;
+        bool lit = s_kbPressed == id || (id == K_FIND && s_kb.text[0]) || (id == K_SHIFT && s_kb.shift);
         wchar_t cap[8] = { 0 };
-        if (id < K_LANG)
-            cap[0] = kKeys[s_kbLang][id / 16][id % 16];
+        if (id < K_SHIFT)
+            cap[0] = VKeysChar(&s_kb, id / 16, id % 16);
         else
-            wcscpy(cap, id == K_LANG ? (s_kbLang ? L"РУС" : L"ENG") : kBottom[id - K_LANG]);
-        COLORREF kc = p || (id == K_FIND && s_query[0]) ? kOrange : kPanel2;
+            wcscpy(cap, id == K_LANG ? (s_kb.en ? L"РУС" : L"ENG") : kBottom[id - K_SHIFT]);
+        COLORREF kc = lit ? kOrange : kPanel2;
         Tile(dc, r, kc, kc, 16);
-        Text(dc, id < K_LANG ? s_fontBig : s_fontLabel, p || (id == K_FIND && s_query[0]) ? kInk : kText, r.left,
-             r.top, r.right, r.bottom, DT_CENTER, cap);
+        Text(dc, id < K_SHIFT ? s_fontBig : s_fontLabel, lit ? kInk : kText, r.left, r.top, r.right, r.bottom,
+             DT_CENTER, cap);
     }
 }
 
@@ -3869,6 +3894,7 @@ static void LogStat()
 
 static void OnCreate(HWND hwnd)
 {
+    VKeysOpen(&s_kb, L"", kQueryCap);
     s_wnd = hwnd;
     RECT rc;
     GetClientRect(hwnd, &rc);
@@ -4225,10 +4251,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 OnSearchKey(K_BS);
             else if (wp == 13)
                 OnSearchKey(K_FIND);
-            else if (wp >= 32 && wcslen(s_query) < 62) {
-                size_t n = wcslen(s_query);
-                s_query[n] = (wchar_t)wp;
-                s_query[n + 1] = 0;
+            else if (wp >= 32) {
+                VKeysType(&s_kb, (wchar_t)wp);
                 s_showHits = false;
                 InvalidateRect(hwnd, NULL, FALSE);
             }
@@ -4247,6 +4271,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             s_setPressed = HitSettings(x, y);
         } else if (s_search) {
             s_kbPressed = HitSearch(x, y);
+            if (s_kbPressed == K_FIELD && !s_showHits)   // the cursor to the finger
+                VKeysCursorAt(&s_kb, x - kFieldX, kFieldR - kFieldX);
         } else if (s_plan) {
             s_planPressed = HitPlan(x, y);
         } else if ((s_planPressed = HitOverMap(x, y)) >= 0) {
@@ -4270,6 +4296,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 
     case WM_MOUSEMOVE: {
         int x = (short)LOWORD(lp), y = (short)HIWORD(lp);
+        if (s_search && s_kbPressed == K_FIELD && !s_showHits) {   // the cursor follows the finger
+            VKeysCursorAt(&s_kb, x - kFieldX, kFieldR - kFieldX);
+            InvalidateRect(hwnd, NULL, FALSE);
+            return 0;
+        }
         if (s_pressed >= 0) {
             bool inside = HitButton(x, y) == s_pressed;
             if (inside != s_pressedInside) {
