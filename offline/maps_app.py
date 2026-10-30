@@ -244,6 +244,11 @@ def ready_links(cat, chosen, href=yadisk.public_href):
     return [href(disk, z) for z in zips] if chosen else [disk]
 
 
+def inform(title, text):   # a message in its window (tests: replaced)
+    import tkinter.messagebox
+    tkinter.messagebox.showinfo(title, text)
+
+
 def ask(title, text):   # a yes / no question (tests: replaced)
     import tkinter.messagebox
     return tkinter.messagebox.askyesno(title, text)
@@ -617,12 +622,16 @@ class App:
         try:
             links = ready_links(self.cat, self.chosen)
         except Exception as e:   # noqa: BLE001 - the user sees it
-            self.status.set('Ссылки не получены: %s' % e)
+            inform('Готовые архивы', 'Ссылки не получены: %s' % e)
+            return
+        if not links:   # (the status line alone went unseen - the user 2026-10-30)
+            inform('Готовые архивы', 'Готовых архивов на Яндекс Диске пока нет: они появятся после сборки карт. '
+                                     'Пока — запись выбранных областей этой программой.')
             return
         for url in links:
             webbrowser.open(url)
         self.status.set('Открыто в браузере: %d (готовые области — граф, поиск и плитки; распаковать в OSMapsData '
-                        'на флешке)' % len(links) if links else 'Готовых архивов нет: Диск ещё не подключён')
+                        'на флешке)' % len(links))
 
     def remove_chosen(self):
         """The chosen regions that are on the drive off it, asked first; not while writing."""

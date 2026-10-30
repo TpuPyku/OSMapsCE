@@ -391,10 +391,11 @@ class Maps(unittest.TestCase):
             self.assertEqual(len(asked), 1)                                          # not asked
             self.assertIn('Нечего удалять', app.status.get())
             opened = []
-            with unittest.mock.patch.object(maps_app.webbrowser, 'open', opened.append):
-                app.open_ready()                                                       # no disk in the catalog
-                self.assertEqual(opened, [])
-                self.assertIn('Готовых архивов нет', app.status.get())
+            told = []
+            with unittest.mock.patch.object(maps_app.webbrowser, 'open', opened.append),                     unittest.mock.patch.object(maps_app, 'inform', lambda title, text: told.append(text)):
+                app.open_ready()                       # no disk in the catalog: told in a window (the user 2026-10-30:
+                self.assertEqual(opened, [])           # the status line unseen - "nothing happened")
+                self.assertIn('пока нет', told[0])
                 app.cat = dict(cat, disk='https://disk.yandex.ru/d/x')
                 app.chosen = set()
                 app.open_ready()
