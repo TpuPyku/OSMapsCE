@@ -225,13 +225,14 @@ CacheEntry* CacheAdd(MapResult* res, DWORD fetchTick)
     e->ov = res->ov;
     e->fetchTick = fetchTick;
     e->fileDay = 0;
+    e->draft = false;
     res->img.bmp = NULL;
     res->ov = NULL;
     s_bytes += EntryBytes(e);
     return Trim(e);
 }
 
-CacheEntry* CacheFind(const MapRequest& r, bool loadFromDisk)
+CacheEntry* CacheFind(const MapRequest& r, bool loadFromDisk, bool draft)
 {
     for (int i = 0; i < s_count; i++) {
         if (SameKey(s_mem[i].req, r)) {
@@ -246,7 +247,12 @@ CacheEntry* CacheFind(const MapRequest& r, bool loadFromDisk)
     memset(&res, 0, sizeof(res));
     res.req = r;
     if (g_cfg.vector) {   // the data at hand (a region's pack, the cache's .pbf: never expires, versioned), drawn now
-        return VTileLocal(r, &res.img) ? CacheAdd(&res, 0) : NULL;
+        draft = draft && VTileDetail() != 2;   // (the fast style chosen: no draft of it)
+        if (!VTileLocal(r, &res.img, draft))
+            return NULL;
+        CacheEntry* e = CacheAdd(&res, 0);
+        e->draft = draft;
+        return e;
     }
     CachePath(path, r);
     if (!ImageFromFile(path, &res.img))
@@ -254,6 +260,17 @@ CacheEntry* CacheFind(const MapRequest& r, bool loadFromDisk)
     CacheEntry* e = CacheAdd(&res, 0);
     e->fileDay = FileDay(path);
     return e;
+}
+
+bool CacheRefine(CacheEntry* e)
+{
+    Image img;
+    if (!e->draft || !VTileLocal(e->req, &img))
+        return false;
+    ImageFree(&e->img);   // (the same size: the bytes counted stay)
+    e->img = img;
+    e->draft = false;
+    return true;
 }
 
 void CacheDropBase()

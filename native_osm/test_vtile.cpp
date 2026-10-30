@@ -1,4 +1,4 @@
-// The vector tiles (vtile.cpp) on hand-made Mapbox Vector Tiles: water in the top left quarter, a primary road
+﻿// The vector tiles (vtile.cpp) on hand-made Mapbox Vector Tiles: water in the top left quarter, a primary road
 // across at 3/4 of the height, a town's point; a town's tile with every kind of area, road, street name and sign.
 // Drawn as OSMapsCE draws them (VTileRender, VLabelsDraw), checked by the pixels the driver would see. Exit code: the number of failed checks. (test_vtile.bat builds and runs it.)
 #include "yamaps.h"
@@ -1242,6 +1242,24 @@ int main()
     ImageFree(&im);
     Check(VTileRender(cbl, NULL, 0, &im) && Px(im, 128, 216) != RGB565(255, 255, 255), "fast: z15 - no service road");
     ImageFree(&im);
+    // a draft (the user 2026-10-30, as Shturmann: the fast style at once, the chosen one when idle): drawn as fast
+    // whatever the detail, the detail kept, not timed for auto
+    VTileSetDetail(0);
+    Check(VTileRenderFrom(c, VTileData(c), NULL, 0, &im, true) && Px(im, 128, 184) == land && Px(im, 32, 112) == land,
+          "draft: as fast - no minor road, no residential area");
+    ImageFree(&im);
+    Check(VTileDetail() == 0, "draft: the detail kept");
+    Check(VTileRender(c, NULL, 0, &im) && Px(im, 128, 184) == RGB565(255, 255, 255), "draft: the next one full again");
+    ImageFree(&im);
+    VTileAutoReset();
+    VTileSetDetail(-1);
+    for (int i = 0; i < 12; i++) {
+        VTileRenderFrom(cbl, VTileData(cbl), NULL, 0, &im, true);
+        ImageFree(&im);
+    }
+    Check(VTileDetail() == 1, "draft: not timed for auto");
+    VTileAutoReset();
+    VTileSetDetail(2);
     // auto: the tiles' time decides (full under 80 ms, medium under 200, fast above) - medium till 12 of z10+ are timed
     // (the user's Shturmann 2026-10-30: "auto" showed full - each switch to it timed anew, full meanwhile; z5-z8 tiles,
     // all but empty, had made the average small)

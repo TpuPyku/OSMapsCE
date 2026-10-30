@@ -284,8 +284,10 @@ void       VTileInit();     // before the download thread starts
 MapRequest VTileData(const MapRequest& r);   // the data tile (VEC_ZBASE + z) a shown tile is drawn from
 MapRequest VTileDataAt(const MapRequest& r, int maxz);   // ... with data tiles up to zoom maxz (a pack: VEC_PACKZ)
 bool       VTileRender(const MapRequest& r, const unsigned char* data, int len, Image* out);   // data NULL: parsed already
-bool       VTileRenderFrom(const MapRequest& r, const MapRequest& d, const unsigned char* data, int len, Image* out);   // from data tile d
-bool       VTileLocal(const MapRequest& r, Image* out);   // from the data at hand (parsed, a pack, the cache); false: none
+bool       VTileRenderFrom(const MapRequest& r, const MapRequest& d, const unsigned char* data, int len, Image* out,
+                           bool draft = false);   // from data tile d; draft: in the fast style (redrawn when idle)
+bool       VTileLocal(const MapRequest& r, Image* out, bool draft = false);   // from the data at hand (parsed, a pack, the
+                                                                             // cache); false: none
 void       VTileSetDetail(int d);   // the map's detail: -1 auto (by the tiles' time), 0 full, 1 medium, 2 fast
 int        VTileDetail();           // the detail drawn now (auto: medium till kAutoTiles are timed)
 int        VTileDetailFor(DWORD avgMs);   // auto's choice by a tile's average time
@@ -339,6 +341,7 @@ struct CacheEntry {
     DWORD          fetchTick;   // GetTickCount() of download; 0 = loaded from disk
     int            fileDay;     // loaded from disk: yyyymmdd the file was saved, 0 = unknown
     DWORD          useTick;
+    bool           draft;       // drawn in the fast style first (CacheRefine: in the chosen detail when idle)
 };
 enum { CACHE_MEM = 64 };        // a rotated view needs ~16 base tiles + overlays + coarser levels
 // Memory cap for the decoded images: a view needs ~2 MB of tiles (128 KB each)
@@ -347,12 +350,13 @@ enum { CACHE_MEM = 64 };        // a rotated view needs ~16 base tiles + overlay
 void        CacheInit();
 void        CachePrune();                 // scan the disk, delete over g_cfg.cacheMb
 void        CacheCountSaved(int newBytes, int oldBytes);
-CacheEntry* CacheFind(const MapRequest& r, bool loadFromDisk);
+CacheEntry* CacheFind(const MapRequest& r, bool loadFromDisk, bool draft = false);   // draft: the vector one drawn fast
 CacheEntry* CacheAdd(MapResult* res, DWORD fetchTick);   // takes the images from res
 int         CacheList(CacheEntry** out, int max);
 int         CacheBytes();                 // decoded images in memory now, for the log
 bool        SameKey(const MapRequest& a, const MapRequest& b);
-void        CacheDropBase();              // the base map's tiles out of memory (raster <-> vector)
+void        CacheDropBase();
+bool        CacheRefine(CacheEntry* e);   // a draft drawn again in the chosen detail; false: not a draft / no data              // the base map's tiles out of memory (raster <-> vector)
 
 // GPS: VestaCore (core/vgps.h) - the port shared with VestaHome through shared memory
 #include "vgps.h"

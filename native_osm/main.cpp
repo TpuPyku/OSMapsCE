@@ -552,33 +552,57 @@ static void LoadParent(const MapRequest& k)
 
 // Brings the map tiles of the view into memory (disk or download), then the traffic
 // overlay. Disk decodes are limited per call: each costs some 20-50 ms on the unit.
-// Up to maxLoads of the keys not in memory from the disk; the loads left, -1: keys left untried
-static int LoadFromDisk(const MapRequest* keys, int n, int maxLoads)
+// Up to maxLoads of the keys not in memory from the disk (draft: the vector ones in the fast style); the loads left,
+// -1: keys left untried
+static int LoadFromDisk(const MapRequest* keys, int n, int maxLoads, bool draft)
 {
     for (int i = 0; i < n; i++) {
         if (CacheFind(keys[i], false) || RingHas(s_missKeys, keys[i]))
             continue;
         if (!maxLoads--)
             return -1;
-        if (!CacheFind(keys[i], true))
+        if (!CacheFind(keys[i], true, draft))
             RingAdd(s_missKeys, keys[i]);
     }
     return maxLoads;
 }
 
+// The view's first draft drawn again in the chosen detail - not while a finger is on the map (each takes a full tile's
+// time); true: one was
+static bool RefineStep(const MapRequest* keys, int n)
+{
+    if (s_dragging)
+        return false;
+    for (int i = 0; i < n; i++) {
+        CacheEntry* e = CacheFind(keys[i], false);
+        if (e && e->draft) {
+            if (!CacheRefine(e))
+                e->draft = false;   // (no data any more: left as it is)
+            return true;
+        }
+    }
+    return false;
+}
+
 // One step of drawing what is at hand (the user 2026-10-29: no waiting, no scaled tiles where the data is here): the
-// view's tiles, then - while the memory has room - the far ring's, the next zooms' round the centre (+ / - show them
-// at once). *view: the view's got some; returns true: more to do.
+// view's tiles - as drafts in the fast style (2026-10-30, as Shturmann), then one by one in the chosen detail - then,
+// while the memory has room, the far ring's, the next zooms' round the centre (+ / - show them at once).
+// *view: the view's got some; returns true: more to do.
 static bool DiskStep(bool* view)
 {
     MapRequest keys[kMaxKeys];
-    int left = LoadFromDisk(keys, NeededKeys(SRC_OSM, keys, kMaxKeys), kDiskLoads);
+    int n = NeededKeys(SRC_OSM, keys, kMaxKeys);
+    int left = LoadFromDisk(keys, n, kDiskLoads, true);
     *view = left != kDiskLoads;
     if (left < 0)
         return true;
+    if (RefineStep(keys, n)) {
+        *view = true;
+        return true;
+    }
     for (int k = 0; k < 3 && CacheBytes() + TILE * TILE * 2 <= CACHE_BYTES; k++) {
-        int n = k == 0 ? FarKeys(keys, kMaxKeys) : SquareKeys(k == 1 ? 1 : -1, kAroundHalf, keys, kMaxKeys);
-        left = LoadFromDisk(keys, n, left);
+        int m = k == 0 ? FarKeys(keys, kMaxKeys) : SquareKeys(k == 1 ? 1 : -1, kAroundHalf, keys, kMaxKeys);
+        left = LoadFromDisk(keys, m, left, false);
         if (left < 0)
             return true;
     }
@@ -596,7 +620,7 @@ static void Ensure(int mode)
 {
     MapRequest keys[kMaxKeys];
     int n = NeededKeys(SRC_OSM, keys, kMaxKeys);
-    LoadFromDisk(keys, n, 6);
+    LoadFromDisk(keys, n, 6, true);
     bool parentLoaded = false;
     for (int i = 0; i < n; i++) {
         CacheEntry* e = CacheFind(keys[i], false);
@@ -606,12 +630,12 @@ static void Ensure(int mode)
         }
     }
     n = FarKeys(keys, kMaxKeys);   // the far ring's, after the view's
-    LoadFromDisk(keys, n, 4);
+    LoadFromDisk(keys, n, 4, false);
     for (int i = 0; i < n; i++)
         Request(REQ_AUTO, keys[i], CacheFind(keys[i], false));
     double mx, my;   // the junction card's tiles: after the view's (one request at a time: theirs first)
     n = JunctionKeys(keys, &mx, &my);
-    LoadFromDisk(keys, n, 2);
+    LoadFromDisk(keys, n, 2, false);
     for (int i = 0; i < n; i++)
         Request(REQ_AUTO, keys[i], CacheFind(keys[i], false));
     if (g_cfg.traffic) {
@@ -665,7 +689,7 @@ static void OnMapResult(MapResult* res)
 static void UserChanged()
 {
     MapRequest keys[kMaxKeys];
-    LoadFromDisk(keys, NeededKeys(SRC_OSM, keys, kMaxKeys), 6);
+    LoadFromDisk(keys, NeededKeys(SRC_OSM, keys, kMaxKeys), 6, true);
     ConfigSave();
     s_lastSaveTick = GetTickCount();
     SetTimer(s_wnd, TIMER_USER, kUserDelayMs, NULL);

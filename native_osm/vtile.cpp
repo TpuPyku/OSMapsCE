@@ -81,6 +81,8 @@ void VTileNoteMs(DWORD ms, int z)
         s_autoLevel = VTileDetailFor(s_msSum / kAutoTiles);
 }
 
+static int s_drawLevel;   // the level of the tile being drawn (under s_cs): the detail, a draft's fast
+
 int VTileDetail()
 {
     return s_detail >= 0 ? s_detail : s_autoLevel;
@@ -94,9 +96,9 @@ static const unsigned char kMinZoom[3][K_COUNT] = {
     {   99,   99,   99,  0,    99,    0,   0,   99,  99,  15,   0,  0,   0,    0,    0,    99,   99,  99 },
 };
 
-static int MinZoom(int kind)
+static int MinZoom(int kind, int level)
 {
-    return kMinZoom[VTileDetail()][kind];
+    return kMinZoom[level][kind];
 }
 
 struct Feat {
@@ -899,7 +901,7 @@ static void AddRing(int& ne, const VTile& t, const Xf& xf, const Feat& f, int pi
 static void FillAreas(const VTile& t, const Xf& xf, int z, const Style* pal, unsigned short* bits)
 {
     for (int k = 0; k < kFirstLine; k++) {
-        if (z < MinZoom(k))
+        if (z < MinZoom(k, s_drawLevel))
             continue;
         unsigned short c = RGB565(pal[k].r, pal[k].g, pal[k].b);
         for (int fi = NextShown(t, xf, k, 0, 0); fi < t.nf; fi = NextShown(t, xf, k, 0, fi + 1)) {
@@ -1011,7 +1013,7 @@ static COLORREF LineColor(const Style& s, const unsigned char* bg, bool casing, 
 
 static bool Cased(const Style& s, int level)   // the cased kinds and every bridge; none under the ground (full only)
 {
-    return !VTileDetail() && (level > 0 || (s.cased && level == 0));
+    return !s_drawLevel && (level > 0 || (s.cased && level == 0));
 }
 
 // The lines of a level, kind by kind: the casings (2 px wider: Cased), or the lines themselves
@@ -1020,7 +1022,7 @@ static void StrokeLines(HDC dc, const VTile& t, const Xf& xf, int z, const Style
 {
     for (int k = kFirstLine; k < K_PLACE; k++) {
         const Style& sty = pal[k];
-        if ((casing && !Cased(sty, level)) || z < MinZoom(k))
+        if ((casing && !Cased(sty, level)) || z < MinZoom(k, s_drawLevel))
             continue;
         int w = LineWidth(sty.width, z) + (casing ? 2 : 0);
         StrokeKind(dc, t, xf, k, level, w, LineColor(sty, bg, casing, level), casing && level > 0 ? w / 3 : 0);
@@ -1032,7 +1034,7 @@ static void StrokeLines(HDC dc, const VTile& t, const Xf& xf, int z, const Style
 static void StrokeShadows(HDC dc, const VTile& t, const Xf& xf, int z, const Style* pal, const unsigned char* c)
 {
     for (int k = kFirstLine; k < K_PLACE; k++) {
-        if (z < MinZoom(k))
+        if (z < MinZoom(k, s_drawLevel))
             continue;
         int w = LineWidth(pal[k].width, z), off = (w * 3 + 2) / 4;
         Xf sh = xf;
@@ -1056,7 +1058,7 @@ static void Draw(const VTile& t, const Xf& xf, int z, bool night, HDC dc, unsign
     GdiFlush();   // the desktop's GDI may batch: our pixels before its lines (CE draws at once)
 #endif
     for (int level = -1; level <= 1; level++) {
-        if (level > 0 && !VTileDetail())
+        if (level > 0 && !s_drawLevel)
             StrokeShadows(dc, t, xf, z, pal, kShadow[night ? 1 : 0]);
         StrokeLines(dc, t, xf, z, pal, bc, level, true);
         StrokeLines(dc, t, xf, z, pal, bc, level, false);
@@ -1084,10 +1086,14 @@ bool VTileRender(const MapRequest& r, const unsigned char* data, int len, Image*
     return VTileRenderFrom(r, VTileData(r), data, len, out);
 }
 
-bool VTileRenderFrom(const MapRequest& r, const MapRequest& key, const unsigned char* data, int len, Image* out)
+// draft: in the fast style whatever the detail (the user 2026-10-30, as Shturmann: at once, the chosen one when idle),
+// not timed for auto
+bool VTileRenderFrom(const MapRequest& r, const MapRequest& key, const unsigned char* data, int len, Image* out,
+                     bool draft)
 {
     DWORD t0 = GetTickCount();
     EnterCriticalSection(&s_cs);
+    s_drawLevel = draft ? 2 : VTileDetail();
     bool ok = false;
     VTile* t = Parsed(key, data, len);
     unsigned short* bits = t ? ImageCreate(TILE, TILE, out) : NULL;
@@ -1104,17 +1110,18 @@ bool VTileRenderFrom(const MapRequest& r, const MapRequest& key, const unsigned 
         ok = true;
     }
     LeaveCriticalSection(&s_cs);
-    if (ok) {
+    if (ok && !draft)
         VTileNoteMs(GetTickCount() - t0, r.z);
-        Log("vtile: %d/%d/%d from %d/%d/%d: %lu ms", r.z, r.x, r.y, key.z - VEC_ZBASE, key.x, key.y, GetTickCount() - t0);
-    }
+    if (ok)
+        Log("vtile: %d/%d/%d from %d/%d/%d%s: %lu ms", r.z, r.x, r.y, key.z - VEC_ZBASE, key.x, key.y,
+            draft ? " (draft)" : "", GetTickCount() - t0);
     return ok;
 }
 
 // A data tile drawn from: parsed already (nothing read), else from its pack, else (cached true) from the cache's file
-static bool LocalFrom(const MapRequest& r, const MapRequest& key, bool cached, Image* out)
+static bool LocalFrom(const MapRequest& r, const MapRequest& key, bool cached, Image* out, bool draft)
 {
-    if (VTileRenderFrom(r, key, NULL, 0, out))
+    if (VTileRenderFrom(r, key, NULL, 0, out, draft))
         return true;
     wchar_t file[MAX_PATH];
     unsigned char* data = NULL;
@@ -1126,17 +1133,17 @@ static bool LocalFrom(const MapRequest& r, const MapRequest& key, bool cached, I
     }
     // not a vector tile (its first field a layer's: 0x1A) - as none (the user's card 2026-10-29: tiles written 512
     // bytes off, a layer's middle first - roads gone, pieces of other places)
-    bool ok = (!len || data[0] == 0x1A) && VTileRenderFrom(r, key, data, len, out);
+    bool ok = (!len || data[0] == 0x1A) && VTileRenderFrom(r, key, data, len, out, draft);
     free(data);
     return ok;
 }
 
 // A shown tile from the data at hand (the user 2026-10-29: no waiting for the download thread's queue where the data
 // is here): the region's pack's z15 tile (the house numbers), else the z14 one - the pack's, the cache's file
-bool VTileLocal(const MapRequest& r, Image* out)
+bool VTileLocal(const MapRequest& r, Image* out, bool draft)
 {
     MapRequest p = VTileDataAt(r, VEC_PACKZ), d = VTileData(r);
-    return (!SameKey(p, d) && LocalFrom(r, p, false, out)) || LocalFrom(r, d, true, out);
+    return (!SameKey(p, d) && LocalFrom(r, p, false, out, draft)) || LocalFrom(r, d, true, out, draft);
 }
 
 void VTileInit()   // before the download thread starts
@@ -1536,7 +1543,7 @@ void VLabelsDraw(HDC dc, const RECT& mr, double cx, double cy, double vx, double
     SetBkMode(dc, TRANSPARENT);
     EnterCriticalSection(&s_cs);
     for (int i = 0; i < (int)(sizeof(kPasses) / sizeof(kPasses[0])); i++)
-        if (z >= kPasses[i].minZoom && z >= MinZoom(kPasses[i].kind)) {   // (fast: no signs, no house numbers)
+        if (z >= kPasses[i].minZoom && z >= MinZoom(kPasses[i].kind, VTileDetail())) {   // (fast: no signs, no house numbers)
             if (z >= VEC_PACKZ)
                 DrawPass(v, kPasses[i], VEC_PACKZ);   // a pack's z15 tiles first (Deeper: their quarters theirs)
             DrawPass(v, kPasses[i], zd);
