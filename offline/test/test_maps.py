@@ -64,7 +64,7 @@ class Maps(unittest.TestCase):
         up = []
         disk = type('D', (), {'upload': lambda self, path, file: up.append((path, read(file)))})()
         got = release_regions.build_full(entry, folder, self.dist, self.planet(), '20261030', disk)
-        self.assertEqual(up[0][0], 'disk:/OSMapsCE/maps/tiny.zip')
+        self.assertEqual(up[0][0], 'app:/maps/tiny.zip')
         with zipfile.ZipFile(io.BytesIO(up[0][1])) as z:
             self.assertEqual(sorted(z.namelist()), ['region.txt', 'route.grf', 'search.idx', 'tiles.vtp'])
             self.assertEqual({i.compress_type for i in z.infolist()}, {zipfile.ZIP_STORED})
@@ -87,10 +87,10 @@ class Maps(unittest.TestCase):
         disk = type('D', (), {'upload': lambda self, path, file: up.append((path, read(file))),
                               'publish': lambda self, path: up.append(('publish', path)) or 'https://disk.example/d/x'})()
         got = release_regions.publish_disk(self.dist, disk, self.planet(), '20261030')
-        self.assertEqual(up[0][0], 'disk:/OSMapsCE/maps/overview.zip')
+        self.assertEqual(up[0][0], 'app:/maps/overview.zip')
         with zipfile.ZipFile(io.BytesIO(up[0][1])) as z:
             self.assertEqual(sorted(z.namelist()), ['overview.vtp', 'region.txt'])
-        self.assertEqual(up[1], ('publish', 'disk:/OSMapsCE/maps'))
+        self.assertEqual(up[1], ('publish', 'app:/maps'))
         self.assertEqual(got['disk'], 'https://disk.example/d/x')
         self.assertEqual(got['overview'], {'zip': 'overview.zip', 'size': len(up[0][1]), 'tiles': '20261030'})
         self.assertEqual(json.loads(read(os.path.join(self.dist, 'catalog.json'))), got)
@@ -98,6 +98,19 @@ class Maps(unittest.TestCase):
         os.makedirs(os.path.join(self.tmp, 'd2'))
         again = release_regions.catalog(os.path.join(self.tmp, 'd2'), got, {'tiny'})
         self.assertEqual((again['disk'], again['overview']), (got['disk'], got['overview']))
+
+    def test_ready_links(self):
+        """The ready archives (the user 2026-10-30: the app gets their links too): the chosen ones whole on the disk -
+        their download links (the overview too); none chosen - the disk's folder; no disk in the catalog - none."""
+        cat = {'disk': 'https://disk.yandex.ru/d/x', 'overview': {'zip': 'overview.zip'},
+               'regions': [{'name': 'a', 'full': {'zip': 'a.zip'}}, {'name': 'b'}]}
+        asked = []
+        href = lambda pub, name: asked.append(pub) or 'https://dl/' + name   # noqa: E731
+        self.assertEqual(maps_app.ready_links(cat, {'a', 'b', maps_app.OVERVIEW}, href),
+                         ['https://dl/a.zip', 'https://dl/overview.zip'])      # (b: not whole there)
+        self.assertEqual(set(asked), {'https://disk.yandex.ru/d/x'})
+        self.assertEqual(maps_app.ready_links(cat, set(), href), ['https://disk.yandex.ru/d/x'])
+        self.assertEqual(maps_app.ready_links({'regions': []}, {'a'}, href), [])
 
     def test_catalog_of_the_regions(self):
         os.makedirs(self.dist)
@@ -343,6 +356,16 @@ class Maps(unittest.TestCase):
                 app.remove_chosen()
             self.assertEqual(len(asked), 1)                                          # not asked
             self.assertIn('Нечего удалять', app.status.get())
+            opened = []
+            with unittest.mock.patch.object(maps_app.webbrowser, 'open', opened.append):
+                app.open_ready()                                                       # no disk in the catalog
+                self.assertEqual(opened, [])
+                self.assertIn('Готовых архивов нет', app.status.get())
+                app.cat = dict(cat, disk='https://disk.yandex.ru/d/x')
+                app.chosen = set()
+                app.open_ready()
+                self.assertEqual(opened, ['https://disk.yandex.ru/d/x'])               # the folder
+                self.assertIn('в браузере', app.status.get())
         finally:
             app.root.destroy()
 

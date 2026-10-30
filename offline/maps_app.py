@@ -18,10 +18,12 @@ import tempfile
 import threading
 import time
 import urllib.request
+import webbrowser
 import zipfile
 
 import pmextract
 import release_regions
+import yadisk
 
 MAXZOOM = 15   # Protomaps' deepest: the house numbers, the car parks
 STATE = {'new': 'нет', 'update': 'есть новее', 'ok': 'свежая'}
@@ -229,6 +231,19 @@ def remove_regions(drive, names):
     return gone
 
 
+def ready_links(cat, chosen, href=yadisk.public_href):
+    """The ready archives on the catalog's Yandex Disk (the user 2026-10-30: the app for one's own build; the ready
+    ones by their links): the chosen regions whole there (and the overview) - their download links; none chosen - the
+    disk's folder; no disk - none."""
+    disk = cat.get('disk')
+    if not disk:
+        return []
+    zips = [r['full']['zip'] for r in cat['regions'] if r['name'] in chosen and 'full' in r]
+    if OVERVIEW in chosen and 'overview' in cat:
+        zips.append(cat['overview']['zip'])
+    return [href(disk, z) for z in zips] if chosen else [disk]
+
+
 def ask(title, text):   # a yes / no question (tests: replaced)
     import tkinter.messagebox
     return tkinter.messagebox.askyesno(title, text)
@@ -411,6 +426,7 @@ class App:
         self.go = ttk.Button(bottom, text=GO, style='Go.TButton', command=self.write_chosen)
         self.go.pack(side='left')
         ttk.Button(bottom, text='Удалить с флешки', command=self.remove_chosen).pack(side='right')
+        ttk.Button(bottom, text='Готовые архивы', command=self.open_ready).pack(side='right', padx=6)
 
     def work(self, job, *args):   # (in the thread: an error shown, not lost; then the button back)
         try:
@@ -585,6 +601,18 @@ class App:
         titles = {r['name']: r.get('title', r['name']) for r in self.cat['regions']}
         titles[TRUNK], titles[OVERVIEW] = TRUNK_TITLE, OVERVIEW_TITLE
         return there, [titles.get(n, n) for n in there]
+
+    def open_ready(self):
+        """The ready archives in the browser: the chosen ones' downloads, else the disk's folder."""
+        try:
+            links = ready_links(self.cat, self.chosen)
+        except Exception as e:   # noqa: BLE001 - the user sees it
+            self.status.set('Ссылки не получены: %s' % e)
+            return
+        for url in links:
+            webbrowser.open(url)
+        self.status.set('Открыто в браузере: %d (готовые области — граф, поиск и плитки; распаковать в OSMapsData '
+                        'на флешке)' % len(links) if links else 'Готовых архивов нет: Диск ещё не подключён')
 
     def remove_chosen(self):
         """The chosen regions that are on the drive off it, asked first; not while writing."""

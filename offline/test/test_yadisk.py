@@ -31,21 +31,21 @@ class FakeDisk:
 
 class YaDisk(unittest.TestCase):
     def test_upload(self):
-        """A file up: the upload's link asked (overwrite), the file PUT to it; the folders on the way made first
-        (one there already: 409, fine)."""
+        """A file up (the app's folder - the token's only access, the user 2026-10-30): the upload's link asked
+        (overwrite), the file PUT to it; the folders on the way made first (one there already: 409, fine)."""
         fake = FakeDisk({('PUT', '/v1/disk/resources'): (409, {'error': 'DiskPathPointsToExistentDirectoryError'}),
                          ('GET', '/v1/disk/resources/upload'): (200, {'href': 'https://up.example/put/1', 'method': 'PUT'}),
                          ('PUT', '/put/1'): (201, b'')})
         with tempfile.NamedTemporaryFile(delete=False) as f:
             f.write(b'ZIP' * 100)
         try:
-            yadisk.Disk('tok', fake).upload('disk:/OSMapsCE/maps/a.zip', f.name)
+            yadisk.Disk('tok', fake).upload('app:/maps/a.zip', f.name)
         finally:
             os.remove(f.name)
         made = [c[2]['path'] for c in fake.calls if c[0] == 'PUT' and c[1].endswith('/resources')]
-        self.assertEqual(made, ['disk:/OSMapsCE', 'disk:/OSMapsCE/maps'])
+        self.assertEqual(made, ['app:/maps'])
         ask = [c for c in fake.calls if c[1].endswith('/resources/upload')][0]
-        self.assertEqual(ask[2], {'path': 'disk:/OSMapsCE/maps/a.zip', 'overwrite': 'true'})
+        self.assertEqual(ask[2], {'path': 'app:/maps/a.zip', 'overwrite': 'true'})
         self.assertEqual(ask[3]['Authorization'], 'OAuth tok')
         put = fake.calls[-1]
         self.assertEqual((put[0], put[1], put[4]), ('PUT', 'up.example/put/1', b'ZIP' * 100))
@@ -68,8 +68,8 @@ class YaDisk(unittest.TestCase):
         """The folder public: published, its public link read back."""
         fake = FakeDisk({('PUT', '/v1/disk/resources/publish'): (200, {'href': 'x'}),
                          ('GET', '/v1/disk/resources'): (200, {'public_url': 'https://disk.yandex.ru/d/abc'})})
-        self.assertEqual(yadisk.Disk('tok', fake).publish('disk:/OSMapsCE/maps'), 'https://disk.yandex.ru/d/abc')
-        self.assertEqual(fake.calls[-1][2], {'path': 'disk:/OSMapsCE/maps', 'fields': 'public_url'})
+        self.assertEqual(yadisk.Disk('tok', fake).publish('app:/maps'), 'https://disk.yandex.ru/d/abc')
+        self.assertEqual(fake.calls[-1][2], {'path': 'app:/maps', 'fields': 'public_url'})
 
     def test_public_link(self):
         """A file of a public folder: its download link, asked without a token (as OSMapsCE asks it)."""

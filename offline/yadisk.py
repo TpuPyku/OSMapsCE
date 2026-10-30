@@ -2,11 +2,12 @@
 the tiles - on the user's Yandex Disk: GitHub's downloads are slow): a file up, a folder public, a public file's
 download link.
 
-    Disk(token).upload('disk:/OSMapsCE/maps/a.zip', 'a.zip')   the folders on the way made
-    Disk(token).publish('disk:/OSMapsCE/maps')                 -> its public link
-    public_href(public_url, 'a.zip')                           -> the file's download link (no token)
+    Disk(token).upload('app:/maps/a.zip', 'a.zip')   the folders on the way made
+    Disk(token).publish('app:/maps')                 -> its public link
+    public_href(public_url, 'a.zip')                 -> the file's download link (no token)
 
-The token: an OAuth token of the disk's owner with cloud_api:disk.write (the workflow's secret YANDEX_DISK_TOKEN).
+The token: an OAuth token of the disk's owner with cloud_api:disk.app_folder - its app's folder only, app:/ (the
+user 2026-10-30: no access to the rest of the disk); the workflow's secret YANDEX_DISK_TOKEN.
 """
 import json
 import urllib.error
@@ -52,7 +53,7 @@ class Disk:
     def upload(self, path, file):
         """The file into path (overwritten), the folders on the way made."""
         parts = path.split('/')
-        for i in range(2, len(parts)):   # ('disk:', 'OSMapsCE', 'maps', 'a.zip': disk:/OSMapsCE, disk:/OSMapsCE/maps)
+        for i in range(2, len(parts)):   # ('app:', 'maps', 'a.zip': app:/maps)
             self.folder('/'.join(parts[:i]))
         href = call(self.send, 'GET', 'resources/upload', {'path': path, 'overwrite': 'true'}, self.auth)['href']
         with open(file, 'rb') as f:
