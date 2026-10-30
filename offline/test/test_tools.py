@@ -425,6 +425,32 @@ class Tools(unittest.TestCase):
         self.assertEqual(len(pmextract.merged([(1000, m - 5), (995 + m, 6)])), 2)
         self.assertEqual(pmextract.merged([(100, 10), (100, 10)]), [[100, 110, [(100, 10)]]])
 
+    def test_fetch_stopped_drops_the_rest(self):
+        """The progress raising (maps_app's "Отменить запись", 2026-10-30): the fetches not begun dropped, not waited
+        for - the exception out at once."""
+        from concurrent.futures import Future
+
+        class Pool:   # the first fetch done, the others queued
+            def __init__(self):
+                self.jobs = []
+
+            def submit(self, fn, *a):
+                f = Future()
+                if not self.jobs:
+                    f.set_result(fn(*a))
+                self.jobs.append(f)
+                return f
+        archive = type('A', (), {'get_bytes': lambda self, b, n: b'x' * n})()
+        far = pmextract.kGap + pmextract.kMaxGroup
+        located = {i: (i * far, 10) for i in range(3)}
+
+        def progress(part, text):
+            raise KeyboardInterrupt
+        pool = Pool()
+        with self.assertRaises(KeyboardInterrupt):
+            pmextract.fetch(archive, located, pool, progress)
+        self.assertEqual([f.cancelled() for f in pool.jobs], [False, True, True])
+
     def test_http_bytes_reconnects(self):
         """A connection the server closed (or that broke): opened again, the range asked again."""
         import http.server
