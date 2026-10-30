@@ -285,8 +285,16 @@ def matching(cat, text):
     return sorted(hit, key=lambda r: r.get('title', r['name']))
 
 
-def outdated(cat, have):
-    return {n for n, s in states(cat, have).items() if s == 'update'}
+def trunk_state(cat, drive):
+    """The trunk roads on the drive against the catalog's build: 'new' none, 'update' another, 'ok'."""
+    there, want = trunk_date(drive), cat.get('trunk', {}).get('date')
+    return 'new' if there is None else 'update' if want and there != want else 'ok'
+
+
+def outdated(cat, have, drive=None):
+    """The regions with a newer build in the catalog (and the trunk roads, on the drive)."""
+    old = {n for n, s in states(cat, have).items() if s == 'update'}
+    return old | {TRUNK} if drive and trunk_state(cat, drive) == 'update' else old
 
 
 def removable_drives(mask=None, kind=None):
@@ -480,12 +488,14 @@ class App:
 
     def special_rows(self, find):
         """The trunk roads (the user 2026-10-29: "where are they?") and the overview first, if the search lets them."""
-        for name, title, size, date in ((TRUNK, TRUNK_TITLE, '≈10 МБ', trunk_date),
-                                        (OVERVIEW, OVERVIEW_TITLE, '≈60 МБ', overview_date)):
+        drive = self.drive.get()
+        for name, title, size, date, state in (
+                (TRUNK, TRUNK_TITLE, '≈10 МБ', trunk_date(drive), trunk_state(self.cat, drive)),
+                (OVERVIEW, OVERVIEW_TITLE, '≈60 МБ', overview_date(drive), 'ok' if overview_date(drive) else 'new')):
             if find in title.casefold():
-                there = date(self.drive.get())
-                self.tree.insert('', 'end', iid=name, text=title, tags=('chosen',) if name in self.chosen else (),
-                                 values=(size, there or '—', 'есть' if there else 'нет'))
+                tags = ('chosen',) if name in self.chosen else ('update',) if state == 'update' else ()
+                self.tree.insert('', 'end', iid=name, text=title, tags=tags,
+                                 values=(size, date or '—', {'new': 'нет', 'update': 'есть новее', 'ok': 'есть'}[state]))
 
     def click(self, event):   # a click picks a region or lets it go (no Ctrl)
         name = self.tree.identify_row(event.y)
@@ -559,7 +569,7 @@ class App:
         self.refresh()
 
     def pick_old(self):
-        self.chosen = outdated(self.cat, self.have())
+        self.chosen = outdated(self.cat, self.have(), self.drive.get())
         self.refresh()
 
     def free(self):
@@ -572,7 +582,7 @@ class App:
     def job(self, drive):
         """What to write: the chosen regions, the trunk roads and the overview (chosen, or none there: with any region)."""
         entries = [r for r in self.cat['regions'] if r['name'] in self.chosen]
-        trunk = TRUNK in self.chosen or bool(entries) and trunk_date(drive) is None
+        trunk = TRUNK in self.chosen or bool(entries) and trunk_state(self.cat, drive) != 'ok'   # (none, older)
         overview = OVERVIEW in self.chosen or bool(entries) and overview_date(drive) is None
         return entries, trunk, overview
 

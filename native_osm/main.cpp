@@ -2526,9 +2526,10 @@ static void DrawMap(HDC dc)
             RingBlit(dc, mr, vx, vy);
         }
     }
-    if (!drawn)
+    if (!drawn)   // (the vector map: no network and nothing at hand here - the user 2026-10-30: just this)
         Text(dc, s_fontSmall, g_cfg.night ? RGB(160, 160, 160) : RGB(90, 90, 90), mr.left, mr.top, mr.right,
-             mr.bottom, DT_CENTER, s_lastErr ? NetErrorText(s_lastErr) : L"Загрузка карты...");
+             mr.bottom, DT_CENTER, !s_lastErr ? L"Загрузка карты..." : g_cfg.vector ? L"Нет карты этой области"
+                                                                                 : NetErrorText(s_lastErr));
 
     if (g_cfg.vector && drawn) {   // the names over the turned frame, upright (vtile.cpp); not under the car
         RECT avoid[1];   // only the car: the controls are dark enough over the names (the user 2026-10-27)

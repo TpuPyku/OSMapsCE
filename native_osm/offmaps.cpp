@@ -372,6 +372,7 @@ static volatile LONG    s_busyRegion = -1;   // the region GetThread downloads
 static wchar_t          s_text[128];   // what goes on / the last result
 static int              s_totalKb;     // the file being downloaded
 static char             s_disk[256];   // the catalog's Yandex Disk folder (public link): the regions whole; "" none
+static char             s_trunkDate[16];   // the catalog's trunk roads' build ("" not told)
 static int              s_ovKb;        // ... its overview's size
 
 static void Lock()
@@ -417,6 +418,9 @@ static DWORD WINAPI ListThread(LPVOID)
     if (n)
         Copy(disk, sizeof(disk), JKey((const char*)body, "disk"));
     int ovKb = n ? (int)(JNum(JKey(JKey((const char*)body, "overview"), "size"), 0) / 1024) : 0;
+    char trunkDate[16] = "";
+    if (n)
+        Copy(trunkDate, sizeof(trunkDate), JKey(JKey((const char*)body, "trunk"), "date"));
     free(body);
     qsort(got, n, sizeof(MapRegion), ByTitle);
     MapsHave(got, n);
@@ -425,6 +429,7 @@ static DWORD WINAPI ListThread(LPVOID)
     s_nReg = n;
     strcpy(s_disk, disk);
     s_ovKb = ovKb;
+    strcpy(s_trunkDate, trunkDate);
     _snwprintf(s_text, 128, n ? L"Областей: %d" : L"Каталог не получен (нет связи с GitHub?)", n);
     LeaveCriticalSection(&s_cs);
     Log("maps: catalog %d regions (HTTP %d, error %d)", n, status, err);
@@ -432,10 +437,17 @@ static DWORD WINAPI ListThread(LPVOID)
     return 0;
 }
 
-static bool TrunkThere()
+// The trunk roads on a card, of the catalog's build (the user 2026-10-30: an old graph took the toll road; none told:
+// as they are)
+static bool TrunkCurrent()
 {
-    wchar_t dir[MAX_PATH];
-    return OffRegion(L"trunk.grf", Exists, NULL, dir);
+    wchar_t dir[MAX_PATH], path[MAX_PATH];
+    char date[16] = "";
+    if (!OffRegion(L"trunk.grf", Exists, NULL, dir))
+        return false;
+    _snwprintf(path, MAX_PATH, L"%s\\region.txt", dir);
+    path[MAX_PATH - 1] = 0;
+    return !s_trunkDate[0] || (RegionDate(path, date, sizeof(date)) && !strcmp(date, s_trunkDate));
 }
 
 // A public file of the catalog's Yandex Disk folder: its download link, asked of the disk's API (no token); false -
@@ -486,7 +498,7 @@ static void GetExtras(const wchar_t* data)
         if (DiskHref("overview.zip", url, sizeof(url)))
             MapsInstall(url, data, "overview", MAPS_OVERVIEW);
     }
-    if (!TrunkThere() && !s_cancel) {
+    if (!TrunkCurrent() && !s_cancel) {
         Say(L"Магистрали России и СНГ…", NULL);
         _snprintf(url, sizeof(url), "%strunk.zip", kAssets);
         s_totalKb = 10 * 1024;

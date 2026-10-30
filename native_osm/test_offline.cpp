@@ -234,7 +234,7 @@ static int FakeGet(const char* host, bool, const char* path, unsigned char** bod
         static const char* kCat = "{\"regions\":[{\"name\":\"tiny\",\"title\":\"T\",\"date\":\"2026-10-20\",\"zip\":"
                                   "\"tiny.zip\",\"size\":10},{\"name\":\"zz\",\"title\":\"Z\",\"date\":\"2026-10-29\","
                                   "\"zip\":\"zz.zip\",\"size\":2048}]}";
-        static const char* kDiskCat = "{\"disk\":\"https://disk.example/d/x y\",\"overview\":{\"zip\":\"overview.zip\","
+        static const char* kDiskCat = "{\"disk\":\"https://disk.example/d/x y\",\"trunk\":{\"date\":\"2026-10-30\"},\"overview\":{\"zip\":\"overview.zip\","
                                       "\"size\":2048},\"regions\":[{\"name\":\"yy\",\"title\":\"Y\",\"date\":\"2026-10-29\","
                                       "\"zip\":\"yy.zip\",\"size\":2048},{\"name\":\"zz\",\"title\":\"Z\",\"date\":\"2026-10-30\","
                                       "\"zip\":\"zz.zip\",\"size\":2048,\"full\":{\"zip\":\"zz.zip\",\"size\":300000}}]}";
@@ -339,9 +339,20 @@ static void DiskChecks()
     char* ovb = FileBytes(L"OSMapsData\\overview\\overview.vtp", &n);
     Check(n == 800 && !memcmp(ovb, "OVERVIEW", 8), "disk: the overview after it", NULL);
     free(ovb);
-    Check(s_trunkAsks == 0, "disk: the trunk roads there - not downloaded", NULL);
+    Check(s_trunkAsks > 0, "disk: the trunk roads of another build than the catalog's - downloaded again", NULL);
+    int trunkAsks = s_trunkAsks;
+    wchar_t tr[MAX_PATH], tdate[MAX_PATH];
+    PathInDir(tr, L"OSMapsData\\trunk");
+    Remove(tr);   // (its attempt here: the made-up server's zip has no graph)
+    PathInDir(tdate, L"..\\OSMapsData\\trunk\\region.txt");
+    HANDLE h = CreateFile(tdate, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
+    DWORD put;
+    WriteFile(h, "name=trunk\ndate=2026-10-30\n", 27, &put, NULL);
+    CloseHandle(h);
     Remove(zz);
     Check(MapsGetRegion(1) && WaitMaps() && s_ovAsks == 1, "disk: the overview there - not asked again", NULL);
+    Check(s_trunkAsks == trunkAsks, "disk: the trunk roads of the catalog's build there - not downloaded", NULL);
+    DeleteFile(tdate);
     PathInDir(yy, L"OSMapsData\\yy");
     Remove(yy);
     Check(MapsGetRegion(0) && WaitMaps() && FileIs(L"OSMapsData\\yy\\search.idx", "IDXIDXIDXIDXIDXIDXIDXIDXIDXIDX", 30),

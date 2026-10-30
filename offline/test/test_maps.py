@@ -112,6 +112,39 @@ class Maps(unittest.TestCase):
         self.assertEqual(maps_app.ready_links(cat, set(), href), ['https://disk.yandex.ru/d/x'])
         self.assertEqual(maps_app.ready_links({'regions': []}, {'a'}, href), [])
 
+    def test_release_trunk_date(self):
+        """The trunk roads' build in the catalog (the user 2026-10-30: an old graph on the card took the toll road -
+        nothing told it was old): the trunk job writes it; a catalog made after keeps it."""
+        os.makedirs(self.dist)
+        zpath = os.path.join(self.tmp, 'trunk.zip')
+        with zipfile.ZipFile(zpath, 'w') as z:
+            z.writestr('trunk.grf', b'OSMG')
+            z.writestr('region.txt', 'name=trunk\ndate=2026-10-30\n')
+        cpath = os.path.join(self.dist, 'catalog.json')
+        with open(cpath, 'w', encoding='utf-8') as f:
+            json.dump({'regions': []}, f)
+        got = release_regions.trunk_into(cpath, zpath)
+        self.assertEqual(got['trunk'], {'zip': 'trunk.zip', 'size': os.path.getsize(zpath), 'date': '2026-10-30'})
+        self.assertEqual(json.loads(read(cpath)), got)
+        os.makedirs(os.path.join(self.tmp, 'd2'))
+        self.assertEqual(release_regions.catalog(os.path.join(self.tmp, 'd2'), got, ())['trunk'], got['trunk'])
+
+    def test_trunk_state(self):
+        """The trunk roads on the drive against the catalog's: none, older (written again with any region, among
+        "Устаревшие"), the same."""
+        drive = os.path.join(self.tmp, 'E')
+        cat = {'regions': [], 'trunk': {'date': '2026-10-30'}}
+        self.assertEqual(maps_app.trunk_state(cat, drive), 'new')
+        os.makedirs(os.path.join(drive, 'OSMapsData', 'trunk'))
+        with open(os.path.join(drive, 'OSMapsData', 'trunk', 'region.txt'), 'w') as f:
+            f.write('name=trunk\ndate=2026-10-29\n')
+        self.assertEqual(maps_app.trunk_state(cat, drive), 'update')
+        self.assertEqual(maps_app.trunk_state({'regions': []}, drive), 'ok')        # (no date in the catalog: as it is)
+        self.assertIn(maps_app.TRUNK, maps_app.outdated(cat, {}, drive))
+        cat['trunk']['date'] = '2026-10-29'
+        self.assertEqual(maps_app.trunk_state(cat, drive), 'ok')
+        self.assertNotIn(maps_app.TRUNK, maps_app.outdated(cat, {}, drive))
+
     def test_catalog_of_the_regions(self):
         os.makedirs(self.dist)
         for name in ('b_oblast', 'a_krai'):
@@ -294,6 +327,7 @@ class Maps(unittest.TestCase):
             self.assertEqual(app.tree.get_children(), ('trunk', 'overview', 'a_oblast', 'b_oblast'))   # the trunk
                                                                                    # roads, the overview first
             self.assertEqual(app.tree.item('b_oblast', 'tags'), ('update',))       # newer in the catalog
+            self.assertEqual(app.tree.item('trunk', 'values')[2], 'нет')
             self.assertTrue(app.tree['yscrollcommand'])                             # the list scrolls (2026-10-29)
             self.assertEqual(app.scroll.get(), (0.0, 1.0))
             y = app.tree.bbox('a_oblast')[1] + 5
