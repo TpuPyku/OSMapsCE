@@ -372,6 +372,35 @@ static void MapsChecks()
     Check(!ZipExtract(zip, dir, kMissing, 1), "maps: a file the zip has not - false", NULL);
 }
 
+static bool Writable(const wchar_t* name)   // the data folder's file can be opened for writing (nothing holds it)
+{
+    wchar_t path[MAX_PATH];
+    PathInDir(path, name);
+    HANDLE f = CreateFile(path, GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
+    if (f == INVALID_HANDLE_VALUE)
+        return false;
+    CloseHandle(f);
+    return true;
+}
+
+// A region downloaded again while its graph and index are in use (the user 2026-10-30: Moscow's oblast "failed" -
+// its route.grf held by the route just made, the zip not unpacked over it): OfflineDrop lets them go
+static void DropChecks()
+{
+    char* r = Route("50.000,53.000;50.006,53.000");
+    char* a = Ask("/api/?q=%D0%A2%D0%B5%D1%81%D1%82%D0%BE%D0%B2%D1%81%D0%BA&limit=7&lat=53.0&lon=50.0");   // Тестовск
+    Check(r && a && !Writable(L"..\\OSMapsData\\tiny\\route.grf") && !Writable(L"..\\OSMapsData\\tiny\\search.idx"),
+          "drop: the graph and the index held while loaded", r);
+    free(r);
+    free(a);
+    OfflineDrop();
+    Check(Writable(L"..\\OSMapsData\\tiny\\route.grf") && Writable(L"..\\OSMapsData\\tiny\\search.idx"),
+          "drop: free to be written over", NULL);
+    r = Route("50.000,53.000;50.006,53.000");
+    Check(r != NULL, "drop: loaded again when asked", r);
+    free(r);
+}
+
 int main()
 {
     GetModuleFileName(NULL, g_dir, MAX_PATH);
@@ -384,6 +413,7 @@ int main()
     JsonChecks();
     MapsChecks();
     DownloadChecks();
+    DropChecks();
 
     // along the main street, west to east: ~400 m, no turn on the way
     char* b = Route("50.000,53.000;50.006,53.000");

@@ -67,6 +67,21 @@ void* OffPart(OffFile* f, DWORD off, DWORD bytes)
     return p;
 }
 
+// The routes, the search and the download writing a region over their files take turns (the user 2026-10-30: the
+// Moscow oblast's zip not unpacked - its route.grf held by the route just made)
+static struct UseLock {
+    CRITICAL_SECTION cs;
+    UseLock() { InitializeCriticalSection(&cs); }
+} s_use;
+
+void OffUse(bool on)
+{
+    if (on)
+        EnterCriticalSection(&s_use.cs);
+    else
+        LeaveCriticalSection(&s_use.cs);
+}
+
 void OffClose(OffFile* f)
 {
     for (int i = 0; i < f->nparts; i++)

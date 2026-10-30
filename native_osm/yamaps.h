@@ -194,8 +194,10 @@ bool  OfflineTrunkRoute(const char* osrmPath, char** body, int* len);   // over 
 bool  OfflineHasTrunk();   // the trunk roads' graph is on a card
 bool  OfflineDir(const int* latLon, int n, wchar_t* dir);          // the region's folder holding the points
 bool  OfflineRoadAt(int lat, int lon, double maxM, char* name, int cap);   // the nearest road's name (1e-6 degrees)
+void  OfflineDrop();   // the graph and the search's index let go (a region written over them); loaded again when asked
 // offsearch.cpp - the search and the address of a point from a region's index (search.idx), answered as Photon's
 bool  OfflineSearch(const char* photonPath, char** body, int* len);   // false: no region / nothing - ask Photon
+void  OfflineSearchDrop();   // its index let go (OfflineDrop)
 // vpack.cpp - a region's vector tiles (tiles.vtp, offline/make_tiles.py): the data tile d (VEC_ZBASE + z), malloc'd
 bool  VPackTile(const MapRequest& d, unsigned char** data, int* len);   // false: no region's pack has it
 // offdata.cpp - the offline data's files (a header, parts kept in memory) and the JSON text of the answers
@@ -212,6 +214,8 @@ bool  OffOpen(OffFile* f, const wchar_t* path, void* head, DWORD bytes);   // th
 void* OffPart(OffFile* f, DWORD off, DWORD bytes);   // a part read into memory, freed by OffClose; NULL: no memory
 bool  OffRead(HANDLE f, DWORD off, void* to, DWORD bytes);
 void  OffClose(OffFile* f);                          // the parts freed, the file closed, all zero
+void  OffUse(bool on);   // the data in use (a route, a search) / written over (offmaps.cpp): one at a time
+struct OffUseScope { OffUseScope() { OffUse(true); } ~OffUseScope() { OffUse(false); } };
 // The region (a folder of OSMapsData on the SD card / USB disk / beside the program) whose file passes the test:
 // dir = its folder; false = none. holds: reads the file's header, says whether it serves the caller (ctx).
 typedef bool (*OffHolds)(const wchar_t* path, void* ctx);

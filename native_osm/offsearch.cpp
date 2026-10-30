@@ -654,8 +654,14 @@ static bool Forward(const char* path, bool here, int la, int lo, char** body, in
     return AnswerFound(body, len);
 }
 
+void OfflineSearchDrop()
+{
+    Unload();
+}
+
 bool OfflineSearch(const char* path, char** body, int* len)
 {
+    OffUseScope use;
     DWORD t0 = GetTickCount();
     bool rev = !strncmp(path, "/reverse", 8);
     double lat = Arg(path, rev ? "?lon=" : "&lat=", 0), lon = 0;

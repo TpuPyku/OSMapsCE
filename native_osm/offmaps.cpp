@@ -317,8 +317,12 @@ bool MapsInstall(const char* url, const wchar_t* data, const char* name, bool tr
     zip[MAX_PATH - 1] = part[MAX_PATH - 1] = dir[MAX_PATH - 1] = 0;
     InterlockedExchange((LONG*)&s_got, (LONG)SizeOf(part));
     DeleteFile(zip);
-    bool ok = MapsFetch(url, part, kChunk) && MoveFile(part, zip) &&
-              ZipExtract(zip, dir, trunk ? kTrunk : kRegion, trunk ? 2 : 3);
+    bool ok = MapsFetch(url, part, kChunk) && MoveFile(part, zip);
+    if (ok) {   // (a route, the search let go of the files written over - and wait meanwhile: CE, Windows refuse them)
+        OffUseScope use;
+        OfflineDrop();
+        ok = ZipExtract(zip, dir, trunk ? kTrunk : kRegion, trunk ? 2 : 3);
+    }
     if (ok)
         DeleteFile(zip);
     return ok;

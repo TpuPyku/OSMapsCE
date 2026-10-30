@@ -861,6 +861,7 @@ static void FreeWay(Way& w)
 // region, no road that near, or a road without a name.
 bool OfflineRoadAt(int lat, int lon, double maxM, char* name, int cap)
 {
+    OffUseScope use;
     int pt[2] = { lat, lon };
     if (!Region(pt, 1))
         return false;
@@ -1031,6 +1032,7 @@ static double KxFor(const Request& r)
 // holds the points, no road near, no way): then OSRM is asked.
 bool OfflineRoute(const char* path, char** body, int* len)
 {
+    OffUseScope use;
     Request r;
     if (!ParseRequest(path, &r))
         return false;
@@ -1273,6 +1275,13 @@ static bool JoinedRoute(const Request& r, char** body, int* len, DWORD t0)
 // roads of Russia and the CIS (OSMapsData\trunk\trunk.grf: motorway / trunk / primary, offline/make_graph.py TRUNK),
 // from the trunk road nearest the start to the one nearest the end (SnapTo: within 9 x 9 of its 0.2 degree cells),
 // joined to the start's and the end's regions' roads when they are on the card (JoinedRoute), else the trunk alone.
+void OfflineDrop()
+{
+    OffUseScope use;
+    Unload();
+    OfflineSearchDrop();
+}
+
 bool OfflineHasTrunk()   // the trunk roads' graph on a card (else no way between the regions without the internet)
 {
     wchar_t dir[MAX_PATH];
@@ -1281,6 +1290,7 @@ bool OfflineHasTrunk()   // the trunk roads' graph on a card (else no way betwee
 
 bool OfflineTrunkRoute(const char* path, char** body, int* len)
 {
+    OffUseScope use;
     Request r;
     wchar_t dir[MAX_PATH], file[MAX_PATH];
     if (!ParseRequest(path, &r) || !OffRegion(L"trunk.grf", AnyGraph, NULL, dir))
