@@ -207,17 +207,18 @@ static const int   kSetCacheCount = sizeof(kSetCacheMb) / sizeof(kSetCacheMb[0])
 // bottom strip; what does not fit - the GPS port's settings, the requests' counters - in a sheet over the bottom
 // (VestaHome's windows: full width, the main action right, in the accent), a tap beside it closes it.
 // Rows at kSetRow0 + i * kSetRowH (the maps' screen has the same rows).
-enum { S_MAP_PREV, S_MAP_NEXT, S_ROUTE, S_CACHE_PREV, S_CACHE_NEXT, S_LOG_PREV, S_LOG_NEXT, S_GPS,
+enum { S_MAP, S_ROUTE, S_CACHE_PREV, S_CACHE_NEXT, S_LOG_PREV, S_LOG_NEXT, S_GPS,
        S_INFO, S_EXIT, S_MAPS, S_BACK, S_PAGE_END,
        S_PORT_PREV = S_PAGE_END, S_PORT_NEXT, S_BAUD_PREV, S_BAUD_NEXT, S_SCAN, S_GPS_DONE, S_GPS_END,
        S_INFO_DONE = S_GPS_END, S_INFO_END,
-       S_JUNC_PREV = S_INFO_END, S_JUNC_NEXT, S_TOLL_PREV, S_TOLL_NEXT, S_ROUTE_DONE, S_COUNT };
-enum { SHEET_NONE, SHEET_GPS, SHEET_INFO, SHEET_ROUTE };
+       S_JUNC_PREV = S_INFO_END, S_JUNC_NEXT, S_TOLL_PREV, S_TOLL_NEXT, S_ROUTE_DONE, S_ROUTE_END,
+       S_KIND_PREV = S_ROUTE_END, S_KIND_NEXT, S_DETAIL_PREV, S_DETAIL_NEXT, S_MAP_DONE, S_COUNT };
+enum { SHEET_NONE, SHEET_GPS, SHEET_INFO, SHEET_ROUTE, SHEET_MAP };
 enum { kSetRow0 = 76, kSetRowH = 50, kSheetY = 200 };
 static const RECT kSetCtl[S_COUNT] = {
-    { 512, 79, 560, 123 }, { 712, 79, 760, 123 },     // the steppers' arrows: rows 0, 2, 3
+    { 576, 79, 760, 123 },                             // the map: its sheet (the kind, the detail)
     { 576, 129, 760, 173 },                            // the route: its sheet (the junction card, the tolls)
-    { 512, 179, 560, 223 }, { 712, 179, 760, 223 },
+    { 512, 179, 560, 223 }, { 712, 179, 760, 223 },   // the steppers' arrows: rows 2, 3
     { 512, 229, 560, 273 }, { 712, 229, 760, 273 },
     { 576, 279, 760, 323 },                            // GPS: its sheet
     { 576, 329, 760, 373 },                            // the requests: their sheet
@@ -230,6 +231,9 @@ static const RECT kSetCtl[S_COUNT] = {
     { 600, 416, 784, 468 },                            // ... done
     { 600, 416, 784, 468 },                            // the requests' sheet: done
     { 512, 259, 560, 303 }, { 712, 259, 760, 303 },   // the route's sheet: the junction card, the tolls
+    { 512, 309, 560, 353 }, { 712, 309, 760, 353 },
+    { 600, 416, 784, 468 },                            // ... done
+    { 512, 259, 560, 303 }, { 712, 259, 760, 303 },   // the map's sheet: the kind, the detail
     { 512, 309, 560, 353 }, { 712, 309, 760, 353 },
     { 600, 416, 784, 468 },                            // ... done
 };
@@ -611,8 +615,11 @@ static void Ensure(int mode)
 
 int MapLook()
 {
-    return (g_cfg.vector ? 1 : 0) + (g_cfg.night ? 2 : 0);
+    return (g_cfg.vector ? 1 : 0) + (g_cfg.night ? 2 : 0) + VTileDetail() * 4;
 }
+
+static void BaseRedraw();
+static int s_detailShown;   // VTileDetail() of the base map's tiles in memory
 
 static void OnMapResult(MapResult* res)
 {
@@ -621,6 +628,10 @@ static void OnMapResult(MapResult* res)
     if (res->err == NET_OK && res->req.src == SRC_OSM && res->look != (g_cfg.vector ? MapLook() : -1)) {
         ImageFree(&res->img);   // drawn for the other kind / palette (switched while it came)
         res->look = -2;
+    }
+    if (g_cfg.vector && VTileDetail() != s_detailShown) {   // auto chose a level: the full ones drawn again
+        s_detailShown = VTileDetail();
+        BaseRedraw();
     }
     if (res->look == -2) {
         // dropped: the view asks for it again below
@@ -736,11 +747,26 @@ static void MapStyleSet(int vector)
     BaseRedraw();
 }
 
+// The vector map's detail (0 auto, 1 full, 2 medium, 3 fast; the arrows go round)
+static void DetailSet(int detail)
+{
+    g_cfg.detail = (detail + 4) % 4;
+    VTileSetDetail(g_cfg.detail - 1);
+    s_detailShown = VTileDetail();
+    Log("map: detail %d", g_cfg.detail);
+    ConfigSave();
+    if (g_cfg.vector)
+        BaseRedraw();
+}
+
 static void OnSettingsCtl(int id)
 {
     switch (id) {
-    case S_MAP_PREV:
-    case S_MAP_NEXT:   MapStyleSet(!g_cfg.vector); break;
+    case S_MAP:        s_setSheet = SHEET_MAP; break;
+    case S_KIND_PREV:
+    case S_KIND_NEXT:  MapStyleSet(!g_cfg.vector); break;
+    case S_DETAIL_PREV: DetailSet(g_cfg.detail - 1); break;
+    case S_DETAIL_NEXT: DetailSet(g_cfg.detail + 1); break;
     case S_JUNC_PREV:
     case S_JUNC_NEXT:  g_cfg.junction = !g_cfg.junction; ConfigSave(); break;
     case S_TOLL_PREV:
@@ -752,7 +778,8 @@ static void OnSettingsCtl(int id)
     case S_INFO:       s_setSheet = SHEET_INFO; break;
     case S_GPS_DONE:
     case S_INFO_DONE:
-    case S_ROUTE_DONE: s_setSheet = SHEET_NONE; break;
+    case S_ROUTE_DONE:
+    case S_MAP_DONE:   s_setSheet = SHEET_NONE; break;
     case S_PORT_PREV:  s_setPort = s_setPort > 1 ? s_setPort - 1 : 9; ApplySettings(); break;
     case S_PORT_NEXT:  s_setPort = s_setPort < 9 ? s_setPort + 1 : 1; ApplySettings(); break;
     case S_BAUD_PREV:  s_setBaud = (s_setBaud + kSetBaudCount - 1) % kSetBaudCount; ApplySettings(); break;
@@ -823,8 +850,8 @@ static void OnGpsScanDone()
 // a tap there closes it)
 static int HitSettings(int x, int y)
 {
-    static const int kFrom[4] = { 0, S_PAGE_END, S_GPS_END, S_INFO_END },
-                     kTo[4] = { S_PAGE_END, S_GPS_END, S_INFO_END, S_COUNT };
+    static const int kFrom[5] = { 0, S_PAGE_END, S_GPS_END, S_INFO_END, S_ROUTE_END },
+                     kTo[5] = { S_PAGE_END, S_GPS_END, S_INFO_END, S_ROUTE_END, S_COUNT };
     int hit = HitRects(kSetCtl + kFrom[s_setSheet], kTo[s_setSheet] - kFrom[s_setSheet], x, y);
     if (hit >= 0)
         return kFrom[s_setSheet] + hit;
@@ -2525,7 +2552,10 @@ static void Stepper(HDC dc, int prev, int next, const wchar_t* value)
 static void DrawGpsSheet(HDC dc);
 static void DrawInfoSheet(HDC dc);
 static void DrawRouteSheet(HDC dc);
+static void DrawMapSheet(HDC dc);
 static void DoneButton(HDC dc, int id);
+static const wchar_t* kDetailNames[4] = { L"Авто", L"Полная", L"Средняя", L"Быстрая" };
+static const wchar_t* kDetailLow[3] = { L"полная", L"средняя", L"быстрая" };
 
 // The receiver's state in one line: its port and speed, open / busy / searching, the satellites
 static void GpsLine(wchar_t* s, int cap)
@@ -2566,8 +2596,14 @@ static void DrawSettings(HDC dc)
     RECT panel = { 16, 64, s_cw - 16, 400 };
     Tile(dc, panel, kPanel, kPanel, 32);
 
-    SetRow(dc, kSetRow0, L"Карта", g_cfg.vector ? L"векторная, OpenFreeMap" : L"растровая, тайлы OSM", true);
-    Stepper(dc, S_MAP_PREV, S_MAP_NEXT, g_cfg.vector ? L"Вектор" : L"Растр");
+    if (!g_cfg.vector)
+        wcscpy(s, L"растровая, тайлы OSM");
+    else if (g_cfg.detail)
+        _snwprintf(s, 160, L"векторная · детализация: %s", kDetailLow[g_cfg.detail - 1]);
+    else
+        _snwprintf(s, 160, L"векторная · детализация: авто (%s)", kDetailLow[VTileDetail()]);
+    SetRow(dc, kSetRow0, L"Карта", s, true);
+    DrawCtl(dc, kSetCtl[S_MAP], s_setPressed == S_MAP, s_fontLabel, L"НАСТРОИТЬ");
     _snwprintf(s, 160, L"схема развязки: %s · платные: %s", g_cfg.junction ? L"вкл" : L"выкл",
                g_cfg.noToll ? L"объезжать" : L"можно");
     SetRow(dc, kSetRow0 + kSetRowH, L"Маршрут", s, true);
@@ -2602,6 +2638,8 @@ static void DrawSettings(HDC dc)
         DrawInfoSheet(dc);
     else if (s_setSheet == SHEET_ROUTE)
         DrawRouteSheet(dc);
+    else if (s_setSheet == SHEET_MAP)
+        DrawMapSheet(dc);
 }
 
 static void Sheet(HDC dc, const wchar_t* title)   // a sheet over the bottom: full width, its title
@@ -2672,6 +2710,20 @@ static void DrawRouteSheet(HDC dc)
     Text(dc, s_fontSmall, kTextDim, 36, 362, s_cw - 36, 404, DT_LEFT,
          L"Без карт области и магистралей маршрут строит сервер — он платные не исключает.");
     DoneButton(dc, S_ROUTE_DONE);
+}
+
+// The map's kind and the vector one's detail (the user 2026-10-30: as the device can draw it)
+static void DrawMapSheet(HDC dc)
+{
+    Sheet(dc, L"Карта");
+    SetRow(dc, kSetCtl[S_KIND_PREV].top - 3, L"Вид", g_cfg.vector ? L"векторная, OpenFreeMap" : L"растровая, тайлы OSM",
+           true);
+    Stepper(dc, S_KIND_PREV, S_KIND_NEXT, g_cfg.vector ? L"Вектор" : L"Растр");
+    SetRow(dc, kSetCtl[S_DETAIL_PREV].top - 3, L"Детализация", L"меньше деталей — быстрее рисуется", false);
+    Stepper(dc, S_DETAIL_PREV, S_DETAIL_NEXT, kDetailNames[g_cfg.detail]);
+    Text(dc, s_fontSmall, kTextDim, 36, 362, s_cw - 36, 404, DT_LEFT,
+         L"Авто выбирает по скорости первых плиток. Только для векторной карты.");
+    DoneButton(dc, S_MAP_DONE);
 }
 
 // The day's requests by their kind, against their limits
@@ -4630,6 +4682,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int)
     }
 
     bool cfg = ConfigLoad();
+    VTileSetDetail(g_cfg.detail - 1);
+    s_detailShown = VTileDetail();
     LogInit();   // (after the settings: the log only when asked for)
     Log("OSMapsCE start, dir %S", g_dir);
     if (!cfg)

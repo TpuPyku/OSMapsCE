@@ -651,6 +651,13 @@ static void Deep()
     ImageFree(&im);
     Check(VTileRenderFrom(r16b, d15b, br, nbr, &im), "z16 from the other z15 tile");
     ImageFree(&im);
+    VTileSetDetail(-1);
+    for (int i = 0; i < 20; i++) {
+        VTileRenderFrom(r16, d15, tl, ntl, &im);
+        ImageFree(&im);
+    }
+    Check(VTileDetail() == 0, "auto: the tiles' own time - this PC draws them fast, full");
+    VTileSetDetail(0);
     const unsigned short house = RGB565(120, 112, 104), blue = RGB565(46, 110, 190), white = RGB565(255, 255, 255);
     Frame f;
     Open(f);
@@ -746,6 +753,11 @@ static void Levels()
     Check(Row(ib, 40, 133, 145, RGB565(6, 7, 9)) >= 4, "night: the bridge's shadow darker than the night's ground");
     Check(Column(ib, 64, 118, 138, RGB565(17, 19, 23)) == 0, "night: no casing of the ground road over the tunnel");
     g_cfg.night = 0;
+    ImageFree(&ia);
+    VTileSetDetail(1);
+    Check(VTileRender(a, omt, no, &ia) && Row(ia, 40, 133, 145, shadow) == 0 && Row(ia, 128, 118, 138, casing) == 0,
+          "medium: no bridge's shadow, no casing");
+    VTileSetDetail(0);
     ImageFree(&ia);
     ImageFree(&ib);
 }
@@ -1209,6 +1221,36 @@ int main()
     ImageFree(&im);
     Check(VTileRender(cbl, NULL, 0, &im) && Px(im, 128, 216) == RGB565(255, 255, 255), "z15: the service road");
     ImageFree(&im);
+
+    // the detail (the user 2026-10-30: as Shturmann, less on a slow device): medium - no casings, buildings from z16;
+    // fast - the main roads, water, rails only (the minor streets from z15)
+    VTileSetDetail(1);
+    Check(VTileDetail() == 1, "detail: set medium");
+    Check(VTileRender(c, NULL, 0, &im) && Px(im, 128, 184) == RGB565(255, 255, 255), "medium: the minor road");
+    casing = 0;
+    for (int y = 176; y < 192; y++)
+        casing += Px(im, 128, y) == RGB565(214, 208, 200);
+    Check(casing == 0, "medium: no casings");
+    ImageFree(&im);
+    Check(VTileRender(ctl, NULL, 0, &im) && Px(im, 96, 96) == land, "medium: z15 - no buildings yet");
+    ImageFree(&im);
+    VTileSetDetail(2);
+    Check(VTileRender(c, NULL, 0, &im) && Px(im, 128, 184) == land && Px(im, 32, 112) == land &&
+          Px(im, 128, 164) == RGB565(255, 247, 214) && Px(im, 128, 204) == RGB565(184, 180, 174) &&
+          Px(im, 128, 220) == water, "fast: z14 - no minor road, no residential area; the tertiary, rails, river");
+    ImageFree(&im);
+    Check(VTileRender(cbl, NULL, 0, &im) && Px(im, 128, 216) != RGB565(255, 255, 255), "fast: z15 - no service road");
+    ImageFree(&im);
+    // auto: the tiles' time decides (full under 80 ms, medium under 200, fast above) - full till 20 are timed
+    Check(VTileDetailFor(79) == 0 && VTileDetailFor(80) == 1 && VTileDetailFor(199) == 1 && VTileDetailFor(200) == 2,
+          "auto: by the tiles' average time");
+    VTileSetDetail(-1);
+    for (int i = 0; i < 19; i++)
+        VTileNoteMs(150);
+    Check(VTileDetail() == 0, "auto: full till 20 tiles are timed");
+    VTileNoteMs(150);
+    Check(VTileDetail() == 1, "auto: 20 tiles of 150 ms - medium");
+    VTileSetDetail(0);
 
     // the town's names: the view's centre on the tile's centre
     MapRequest c2 = { SRC_OSM, 14, 9100, 5000 };

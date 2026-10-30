@@ -42,10 +42,54 @@ static const Style kStyle[2][K_COUNT] = { {
 } };
 static const unsigned char kBg[2][3] = { { 243, 240, 235 }, { 17, 19, 23 } };
 static const unsigned char kShadow[2][3] = { { 206, 200, 190 }, { 6, 7, 9 } };   // a bridge's shadow on the ground
-// The smallest shown zoom of a kind (design v3: buildings from z15, paths from z16)
+// The map's detail (the user 2026-10-30, as Shturmann's "fast" style - MAIN/SHTURMANN, PROJECT.md): full; medium -
+// no casings, no bridges' shadows, buildings and service roads from z16, paths from z17; fast - water, rails and the
+// streets from the tertiary up (the minor ones from z15), no buildings, no areas but water, no service roads and
+// paths, no signs and house numbers. Auto: full till kAutoTiles are drawn, then by their average time.
+enum { kAutoTiles = 20 };
+static int   s_detail;      // -1 auto, else the level
+static int   s_autoLevel;
+static DWORD s_msSum;
+static int   s_msN;
+
+int VTileDetailFor(DWORD avgMs)
+{
+    return avgMs < 80 ? 0 : avgMs < 200 ? 1 : 2;
+}
+
+void VTileSetDetail(int d)
+{
+    s_detail = d;
+    s_autoLevel = 0;
+    s_msSum = 0;
+    s_msN = 0;
+}
+
+void VTileNoteMs(DWORD ms)
+{
+    if (s_msN >= kAutoTiles)
+        return;
+    s_msSum += ms;
+    if (++s_msN == kAutoTiles)
+        s_autoLevel = VTileDetailFor(s_msSum / kAutoTiles);
+}
+
+int VTileDetail()
+{
+    return s_detail >= 0 ? s_detail : s_autoLevel;
+}
+
+// The smallest shown zoom of a kind by the detail (design v3: buildings from z15, paths from z16); 99 never
+static const unsigned char kMinZoom[3][K_COUNT] = {
+    //  resid indus park water build  wway rail path serv minor sec prim major place rname house fuel parking
+    {   0,    0,    0,   0,    15,    0,   0,   16,  15,  0,    0,  0,   0,    0,    0,    0,    0,   0 },
+    {   0,    0,    0,   0,    16,    0,   0,   17,  16,  0,    0,  0,   0,    0,    0,    0,    0,   0 },
+    {   99,   99,   99,  0,    99,    0,   0,   99,  99,  15,   0,  0,   0,    0,    0,    99,   99,  99 },
+};
+
 static int MinZoom(int kind)
 {
-    return kind == K_BUILDING || kind == K_SERVICE ? 15 : kind == K_PATH ? 16 : 0;
+    return kMinZoom[VTileDetail()][kind];
 }
 
 struct Feat {
@@ -823,7 +867,8 @@ static int NextShown(const VTile& t, const Xf& xf, int k, int margin, int fi)
     return fi;
 }
 
-// One part of an area as edges: its ring, closed
+// One part of an area as edges: its ring, closed; points within 1.5 px of the last one left out (fewer edges - as
+// Shturmann's screen filter of shapes)
 static void AddRing(int& ne, const VTile& t, const Xf& xf, const Feat& f, int pi)
 {
     int p0 = t.parts[(f.part0 + pi) * 2], pn = t.parts[(f.part0 + pi) * 2 + 1];
@@ -834,6 +879,8 @@ static void AddRing(int& ne, const VTile& t, const Xf& xf, const Feat& f, int pi
     for (int q = 1; q < pn; q++) {
         int x, y;
         Apply(xf, t.pts[(p0 + q) * 2], t.pts[(p0 + q) * 2 + 1], &x, &y);
+        if (abs(x - px) + abs(y - py) < 24 && q < pn - 1)
+            continue;
         AddEdge(ne, px, py, x, y);
         px = x;
         py = y;
@@ -955,9 +1002,9 @@ static COLORREF LineColor(const Style& s, const unsigned char* bg, bool casing, 
     return RGB(s.r, s.g, s.b);
 }
 
-static bool Cased(const Style& s, int level)   // the cased kinds and every bridge; none under the ground
+static bool Cased(const Style& s, int level)   // the cased kinds and every bridge; none under the ground (full only)
 {
-    return level > 0 || (s.cased && level == 0);
+    return !VTileDetail() && (level > 0 || (s.cased && level == 0));
 }
 
 // The lines of a level, kind by kind: the casings (2 px wider: Cased), or the lines themselves
@@ -1002,7 +1049,7 @@ static void Draw(const VTile& t, const Xf& xf, int z, bool night, HDC dc, unsign
     GdiFlush();   // the desktop's GDI may batch: our pixels before its lines (CE draws at once)
 #endif
     for (int level = -1; level <= 1; level++) {
-        if (level > 0)
+        if (level > 0 && !VTileDetail())
             StrokeShadows(dc, t, xf, z, pal, kShadow[night ? 1 : 0]);
         StrokeLines(dc, t, xf, z, pal, bc, level, true);
         StrokeLines(dc, t, xf, z, pal, bc, level, false);
@@ -1050,8 +1097,10 @@ bool VTileRenderFrom(const MapRequest& r, const MapRequest& key, const unsigned 
         ok = true;
     }
     LeaveCriticalSection(&s_cs);
-    if (ok)
+    if (ok) {
+        VTileNoteMs(GetTickCount() - t0);
         Log("vtile: %d/%d/%d from %d/%d/%d: %lu ms", r.z, r.x, r.y, key.z - VEC_ZBASE, key.x, key.y, GetTickCount() - t0);
+    }
     return ok;
 }
 
@@ -1480,7 +1529,7 @@ void VLabelsDraw(HDC dc, const RECT& mr, double cx, double cy, double vx, double
     SetBkMode(dc, TRANSPARENT);
     EnterCriticalSection(&s_cs);
     for (int i = 0; i < (int)(sizeof(kPasses) / sizeof(kPasses[0])); i++)
-        if (z >= kPasses[i].minZoom) {
+        if (z >= kPasses[i].minZoom && z >= MinZoom(kPasses[i].kind)) {   // (fast: no signs, no house numbers)
             if (z >= VEC_PACKZ)
                 DrawPass(v, kPasses[i], VEC_PACKZ);   // a pack's z15 tiles first (Deeper: their quarters theirs)
             DrawPass(v, kPasses[i], zd);

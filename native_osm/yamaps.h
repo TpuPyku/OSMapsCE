@@ -38,6 +38,7 @@ struct Config {
     int     vector;         // the base map: 0 OSM raster tiles, 1 vector tiles (OpenFreeMap, vtile.cpp)
     int     junction;       // the junction card before complex maneuvers (junction.cpp; the user 2026-10-28: off by default)
     int     noToll;         // routes keep off toll roads (the user 2026-10-29; the unit's graphs only - OSRM cannot)
+    int     detail;         // the vector map's detail: 0 auto, 1 full, 2 medium, 3 fast (VTileSetDetail(detail - 1))
     int     log;            // OSMapsCE.log kept (the user 2026-10-29: off by default)
     int     tilt;           // the third person's view (its button: heading-up from z15; tilt.cpp, ring.cpp)
     int     trafficTtlMin;  // traffic image is considered fresh this long
@@ -279,6 +280,10 @@ MapRequest VTileDataAt(const MapRequest& r, int maxz);   // ... with data tiles 
 bool       VTileRender(const MapRequest& r, const unsigned char* data, int len, Image* out);   // data NULL: parsed already
 bool       VTileRenderFrom(const MapRequest& r, const MapRequest& d, const unsigned char* data, int len, Image* out);   // from data tile d
 bool       VTileLocal(const MapRequest& r, Image* out);   // from the data at hand (parsed, a pack, the cache); false: none
+void       VTileSetDetail(int d);   // the map's detail: -1 auto (by the tiles' time), 0 full, 1 medium, 2 fast
+int        VTileDetail();           // the detail drawn now (auto: full till kAutoTiles are timed)
+int        VTileDetailFor(DWORD avgMs);   // auto's choice by a tile's average time
+void       VTileNoteMs(DWORD ms);   // a tile's time (auto)
 void       VLabelsDraw(HDC dc, const RECT& mr, double cx, double cy, double vx, double vy, double angle, int z,
                        const RECT* avoid, int navoid);   // avoid: the controls over the map, no names under them
 const wchar_t* MapFace();
