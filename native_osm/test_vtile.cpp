@@ -651,8 +651,9 @@ static void Deep()
     ImageFree(&im);
     Check(VTileRenderFrom(r16b, d15b, br, nbr, &im), "z16 from the other z15 tile");
     ImageFree(&im);
+    VTileAutoReset();
     VTileSetDetail(-1);
-    for (int i = 0; i < 20; i++) {
+    for (int i = 0; i < 12; i++) {
         VTileRenderFrom(r16, d15, tl, ntl, &im);
         ImageFree(&im);
     }
@@ -1241,15 +1242,36 @@ int main()
     ImageFree(&im);
     Check(VTileRender(cbl, NULL, 0, &im) && Px(im, 128, 216) != RGB565(255, 255, 255), "fast: z15 - no service road");
     ImageFree(&im);
-    // auto: the tiles' time decides (full under 80 ms, medium under 200, fast above) - full till 20 are timed
+    // auto: the tiles' time decides (full under 80 ms, medium under 200, fast above) - medium till 12 of z10+ are timed
+    // (the user's Shturmann 2026-10-30: "auto" showed full - each switch to it timed anew, full meanwhile; z5-z8 tiles,
+    // all but empty, had made the average small)
     Check(VTileDetailFor(79) == 0 && VTileDetailFor(80) == 1 && VTileDetailFor(199) == 1 && VTileDetailFor(200) == 2,
           "auto: by the tiles' average time");
+    VTileAutoReset();
     VTileSetDetail(-1);
-    for (int i = 0; i < 19; i++)
-        VTileNoteMs(150);
-    Check(VTileDetail() == 0, "auto: full till 20 tiles are timed");
-    VTileNoteMs(150);
-    Check(VTileDetail() == 1, "auto: 20 tiles of 150 ms - medium");
+    Check(VTileDetail() == 1, "auto: medium till timed");
+    for (int i = 0; i < 5; i++)
+        VTileNoteMs(900, 9);
+    for (int i = 0; i < 11; i++)
+        VTileNoteMs(40, 12);
+    Check(VTileDetail() == 1, "auto: medium till 12 tiles of z10+ are timed (the small zooms' not counted)");
+    VTileNoteMs(40, 12);
+    Check(VTileDetail() == 0, "auto: 12 tiles of 40 ms - full");
+    VTileSetDetail(2);
+    VTileSetDetail(-1);
+    Check(VTileDetail() == 0, "auto: the time kept through a switch");
+    VTileAutoReset();
+    VTileSetDetail(2);
+    for (int i = 0; i < 12; i++)
+        VTileNoteMs(60, 12);
+    VTileSetDetail(-1);
+    Check(VTileDetail() == 1, "auto: fast's times counted as full's (x2: 120 ms - medium)");
+    VTileAutoReset();
+    VTileSetDetail(1);
+    for (int i = 0; i < 12; i++)
+        VTileNoteMs(66, 12);
+    VTileSetDetail(-1);
+    Check(VTileDetail() == 1, "auto: medium's times as full's (x4/3: 88 ms - medium)");
     VTileSetDetail(0);
 
     // the town's names: the view's centre on the tile's centre

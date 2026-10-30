@@ -203,16 +203,17 @@ static const int   kSetCacheMb[] = { 250, 500, 1000, 2000 };
 static const int   kSetCacheCount = sizeof(kSetCacheMb) / sizeof(kSetCacheMb[0]);
 
 // The settings screen as VestaHome's (the user 2026-10-29: all of it within its rules): the title and the clock on
-// top, one panel of six rows within 64..400 (a row's stepper applies at once), "back" / "КАРТЫ" / "ЗАВЕРШИТЬ" in the
-// bottom strip; what does not fit - the GPS port's settings, the requests' counters - in a sheet over the bottom
+// top, one panel of six rows within 64..400 (a row's stepper applies at once), "back" and the exit's sign (asked in a
+// sheet: the user 2026-10-30) in the bottom strip; what does not fit - the GPS port's settings, the requests' counters - in a sheet over the bottom
 // (VestaHome's windows: full width, the main action right, in the accent), a tap beside it closes it.
 // Rows at kSetRow0 + i * kSetRowH (the maps' screen has the same rows).
 enum { S_MAPS, S_ROUTE, S_CACHE_PREV, S_CACHE_NEXT, S_LOG_PREV, S_LOG_NEXT, S_GPS,
        S_INFO, S_EXIT, S_BACK, S_PAGE_END,
        S_PORT_PREV = S_PAGE_END, S_PORT_NEXT, S_BAUD_PREV, S_BAUD_NEXT, S_SCAN, S_GPS_DONE, S_GPS_END,
        S_INFO_DONE = S_GPS_END, S_INFO_END,
-       S_JUNC_PREV = S_INFO_END, S_JUNC_NEXT, S_TOLL_PREV, S_TOLL_NEXT, S_ROUTE_DONE, S_COUNT };
-enum { SHEET_NONE, SHEET_GPS, SHEET_INFO, SHEET_ROUTE };
+       S_JUNC_PREV = S_INFO_END, S_JUNC_NEXT, S_TOLL_PREV, S_TOLL_NEXT, S_ROUTE_DONE, S_ROUTE_END,
+       S_EXIT_YES = S_ROUTE_END, S_EXIT_NO, S_COUNT };
+enum { SHEET_NONE, SHEET_GPS, SHEET_INFO, SHEET_ROUTE, SHEET_EXIT };
 enum { kSetRow0 = 76, kSetRowH = 50, kSheetY = 200 };
 static const RECT kSetCtl[S_COUNT] = {
     { 576, 79, 760, 123 },                             // the maps: their page (the kind, the detail, the regions)
@@ -221,7 +222,7 @@ static const RECT kSetCtl[S_COUNT] = {
     { 512, 229, 560, 273 }, { 712, 229, 760, 273 },
     { 576, 279, 760, 323 },                            // GPS: its sheet
     { 576, 329, 760, 373 },                            // the requests: their sheet
-    { 600, 416, 784, 468 },                            // exit the program
+    { 716, 416, 784, 468 },                            // exit the program (its sign; asked in a sheet)
     { 8, 412, 80, 480 },                               // back: VestaHome's, at the bottom left
     { 512, 259, 560, 303 }, { 712, 259, 760, 303 },   // the GPS sheet: the port, the speed
     { 512, 309, 560, 353 }, { 712, 309, 760, 353 },
@@ -231,26 +232,33 @@ static const RECT kSetCtl[S_COUNT] = {
     { 512, 259, 560, 303 }, { 712, 259, 760, 303 },   // the route's sheet: the junction card, the tolls
     { 512, 309, 560, 353 }, { 712, 309, 760, 353 },
     { 600, 416, 784, 468 },                            // ... done
+    { 600, 416, 784, 468 }, { 416, 416, 592, 468 },   // the exit's sheet: exit, cancel (a tap beside it too)
 };
 static int s_setSheet;   // SHEET_*
 
-// The maps' page (the user 2026-10-30: Settings -> the map's row "КАРТЫ"): the map's kind and detail on top, then the
-// regions' maps downloaded here (offmaps.cpp's job; the user 2026-10-29: the graphs for the routes and the search
-// without the internet) - the release's catalog by its titles, kMapsRows a page, a row's button downloads it (the
-// trunk roads after the first one), "ОТМЕНА" while it goes; "ЗАГРУЗИТЬ" and "ОК" (the same again) asked "ТОЧНО?"
-enum { kMapsRows = 4 };
-enum { M_KIND_PREV, M_KIND_NEXT, M_DETAIL_PREV, M_DETAIL_NEXT, M_ROW0, M_PREV = M_ROW0 + kMapsRows, M_NEXT, M_LIST,
-       M_BACK, M_COUNT };
+// The map's page (the user 2026-10-30: Settings -> the map's row "КАРТЫ"): the map's kind and detail, the regions'
+// maps - their own page (the user 2026-10-30): the regions' maps downloaded here (offmaps.cpp's job; the user
+// 2026-10-29: the graphs for the routes and the search without the internet) - the release's catalog by its titles,
+// kMapsRows a page, a row's button downloads it (the trunk roads after the first one), "ОТМЕНА" while it goes;
+// "ЗАГРУЗИТЬ" and "ОК" (the same again) asked "ТОЧНО?"
+enum { M_KIND_PREV, M_KIND_NEXT, M_DETAIL_PREV, M_DETAIL_NEXT, M_REGIONS, M_BACK, M_COUNT };
 static const RECT kMapsCtl[M_COUNT] = {
     { 512, 79, 560, 123 }, { 712, 79, 760, 123 },     // the steppers: the kind, the detail
     { 512, 129, 560, 173 }, { 712, 129, 760, 173 },
-    { 600, 181, 760, 221 }, { 600, 231, 760, 271 },   // the regions' buttons
-    { 600, 281, 760, 321 }, { 600, 331, 760, 371 },
-    { 300, 420, 348, 468 }, { 452, 420, 500, 468 },   // the pages
-    { 716, 416, 784, 468 },                            // the catalog again (its sign: "refresh")
+    { 576, 179, 760, 223 },                            // the regions' page
     { 8, 412, 80, 480 },                               // back to the settings
 };
+enum { kMapsRows = 6 };
+enum { R_ROW0, R_PREV = R_ROW0 + kMapsRows, R_NEXT, R_LIST, R_BACK, R_COUNT };
+static const RECT kRegCtl[R_COUNT] = {
+    { 600, 81, 760, 121 }, { 600, 131, 760, 171 }, { 600, 181, 760, 221 },   // the regions' buttons
+    { 600, 231, 760, 271 }, { 600, 281, 760, 321 }, { 600, 331, 760, 371 },
+    { 300, 420, 348, 468 }, { 452, 420, 500, 468 },                           // the pages
+    { 716, 416, 784, 468 },                                                   // the catalog again ("refresh")
+    { 8, 412, 80, 480 },                                                      // back to the map's page
+};
 static bool s_maps;            // the maps' screen over the settings
+static bool s_regions;         // ... its regions' page
 static int  s_mapsPressed = -1, s_mapsPage;
 static int  s_mapsConfirm = -1;   // the region whose button asks "ТОЧНО?"
 
@@ -785,15 +793,14 @@ static void OnSettingsCtl(int id)
         EnsureGpsRunning();
         GpsScan();
         break;
-    case S_EXIT:
+    case S_EXIT:       s_setSheet = SHEET_EXIT; break;
+    case S_EXIT_NO:    s_setSheet = SHEET_NONE; break;
+    case S_EXIT_YES:
         DestroyWindow(s_wnd);
         return;
     case S_MAPS:
         s_maps = true;
-        s_mapsPage = 0;
-        s_mapsConfirm = -1;
-        if (!MapsCount())
-            MapsList();
+        s_regions = false;
         break;
     case S_BACK:
         s_settings = false;
@@ -814,20 +821,36 @@ static void MapsTap(int i, int confirm)
         MapsGetRegion(i);
 }
 
-static void OnMapsCtl(int id)
+static void OnRegionsCtl(int id)
 {
     int pages = (MapsCount() + kMapsRows - 1) / kMapsRows, confirm = s_mapsConfirm;
     s_mapsConfirm = -1;   // (any other tap: not asked any more)
     switch (id) {
+    case R_PREV: if (s_mapsPage > 0) s_mapsPage--; break;
+    case R_NEXT: if (s_mapsPage + 1 < pages) s_mapsPage++; break;
+    case R_LIST: MapsList(); break;
+    case R_BACK: s_regions = false; break;
+    default:     MapsTap(s_mapsPage * kMapsRows + id - R_ROW0, confirm); break;
+    }
+}
+
+static void OnMapsCtl(int id)
+{
+    if (s_regions)
+        OnRegionsCtl(id);
+    else switch (id) {
     case M_KIND_PREV:
     case M_KIND_NEXT:   MapStyleSet(!g_cfg.vector); break;
     case M_DETAIL_PREV: DetailSet(g_cfg.detail - 1); break;
     case M_DETAIL_NEXT: DetailSet(g_cfg.detail + 1); break;
-    case M_PREV:        if (s_mapsPage > 0) s_mapsPage--; break;
-    case M_NEXT:        if (s_mapsPage + 1 < pages) s_mapsPage++; break;
-    case M_LIST:        MapsList(); break;
     case M_BACK:        s_maps = false; break;
-    default:            MapsTap(s_mapsPage * kMapsRows + id - M_ROW0, confirm); break;
+    case M_REGIONS:
+        s_regions = true;
+        s_mapsPage = 0;
+        s_mapsConfirm = -1;
+        if (!MapsCount())
+            MapsList();
+        break;
     }
     InvalidateRect(s_wnd, NULL, FALSE);
 }
@@ -842,7 +865,7 @@ static int HitRects(const RECT* r, int n, int x, int y)   // the first of the re
 
 static int HitMaps(int x, int y)
 {
-    return HitRects(kMapsCtl, M_COUNT, x, y);
+    return s_regions ? HitRects(kRegCtl, R_COUNT, x, y) : HitRects(kMapsCtl, M_COUNT, x, y);
 }
 
 // The GPS thread finished a port search.
@@ -860,8 +883,8 @@ static void OnGpsScanDone()
 // a tap there closes it)
 static int HitSettings(int x, int y)
 {
-    static const int kFrom[4] = { 0, S_PAGE_END, S_GPS_END, S_INFO_END },
-                     kTo[4] = { S_PAGE_END, S_GPS_END, S_INFO_END, S_COUNT };
+    static const int kFrom[5] = { 0, S_PAGE_END, S_GPS_END, S_INFO_END, S_ROUTE_END },
+                     kTo[5] = { S_PAGE_END, S_GPS_END, S_INFO_END, S_ROUTE_END, S_COUNT };
     int hit = HitRects(kSetCtl + kFrom[s_setSheet], kTo[s_setSheet] - kFrom[s_setSheet], x, y);
     if (hit >= 0)
         return kFrom[s_setSheet] + hit;
@@ -2565,6 +2588,8 @@ static void Stepper(HDC dc, int prev, int next, const wchar_t* value)
 static void DrawGpsSheet(HDC dc);
 static void DrawInfoSheet(HDC dc);
 static void DrawRouteSheet(HDC dc);
+static void DrawExitSheet(HDC dc);
+static void PowerSign(HDC dc, const RECT& r, COLORREF c);
 static void DoneButton(HDC dc, int id);
 static const wchar_t* kDetailNames[4] = { L"Авто", L"Полная", L"Средняя", L"Быстрая" };
 static const wchar_t* kDetailLow[3] = { L"полная", L"средняя", L"быстрая" };
@@ -2642,13 +2667,16 @@ static void DrawSettings(HDC dc)
     _snwprintf(s, 160, L"OSMapsCE %s", AppVersion(kRelease));   // VestaCore vversion.h
     SetRow(dc, kSetRow0 + 5 * kSetRowH, L"О программе", s, false);
     DrawCtl(dc, kSetCtl[S_INFO], s_setPressed == S_INFO, s_fontLabel, L"ЗАПРОСЫ");
-    DrawCtl(dc, kSetCtl[S_EXIT], s_setPressed == S_EXIT, s_fontLabel, L"ЗАВЕРШИТЬ");
+    DrawCtl(dc, kSetCtl[S_EXIT], s_setPressed == S_EXIT, s_fontLabel, L"");
+    PowerSign(dc, kSetCtl[S_EXIT], s_setPressed == S_EXIT ? kInk : kText);
     if (s_setSheet == SHEET_GPS)
         DrawGpsSheet(dc);
     else if (s_setSheet == SHEET_INFO)
         DrawInfoSheet(dc);
     else if (s_setSheet == SHEET_ROUTE)
         DrawRouteSheet(dc);
+    else if (s_setSheet == SHEET_EXIT)
+        DrawExitSheet(dc);
 }
 
 static void Sheet(HDC dc, const wchar_t* title)   // a sheet over the bottom: full width, its title
@@ -2721,6 +2749,18 @@ static void DrawRouteSheet(HDC dc)
     DoneButton(dc, S_ROUTE_DONE);
 }
 
+// The program closed? (the user 2026-10-30: not at one tap)
+static void DrawExitSheet(HDC dc)
+{
+    Sheet(dc, L"Завершить OSMapsCE?");
+    Text(dc, s_fontLabel, kTextDim, 36, 270, s_cw - 36, 340, DT_LEFT,
+         L"Карта и маршрут закроются, GPS освободится для других программ.");
+    DrawCtl(dc, kSetCtl[S_EXIT_NO], s_setPressed == S_EXIT_NO, s_fontLabel, L"ОТМЕНА");
+    const RECT& r = kSetCtl[S_EXIT_YES];
+    Tile(dc, r, kOrange, kOrange, 20);
+    Text(dc, s_fontLabel, kInk, r.left, r.top, r.right, r.bottom, DT_CENTER, L"ЗАВЕРШИТЬ");
+}
+
 // The day's requests by their kind, against their limits
 static void DrawInfoSheet(HDC dc)
 {
@@ -2747,26 +2787,48 @@ static void MapsRow(HDC dc, int r, int i, const MapRegion& m)
     int st = MapState(m);
     _snwprintf(sub, 64, L"%d,%d МБ · %s", m.sizeKb / 1024, m.sizeKb % 1024 * 10 / 1024, kState[st]);
     sub[63] = 0;
-    SetRow(dc, kSetRow0 + (r + 2) * kSetRowH, t, sub, r < kMapsRows - 1);
-    const RECT& b = kMapsCtl[M_ROW0 + r];
+    SetRow(dc, kSetRow0 + r * kSetRowH, t, sub, r < kMapsRows - 1);
+    const RECT& b = kRegCtl[R_ROW0 + r];
     if (s_mapsConfirm == i) {
         Tile(dc, b, kOrange, kOrange, 20);
         Text(dc, s_fontLabel, kInk, b.left, b.top, b.right, b.bottom, DT_CENTER, L"ТОЧНО?");
     } else
-        DrawCtl(dc, b, s_mapsPressed == M_ROW0 + r, s_fontLabel, MapsBusyRegion() == i ? L"ОТМЕНА" : kBtn[st]);
+        DrawCtl(dc, b, s_mapsPressed == R_ROW0 + r, s_fontLabel, MapsBusyRegion() == i ? L"ОТМЕНА" : kBtn[st]);
 }
 
-// The catalog's button: a "refresh" sign - a circle's arc, clockwise, its arrow's head at the end (CE's GDI has no Arc:
-// its points)
+// A circle's arc round the button's middle, radius 11, clockwise from a0 degrees by step - 13 points (CE's GDI has no
+// Arc)
+static void ArcPoints(const RECT& r, double a0, double step, POINT* p)
+{
+    double cx = (r.left + r.right) / 2.0, cy = (r.top + r.bottom) / 2.0;
+    for (int k = 0; k < 13; k++) {
+        double a = (a0 - k * step) * M_PI / 180;
+        p[k].x = (int)(cx + 11 * cos(a));
+        p[k].y = (int)(cy - 11 * sin(a));
+    }
+}
+
+// The exit's sign: "power" - the arc open at the top, a stroke down into it
+static void PowerSign(HDC dc, const RECT& r, COLORREF c)
+{
+    POINT p[13], bar[2];
+    ArcPoints(r, 60, 25, p);   // (60 round to -240: the gap of 60 degrees at the top)
+    bar[0].x = bar[1].x = (r.left + r.right) / 2;
+    bar[0].y = (r.top + r.bottom) / 2 - 14;
+    bar[1].y = (r.top + r.bottom) / 2 - 2;
+    HPEN pen = CreatePen(PS_SOLID, 3, c);
+    HGDIOBJ op = SelectObject(dc, pen);
+    Polyline(dc, p, 13);
+    Polyline(dc, bar, 2);
+    SelectObject(dc, op);
+    DeleteObject(pen);
+}
+
+// The catalog's button: a "refresh" sign - a circle's arc, clockwise, its arrow's head at the end
 static void RefreshSign(HDC dc, const RECT& r, COLORREF c)
 {
-    double cx = (r.left + r.right) / 2.0, cy = (r.top + r.bottom) / 2.0, rad = 11;
     POINT p[13], head[3];
-    for (int k = 0; k < 13; k++) {   // from 315 degrees back round to 45 (the gap on the right)
-        double a = (315 - k * 22.5) * M_PI / 180;
-        p[k].x = (int)(cx + rad * cos(a));
-        p[k].y = (int)(cy - rad * sin(a));
-    }
+    ArcPoints(r, 315, 22.5, p);   // from 315 degrees back round to 45 (the gap on the right)
     double a = 45 * M_PI / 180, dx = sin(a), dy = cos(a);   // the way on at the end (clockwise), the screen's y down
     head[0].x = (int)(p[12].x + 7 * dx);
     head[0].y = (int)(p[12].y + 7 * dy);
@@ -2814,9 +2876,30 @@ static void MapsLook(HDC dc)
     SetRow(dc, kSetRow0 + kSetRowH, L"Детализация", s, true);
     StepperAt(dc, kMapsCtl[M_DETAIL_PREV], kMapsCtl[M_DETAIL_NEXT], s_mapsPressed - M_DETAIL_PREV,
               kDetailNames[g_cfg.detail]);
+    SetRow(dc, kSetRow0 + 2 * kSetRowH, L"Карты областей", L"маршрут и поиск без интернета", false);
+    DrawCtl(dc, kMapsCtl[M_REGIONS], s_mapsPressed == M_REGIONS, s_fontLabel, L"СКАЧАТЬ");
 }
 
-// Over the settings, as they look: the title, the clock, a panel with the rows, the pages and "refresh" below
+// The regions' page: the catalog's rows, the job's line, the pages and "refresh"
+static void DrawRegions(HDC dc)
+{
+    wchar_t s[32];
+    int n = MapsCount(), pages = n ? (n + kMapsRows - 1) / kMapsRows : 1;
+    if (s_mapsPage >= pages)
+        s_mapsPage = pages - 1;
+    MapRegion m;
+    for (int r = 0; r < kMapsRows && MapsAt(s_mapsPage * kMapsRows + r, &m); r++)
+        MapsRow(dc, r, s_mapsPage * kMapsRows + r, m);
+    MapsLine(dc);
+    DrawCtl(dc, kRegCtl[R_PREV], s_mapsPressed == R_PREV, s_fontBig, L"\x2039");
+    DrawCtl(dc, kRegCtl[R_NEXT], s_mapsPressed == R_NEXT, s_fontBig, L"\x203A");
+    _snwprintf(s, 32, L"%d/%d", s_mapsPage + 1, pages);
+    Text(dc, s_fontLabel, kText, 348, 420, 452, 468, DT_CENTER, s);
+    DrawCtl(dc, kRegCtl[R_LIST], s_mapsPressed == R_LIST, s_fontLabel, L"");
+    RefreshSign(dc, kRegCtl[R_LIST], s_mapsPressed == R_LIST ? kInk : kText);
+}
+
+// Over the settings, as they look: the title, the clock, a panel with the rows; the map's page or the regions'
 static void DrawMaps(HDC dc)
 {
     RECT all = { 0, 0, s_cw, s_ch };
@@ -2824,28 +2907,18 @@ static void DrawMaps(HDC dc)
     FillRect(dc, &all, ink);
     DeleteObject(ink);
     wchar_t s[32];
-    Text(dc, s_fontBig, kText, 20, 0, 500, 56, DT_LEFT, L"Карты");
+    Text(dc, s_fontBig, kText, 20, 0, 500, 56, DT_LEFT, s_regions ? L"Карты областей" : L"Карта");
     SYSTEMTIME t;
     GetLocalTime(&t);
     _snwprintf(s, 32, L"%02d:%02d", t.wHour, t.wMinute);
     Text(dc, s_fontClock, kText, s_cw - 160, 0, s_cw - 16, 56, DT_RIGHT, s);
-    BackDisc(dc, s_mapsPressed == M_BACK);
-    RECT panel = { 16, 64, s_cw - 16, 412 };
+    BackDisc(dc, s_mapsPressed == (s_regions ? R_BACK : M_BACK));
+    RECT panel = { 16, 64, s_cw - 16, s_regions ? 412 : 226 };
     Tile(dc, panel, kPanel, kPanel, 32);
-    int n = MapsCount(), pages = n ? (n + kMapsRows - 1) / kMapsRows : 1;
-    if (s_mapsPage >= pages)
-        s_mapsPage = pages - 1;
-    MapsLook(dc);
-    MapRegion m;
-    for (int r = 0; r < kMapsRows && MapsAt(s_mapsPage * kMapsRows + r, &m); r++)
-        MapsRow(dc, r, s_mapsPage * kMapsRows + r, m);
-    MapsLine(dc);
-    DrawCtl(dc, kMapsCtl[M_PREV], s_mapsPressed == M_PREV, s_fontBig, L"\x2039");
-    DrawCtl(dc, kMapsCtl[M_NEXT], s_mapsPressed == M_NEXT, s_fontBig, L"\x203A");
-    _snwprintf(s, 32, L"%d/%d", s_mapsPage + 1, pages);
-    Text(dc, s_fontLabel, kText, 348, 420, 452, 468, DT_CENTER, s);
-    DrawCtl(dc, kMapsCtl[M_LIST], s_mapsPressed == M_LIST, s_fontLabel, L"");
-    RefreshSign(dc, kMapsCtl[M_LIST], s_mapsPressed == M_LIST ? kInk : kText);
+    if (s_regions)
+        DrawRegions(dc);
+    else
+        MapsLook(dc);
 }
 
 // Distance as the bar shows it: metres by 10 (by 50 above 100), km with a tenth up to 10 km.

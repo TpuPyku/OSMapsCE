@@ -287,9 +287,10 @@ bool       VTileRender(const MapRequest& r, const unsigned char* data, int len, 
 bool       VTileRenderFrom(const MapRequest& r, const MapRequest& d, const unsigned char* data, int len, Image* out);   // from data tile d
 bool       VTileLocal(const MapRequest& r, Image* out);   // from the data at hand (parsed, a pack, the cache); false: none
 void       VTileSetDetail(int d);   // the map's detail: -1 auto (by the tiles' time), 0 full, 1 medium, 2 fast
-int        VTileDetail();           // the detail drawn now (auto: full till kAutoTiles are timed)
+int        VTileDetail();           // the detail drawn now (auto: medium till kAutoTiles are timed)
 int        VTileDetailFor(DWORD avgMs);   // auto's choice by a tile's average time
-void       VTileNoteMs(DWORD ms);   // a tile's time (auto)
+void       VTileNoteMs(DWORD ms, int z);   // a tile's time (auto: z10 and up, timed once a run)
+void       VTileAutoReset();        // (tests) auto timed anew
 void       VLabelsDraw(HDC dc, const RECT& mr, double cx, double cy, double vx, double vy, double angle, int z,
                        const RECT* avoid, int navoid);   // avoid: the controls over the map, no names under them
 const wchar_t* MapFace();

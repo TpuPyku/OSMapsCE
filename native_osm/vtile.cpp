@@ -45,10 +45,12 @@ static const unsigned char kShadow[2][3] = { { 206, 200, 190 }, { 6, 7, 9 } };  
 // The map's detail (the user 2026-10-30, as Shturmann's "fast" style - MAIN/SHTURMANN, PROJECT.md): full; medium -
 // no casings, no bridges' shadows, buildings and service roads from z16, paths from z17; fast - water, rails and the
 // streets from the tertiary up (the minor ones from z15), no buildings, no areas but water, no service roads and
-// paths, no signs and house numbers. Auto: full till kAutoTiles are drawn, then by their average time.
-enum { kAutoTiles = 20 };
+// paths, no signs and house numbers. Auto: medium till kAutoTiles of z10+ are drawn (the small zooms' all but empty),
+// then by their average time as full's (medium's x4/3, fast's x2: Shturmann's log 2026-10-30), once a run - a switch
+// to auto and back keeps it.
+enum { kAutoTiles = 12, kAutoMinZ = 10 };
 static int   s_detail;      // -1 auto, else the level
-static int   s_autoLevel;
+static int   s_autoLevel = 1;
 static DWORD s_msSum;
 static int   s_msN;
 
@@ -60,16 +62,21 @@ int VTileDetailFor(DWORD avgMs)
 void VTileSetDetail(int d)
 {
     s_detail = d;
-    s_autoLevel = 0;
+}
+
+void VTileAutoReset()
+{
+    s_autoLevel = 1;
     s_msSum = 0;
     s_msN = 0;
 }
 
-void VTileNoteMs(DWORD ms)
+void VTileNoteMs(DWORD ms, int z)
 {
-    if (s_msN >= kAutoTiles)
+    static const int kAsFull[3] = { 3, 4, 6 };   // thirds
+    if (s_msN >= kAutoTiles || z < kAutoMinZ)
         return;
-    s_msSum += ms;
+    s_msSum += ms * kAsFull[VTileDetail()] / 3;
     if (++s_msN == kAutoTiles)
         s_autoLevel = VTileDetailFor(s_msSum / kAutoTiles);
 }
@@ -1098,7 +1105,7 @@ bool VTileRenderFrom(const MapRequest& r, const MapRequest& key, const unsigned 
     }
     LeaveCriticalSection(&s_cs);
     if (ok) {
-        VTileNoteMs(GetTickCount() - t0);
+        VTileNoteMs(GetTickCount() - t0, r.z);
         Log("vtile: %d/%d/%d from %d/%d/%d: %lu ms", r.z, r.x, r.y, key.z - VEC_ZBASE, key.x, key.y, GetTickCount() - t0);
     }
     return ok;
