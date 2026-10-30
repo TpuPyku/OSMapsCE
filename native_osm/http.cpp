@@ -28,9 +28,16 @@ struct Conn {
     br_sslio_context        ioc;
     unsigned char           iobuf[BR_SSL_BUFSIZE_BIDI];
     bool                    tlsReady;      // context initialized: next reset may resume the session
+    bool                    busy;          // a thread's request on it now
+    bool                    spare;         // none free in the pool: its own, closed and freed after
 };
 
+// The connections are shared by the threads (the tiles' downloads, the maps' screen - offmaps.cpp: the user
+// 2026-10-30, the regions' list never came while the tiles were downloading - one took the other's socket): a thread
+// takes a free one under s_connCs and gives it back after its request.
 static Conn*                s_conns[kMaxConns];
+static CRITICAL_SECTION     s_connCs;
+static volatile LONG        s_connCsDone;
 static br_x509_trust_anchor s_tas[TA_COUNT];
 static volatile LONG        s_gpsDays;     // days since 0 AD from GPS, 0 = unknown
 
@@ -232,7 +239,9 @@ static void CloseConn(Conn* c)
     c->open = false;
 }
 
-static Conn* GetConn(const char* host, bool https)
+// A free connection to the host (its own kept, else a new slot, else the oldest free one for it), busy now; all
+// busy - a spare of its own. NULL: no memory.
+static Conn* PickConn(const char* host, bool https)
 {
     int freeSlot = -1;
     Conn* oldest = NULL;
@@ -243,17 +252,22 @@ static Conn* GetConn(const char* host, bool https)
                 freeSlot = i;
             continue;
         }
+        if (c->busy)
+            continue;
         if (!strcmp(c->host, host) && c->https == https)
             return c;
         if (!oldest || c->lastUse < oldest->lastUse)
             oldest = c;
     }
     Conn* c;
-    if (freeSlot >= 0) {
+    if (freeSlot >= 0 || !oldest) {
         c = (Conn*)calloc(1, sizeof(Conn));
         if (!c)
             return NULL;
-        s_conns[freeSlot] = c;
+        if (freeSlot >= 0)
+            s_conns[freeSlot] = c;
+        else
+            c->spare = true;
     } else {
         c = oldest;
         CloseConn(c);
@@ -263,6 +277,29 @@ static Conn* GetConn(const char* host, bool https)
     c->host[sizeof(c->host) - 1] = 0;
     c->https = https;
     return c;
+}
+
+static Conn* GetConn(const char* host, bool https)   // a connection for this thread's request (ReleaseConn after)
+{
+    if (!InterlockedExchange((LONG*)&s_connCsDone, 1))
+        InitializeCriticalSection(&s_connCs);
+    EnterCriticalSection(&s_connCs);
+    Conn* c = PickConn(host, https);
+    if (c)
+        c->busy = true;
+    LeaveCriticalSection(&s_connCs);
+    return c;
+}
+
+static void ReleaseConn(Conn* c)
+{
+    EnterCriticalSection(&s_connCs);
+    c->busy = false;
+    LeaveCriticalSection(&s_connCs);
+    if (c->spare) {   // (not in the pool: no one else has it)
+        CloseConn(c);
+        free(c);
+    }
 }
 
 static int OpenConn(Conn* c)
@@ -536,15 +573,9 @@ done:
     return NET_OK;
 }
 
-int HttpGet(const char* host, bool https, const char* path, unsigned char** body, int* bodyLen, int* status,
-            const char* ifNoneMatch, char* etag, int etagCap, const HttpExtra* extra)
+static int Fetch(Conn* c, const char* host, const char* path, unsigned char** body, int* bodyLen, int* status,
+                 const char* ifNoneMatch, char* etag, int etagCap, const HttpExtra* extra)
 {
-    *status = 0;
-    if (etag)
-        etag[0] = 0;
-    Conn* c = GetConn(host, https);
-    if (!c)
-        return NET_MEMORY;
     for (int attempt = 0; attempt < 2; attempt++) {
         bool reused = c->open;
         if (!c->open) {
@@ -571,6 +602,20 @@ int HttpGet(const char* host, bool https, const char* path, unsigned char** body
         // the server had closed the idle keep-alive connection: try once more on a new one
     }
     return NET_CONNECT;
+}
+
+int HttpGet(const char* host, bool https, const char* path, unsigned char** body, int* bodyLen, int* status,
+            const char* ifNoneMatch, char* etag, int etagCap, const HttpExtra* extra)
+{
+    *status = 0;
+    if (etag)
+        etag[0] = 0;
+    Conn* c = GetConn(host, https);
+    if (!c)
+        return NET_MEMORY;
+    int err = Fetch(c, host, path, body, bodyLen, status, ifNoneMatch, etag, etagCap, extra);
+    ReleaseConn(c);
+    return err;
 }
 
 void HttpCloseAll()
