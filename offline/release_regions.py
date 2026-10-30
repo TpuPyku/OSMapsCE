@@ -33,7 +33,8 @@ import yadisk
 
 ASSETS = 'https://github.com/TpuPyku/OSMapsCE/releases/download/maps/'
 FILES = ('route.grf', 'search.idx', 'region.txt')
-DISK = 'disk:/OSMapsCE/maps'   # the regions whole on the owner's Yandex Disk, the folder public
+DISK = 'app:/maps'   # the regions whole on the owner's Yandex Disk - the app's folder (Приложения\<app>\maps: the
+                     # token's only access, the user 2026-10-30), public
 TILES_Z = 15                   # the tiles' deepest zoom (Protomaps': the house numbers)
 
 
