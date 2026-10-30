@@ -153,13 +153,17 @@ def upload_zip(disk, name, path):
 def build_full(entry, folder, dist, get_bytes, day, disk):
     """The region whole up (its tiles cut now), its entry told: full = {zip, size, tiles}."""
     tiles = os.path.join(folder, 'tiles.vtp')
+    t0 = time.time()
     pmextract.extract(get_bytes, entry['bbox'], TILES_Z, tiles + '.part', None, pmextract.slim)
     os.replace(tiles + '.part', tiles)
+    print('%s: tiles %.0f MB in %.0f s' % (entry['name'], os.path.getsize(tiles) / 1e6, time.time() - t0))   # (the
+    t0 = time.time()                                               # workflow's log: which part takes the time)
     with open(os.path.join(folder, 'region.txt'), encoding='utf-8') as f:
         info = f.read() + 'tiles=%s\n' % day
     zpath = os.path.join(dist, entry['name'] + '.full.zip')
     stored_zip(zpath, folder, ('route.grf', 'search.idx', 'tiles.vtp'), info)
     entry['full'] = {'zip': entry['zip'], 'size': upload_zip(disk, entry['zip'], zpath), 'tiles': day}
+    print('%s: zip %.0f MB up in %.0f s' % (entry['name'], entry['full']['size'] / 1e6, time.time() - t0))
     with open(os.path.join(dist, entry['name'] + '.json'), 'w', encoding='utf-8') as f:
         json.dump(entry, f)
     return entry

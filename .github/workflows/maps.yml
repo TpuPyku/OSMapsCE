@@ -38,7 +38,8 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false   # a region failing leaves the others (and its previous data in the catalog)
-      max-parallel: 8
+      max-parallel: 16   # (a region whole - its tiles cut, onto Yandex Disk - takes 40 min on average, 3 h the
+                         # biggest: 8 at a time took ~10 h, 2026-10-30; public repos: up to 20 jobs)
       matrix:
         region: ${{ fromJSON(needs.list.outputs.regions) }}
     steps:
