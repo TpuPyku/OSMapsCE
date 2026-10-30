@@ -20,7 +20,11 @@ struct Pack {
     PEntry* index;
     OffFile f;
 };
-static Pack s_p;   // the region's pack open (one at a time)
+static Pack s_p;    // the region's pack open (one at a time)
+static Pack s_ov;   // the overview pack (OSMapsData\overview\overview.vtp: the CIS's small zooms whole, the PC app's)
+static int  s_ovZ = -1;      // its deepest zoom, -1 none
+static DWORD s_ovTick;       // looked for then (a card may come: again after kOvMs)
+enum { kOvMs = 5000 };
 
 struct LatLon { int lat, lon; };
 
@@ -34,41 +38,83 @@ static bool PackHolds(const wchar_t* path, void* ctx)   // OffRegion's test: a p
     return ok;
 }
 
+static bool OpenPath(Pack& k, const wchar_t* dir, const wchar_t* name)   // dir\name into k (closed before)
+{
+    wchar_t path[MAX_PATH];
+    OffClose(&k.f);
+    memset(&k, 0, sizeof(k));
+    _snwprintf(path, MAX_PATH, L"%s\\%s", dir, name);
+    path[MAX_PATH - 1] = 0;
+    if (!OffOpen(&k.f, path, &k.h, sizeof(k.h)) || memcmp(k.h.magic, "OSMT", 4) || k.h.version != 2 || !k.h.count) {
+        OffClose(&k.f);
+        return false;
+    }
+    k.index = (PEntry*)OffPart(&k.f, k.h.offIndex, k.h.count * sizeof(PEntry));
+    if (!k.index) {
+        Log("vpack: cannot load %S (memory?)", path);
+        OffClose(&k.f);
+        memset(&k, 0, sizeof(k));
+        return false;
+    }
+    Log("vpack: %S: %lu tiles", path, k.h.count);
+    return true;
+}
+
 static bool Open(const LatLon& p)
 {
     if (s_p.index && OffInside(&s_p.h.minLat, p.lat, p.lon))
         return true;
-    wchar_t dir[MAX_PATH], path[MAX_PATH];
-    if (!OffRegion(L"tiles.vtp", PackHolds, (void*)&p, dir))
-        return false;
-    OffClose(&s_p.f);
-    memset(&s_p, 0, sizeof(s_p));
-    _snwprintf(path, MAX_PATH, L"%s\\tiles.vtp", dir);
-    path[MAX_PATH - 1] = 0;
-    if (!OffOpen(&s_p.f, path, &s_p.h, sizeof(s_p.h)))
-        return false;
-    s_p.index = (PEntry*)OffPart(&s_p.f, s_p.h.offIndex, s_p.h.count * sizeof(PEntry));
-    if (!s_p.index) {
-        Log("vpack: cannot load %S (memory?)", path);
-        OffClose(&s_p.f);
-        memset(&s_p, 0, sizeof(s_p));
-        return false;
-    }
-    Log("vpack: %S: %lu tiles", path, s_p.h.count);
-    return true;
+    wchar_t dir[MAX_PATH];
+    return OffRegion(L"tiles.vtp", PackHolds, (void*)&p, dir) && OpenPath(s_p, dir, L"tiles.vtp");
 }
 
-static const PEntry* Find(unsigned __int64 key)
+static const PEntry* Find(const Pack& k, unsigned __int64 key)
 {
-    DWORD lo = 0, hi = s_p.h.count;
+    DWORD lo = 0, hi = k.h.count;
     while (lo < hi) {
         DWORD m = (lo + hi) / 2;
-        if (s_p.index[m].key < key)
+        if (k.index[m].key < key)
             lo = m + 1;
         else
             hi = m;
     }
-    return lo < s_p.h.count && s_p.index[lo].key == key ? &s_p.index[lo] : NULL;
+    return lo < k.h.count && k.index[lo].key == key ? &k.index[lo] : NULL;
+}
+
+static bool Read(const Pack& k, const MapRequest& d, unsigned char** data, int* len)   // d's tile from k
+{
+    const PEntry* e = Find(k, (unsigned __int64)(d.z - VEC_ZBASE) << 32 | (unsigned __int64)d.x << 16 | (DWORD)d.y);
+    if (!e)
+        return false;
+    *data = (unsigned char*)malloc(e->len ? e->len : 1);
+    if (*data && OffRead(k.f.file, e->off, *data, e->len)) {
+        *len = (int)e->len;
+        return true;
+    }
+    free(*data);
+    *data = NULL;
+    return false;
+}
+
+static bool Exists(const wchar_t* path, void*)   // OffRegion's test: the file is there
+{
+    return GetFileAttributes(path) != 0xFFFFFFFF;
+}
+
+int VOverviewZ()   // (its index sorted by key: the last one's zoom the deepest)
+{
+    if (s_ovZ >= 0 || (s_ovTick && GetTickCount() - s_ovTick < kOvMs))
+        return s_ovZ;
+    s_ovTick = GetTickCount() | 1;
+    wchar_t dir[MAX_PATH];
+    if (OffRegion(L"overview.vtp", Exists, NULL, dir) && OpenPath(s_ov, dir, L"overview.vtp"))
+        s_ovZ = (int)(s_ov.index[s_ov.h.count - 1].key >> 32);
+    return s_ovZ;
+}
+
+bool VOverviewTile(const MapRequest& d, unsigned char** data, int* len)
+{
+    return d.z - VEC_ZBASE <= VOverviewZ() && Read(s_ov, d, data, len);
 }
 
 static LatLon Middle(int z, int x, int y)   // the tile's middle, 1e-6 degrees
@@ -81,17 +127,5 @@ static LatLon Middle(int z, int x, int y)   // the tile's middle, 1e-6 degrees
 bool VPackTile(const MapRequest& d, unsigned char** data, int* len)
 {
     int z = d.z - VEC_ZBASE;
-    if ((unsigned)z > VEC_PACKZ || !Open(Middle(z, d.x, d.y)))
-        return false;
-    const PEntry* e = Find((unsigned __int64)z << 32 | (unsigned __int64)d.x << 16 | (DWORD)d.y);
-    if (!e)
-        return false;
-    *data = (unsigned char*)malloc(e->len ? e->len : 1);
-    if (*data && OffRead(s_p.f.file, e->off, *data, e->len)) {
-        *len = (int)e->len;
-        return true;
-    }
-    free(*data);
-    *data = NULL;
-    return false;
+    return (unsigned)z <= VEC_PACKZ && Open(Middle(z, d.x, d.y)) && Read(s_p, d, data, len);
 }

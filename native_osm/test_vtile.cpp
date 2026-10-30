@@ -40,6 +40,21 @@ bool VPackTile(const MapRequest& d, unsigned char** data, int* len)
     return false;
 }
 
+// The overview pack (the CIS's small zooms whole): its deepest zoom (-1 none), its tiles - any key asked, one data
+static int                  s_ovZ = -1;
+static const unsigned char* s_ovData;
+static int                  s_ovLen;
+
+int VOverviewZ()
+{
+    return s_ovZ;
+}
+
+bool VOverviewTile(const MapRequest& d, unsigned char** data, int* len)
+{
+    return d.z - VEC_ZBASE <= s_ovZ && s_ovData && Give(s_ovData, s_ovLen, data, len);
+}
+
 void CachePath(wchar_t* out, const MapRequest& r)
 {
     _snwprintf(out, MAX_PATH, L"%d/%d/%d", r.z, r.x, r.y);
@@ -1079,6 +1094,50 @@ static void TiltWarpChecks()
     Check(sky[0] == RGB565(170, 205, 238), "tilt frame: the sky's blue high up");
 }
 
+// The small zooms (the user 2026-10-30): a region's pack holds its region only - its z8 tile is empty round it; the
+// cache's tile (OpenFreeMap: whole) first, else the overview pack's (the CIS whole), the region's pack's last; deeper
+// than the overview the region's pack first, as before. tile: water in the top left quarter; houses: land there.
+static void OverviewChecks(const unsigned char* tile, int tileLen, const unsigned char* houses, int housesLen)
+{
+    const unsigned short water = RGB565(168, 204, 226);
+    Image im = { 0 };
+    s_ovZ = 8;
+    s_ovData = tile;
+    s_ovLen = tileLen;
+    MapRequest a = { SRC_OSM, 8, 1, 1 }, da = { SRC_OSM, VEC_ZBASE + 8, 1, 1 };
+    s_packKey[0] = da;
+    s_packData[0] = houses;
+    s_packLen[0] = housesLen;
+    s_nPack = 1;
+    Check(VTileLocal(a, &im) && Px(im, 64, 64) == water, "overview: z8 - the overview's, not the region's");
+    ImageFree(&im);
+    MapRequest b = { SRC_OSM, 8, 2, 1 }, db = { SRC_OSM, VEC_ZBASE + 8, 2, 1 };
+    CachePath(s_file, db);
+    s_fileData = houses;
+    s_fileLen = housesLen;
+    Check(VTileLocal(b, &im) && Px(im, 64, 64) != water, "overview: the cache's tile before it");
+    ImageFree(&im);
+    s_file[0] = 0;
+    MapRequest c = { SRC_OSM, 9, 3, 1 }, dc = { SRC_OSM, VEC_ZBASE + 9, 3, 1 };
+    s_packKey[0] = dc;
+    Check(VTileLocal(c, &im) && Px(im, 64, 64) != water, "overview: deeper than it - the region's pack");
+    ImageFree(&im);
+    s_ovZ = -1;
+    MapRequest e = { SRC_OSM, 8, 4, 1 }, de = { SRC_OSM, VEC_ZBASE + 8, 4, 1 };
+    s_packKey[0] = de;
+    Check(VTileLocal(e, &im) && Px(im, 64, 64) != water, "overview: none - the region's pack as before");
+    ImageFree(&im);
+    s_ovZ = 8;
+    MapRequest f = { SRC_OSM, 8, 5, 1 }, df = { SRC_OSM, VEC_ZBASE + 8, 5, 1 };
+    s_packKey[0] = df;
+    s_ovData = NULL;   // (the overview without this tile: outside its box)
+    Check(VTileLocal(f, &im) && Px(im, 64, 64) != water, "overview: not in it - the region's pack");
+    ImageFree(&im);
+    s_ovZ = -1;
+    s_nPack = 0;
+    s_reads = 0;
+}
+
 // VTileLocal: a shown tile from the data at hand - the parsed tile without reading, the pack's z15 before its z14,
 // the cache's file; none: false (to download). z14 data tile (40, 20): MakeTile (water in its top left
 // quarter); its top left z15 child: the quarter's houses (no water) - a z16 tile drawn from it is land, from the z14 one
@@ -1133,6 +1192,7 @@ static void LocalChecks(const unsigned char* tile, int tileLen, const unsigned c
     Check(!VTileLocal(r14b, &im) && !im.bmp, "local: only a broken tile - none (to download)");
     s_nPack = 0;
     s_reads = 0;
+    OverviewChecks(tile, tileLen, houses, housesLen);
 }
 
 int main()

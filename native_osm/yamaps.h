@@ -202,6 +202,8 @@ bool  OfflineSearch(const char* photonPath, char** body, int* len);   // false: 
 void  OfflineSearchDrop();   // its index let go (OfflineDrop)
 // vpack.cpp - a region's vector tiles (tiles.vtp, offline/make_tiles.py): the data tile d (VEC_ZBASE + z), malloc'd
 bool  VPackTile(const MapRequest& d, unsigned char** data, int* len);   // false: no region's pack has it
+int   VOverviewZ();   // the overview pack's deepest zoom (OSMapsData\overview\overview.vtp: the CIS's small zooms whole), -1 none
+bool  VOverviewTile(const MapRequest& d, unsigned char** data, int* len);   // its data tile d (malloc'd); false: none
 // offdata.cpp - the offline data's files (a header, parts kept in memory) and the JSON text of the answers
 enum { kOffParts = 6 };
 struct OffFile {

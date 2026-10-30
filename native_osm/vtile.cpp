@@ -1119,18 +1119,27 @@ bool VTileRenderFrom(const MapRequest& r, const MapRequest& key, const unsigned 
 }
 
 // A data tile drawn from: parsed already (nothing read), else from its pack, else (cached true) from the cache's file
+// A data tile's bytes at hand: the region's pack's, else (cached) the cache's file. The small zooms (the overview
+// pack's, the user 2026-10-30: a region's pack holds its region only - empty round it): the cache's (OpenFreeMap:
+// whole), else the overview's, else the region's pack's.
+static bool TileData(const MapRequest& key, bool cached, unsigned char** data, int* len)
+{
+    wchar_t file[MAX_PATH];
+    CachePath(file, key);
+    if (key.z - VEC_ZBASE <= VOverviewZ())
+        return (cached && ReadWholeFile(file, data, len)) || VOverviewTile(key, data, len) ||
+               VPackTile(key, data, len);
+    return VPackTile(key, data, len) || (cached && ReadWholeFile(file, data, len));
+}
+
 static bool LocalFrom(const MapRequest& r, const MapRequest& key, bool cached, Image* out, bool draft)
 {
     if (VTileRenderFrom(r, key, NULL, 0, out, draft))
         return true;
-    wchar_t file[MAX_PATH];
     unsigned char* data = NULL;
     int len = 0;
-    if (!VPackTile(key, &data, &len)) {
-        CachePath(file, key);
-        if (!cached || !ReadWholeFile(file, &data, &len))
-            return false;
-    }
+    if (!TileData(key, cached, &data, &len))
+        return false;
     // not a vector tile (its first field a layer's: 0x1A) - as none (the user's card 2026-10-29: tiles written 512
     // bytes off, a layer's middle first - roads gone, pieces of other places)
     bool ok = (!len || data[0] == 0x1A) && VTileRenderFrom(r, key, data, len, out, draft);

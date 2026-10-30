@@ -701,6 +701,23 @@ int main()
     Check(!VPackTile(moscow, &data, &len), "pack: outside every region's pack (an old pack's not read) - no answer",
           NULL);
 
+    // the overview pack (the PC app's, 2026-10-30: the CIS's small zooms whole): its depth, its tiles; the regions' not
+    // mistaken for it, nor it for a region's
+    MapRequest o8 = { SRC_OSM, VEC_ZBASE + 8, 154, 79 }, o0 = { SRC_OSM, VEC_ZBASE + 0, 0, 0 };
+    MapRequest o9 = { SRC_OSM, VEC_ZBASE + 9, 308, 158 };
+    Check(VOverviewZ() == 8, "overview: its deepest zoom", NULL);
+    Check(VOverviewTile(o8, &data, &len) && len == 4 && !memcmp(data, "ov 8", 4), "overview: Moscow's z8 tile", NULL);
+    free(data);
+    data = NULL;
+    Check(VOverviewTile(o0, &data, &len) && len == 4 && !memcmp(data, "ov 0", 4), "overview: the z0 tile", NULL);
+    free(data);
+    data = NULL;
+    Check(!VOverviewTile(o9, &data, &len), "overview: deeper than it - none", NULL);
+    Check(!VPackTile(o8, &data, &len) && VPackTile(t14, &data, &len) && !memcmp(data, "tile 14", 7),
+          "overview: not a region's pack; the region's still found", NULL);
+    free(data);
+    data = NULL;
+
     printf("%d checks, %d failed\n", s_checks, s_failed);
     return s_failed;
 }
