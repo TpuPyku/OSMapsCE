@@ -33,6 +33,10 @@ STAGE_DAYS = 7            # left longer (a job given up): removed, not gone on w
 http_get = pmextract.http_get
 
 
+class Cancelled(Exception):
+    """"Отменить запись" pressed (the user 2026-10-30): raised from the job's progress, where it is."""
+
+
 def download(url, tell, open_url=urllib.request.urlopen, piece=256 * 1024):
     """A release's file read in pieces, tell(part, 'x из y МБ') after each (the user 2026-10-29: the graph's zip and
     the trunk roads came for minutes, the bar full, nothing told)."""
@@ -134,15 +138,31 @@ def copy_file(src, dst, tell, piece=1 << 20):
             tell(len(chunk))
 
 
+def staged_files(src_root):
+    """(folder, file) of the temp folder's regions, each folder's region.txt last."""
+    files = []
+    for name in sorted(os.listdir(src_root)) if os.path.isdir(src_root) else []:
+        folder = os.listdir(os.path.join(src_root, name))
+        files += [(name, f) for f in sorted(folder, key=lambda f: f == 'region.txt')]
+    return files
+
+
+def unmark(folder):
+    """The region's region.txt off (written last, removed first: a folder never looks whole half done)."""
+    if os.path.exists(os.path.join(folder, 'region.txt')):
+        os.remove(os.path.join(folder, 'region.txt'))
+
+
+def plain_name(name):
+    return bool(name) and name == os.path.basename(name) and name not in ('.', '..')
+
+
 def copy_to(stage, drive, tell):
     """The folders written on the PC (stage\\OSMapsData\\*) onto the card at once (the user 2026-10-30: written there
     straight, the card's sectors went astray; a slow card takes it faster too): its room checked first, a folder's
     region.txt last (a region half copied never looks whole); tell(part, text)."""
     src_root = os.path.join(stage, 'OSMapsData')
-    files = []
-    for name in sorted(os.listdir(src_root)) if os.path.isdir(src_root) else []:
-        folder = os.listdir(os.path.join(src_root, name))
-        files += [(name, f) for f in sorted(folder, key=lambda f: f == 'region.txt')]
+    files = staged_files(src_root)
     total = sum(os.path.getsize(os.path.join(src_root, n, f)) for n, f in files)
     free = shutil.disk_usage(drive).free
     if free < total:
@@ -152,10 +172,31 @@ def copy_to(stage, drive, tell):
     def step(n):
         done[0] += n
         tell(done[0] / total, '%.1f из %.1f МБ' % (done[0] / 1e6, total / 1e6))
+    for name in sorted({n for n, _ in files}):   # an older one's region.txt off first: stopped midway, never whole
+        unmark(os.path.join(drive, 'OSMapsData', name))
     for name, f in files:
         os.makedirs(os.path.join(drive, 'OSMapsData', name), exist_ok=True)
         copy_file(os.path.join(src_root, name, f), os.path.join(drive, 'OSMapsData', name, f), step)
     tell(1.0, 'готово')
+
+
+def remove_regions(drive, names):
+    """The regions' folders off the drive (the user 2026-10-30: "Удалить с флешки"), each region.txt first (a folder
+    half removed never looks whole); only plain names of folders there. The names removed."""
+    gone = []
+    for name in names:
+        path = os.path.join(drive, 'OSMapsData', name)
+        if not plain_name(name) or not os.path.isdir(path):
+            continue
+        unmark(path)
+        shutil.rmtree(path)
+        gone.append(name)
+    return gone
+
+
+def ask(title, text):   # a yes / no question (tests: replaced)
+    import tkinter.messagebox
+    return tkinter.messagebox.askyesno(title, text)
 
 
 def stage_dir(now=None):
@@ -229,7 +270,8 @@ def box_area(rings):
 # OSMapsCE's colours (VestaHome's tokens): the background, the panel, the rows, the text, the dim text, the accent
 INK, PANEL, ROW, TEXT, DIM, ACCENT = '#0E1013', '#1A1D22', '#23272E', '#F5F3EE', '#AAB0B8', '#FF6B1A'
 FRESH, EDGE = '#2E5D45', '#4A505A'   # the map: a region on the drive and fresh; the regions' borders
-GO, BUSY = 'Записать выбранные', 'Идёт запись…'   # the button, and while it writes (the user 2026-10-29)
+GO, BUSY, STOPPING = 'Записать выбранные', 'Отменить запись', 'Отмена…'   # the button; while it writes it cancels
+                                                                           # (the user 2026-10-30)
 MAP_W, MAP_H = 560, 520
 
 
@@ -237,6 +279,7 @@ class App:
     def __init__(self, tk, ttk):
         self.tk, self.ttk = tk, ttk
         self.news = queue.Queue()
+        self.stop = threading.Event()   # "Отменить запись": the job's next progress raises Cancelled
         self.cat = {'regions': []}
         self.shapes = None
         self.chosen = set()
@@ -321,10 +364,13 @@ class App:
         bottom.pack(fill='x', padx=12, pady=(0, 12))
         self.go = ttk.Button(bottom, text=GO, style='Go.TButton', command=self.write_chosen)
         self.go.pack(side='left')
+        ttk.Button(bottom, text='Удалить с флешки', command=self.remove_chosen).pack(side='right')
 
     def work(self, job, *args):   # (in the thread: an error shown, not lost; then the button back)
         try:
             job(*args)
+        except Cancelled:
+            self.news.put(('status', 'Остановлено. Скачанное осталось на ПК — следующая запись продолжит с него.'))
         except Exception as e:    # noqa: BLE001 - the user sees it
             self.news.put(('status', 'Ошибка: %s' % e))
         self.news.put(('done', None))
@@ -460,16 +506,43 @@ class App:
         entries = [r for r in self.cat['regions'] if r['name'] in self.chosen]
         drive = self.drive.get()
         trunk = TRUNK in self.chosen or bool(entries) and trunk_date(drive) is None   # (none there: with any region)
-        if (entries or trunk) and not self.go.instate(['disabled']):   # (once at a time)
-            self.go.configure(text=BUSY, style='Busy.TButton')
+        if self.go['text'] == BUSY:   # writing: this press stops it (once at a time)
+            self.stop.set()
+            self.go.configure(text=STOPPING)
             self.go.state(['disabled'])
+        elif entries or trunk:
+            self.go.configure(text=BUSY, style='Busy.TButton')
             threading.Thread(target=self.work, args=(self.write_all, entries, drive, trunk), daemon=True).start()
 
-    def on_done(self, _):   # the writing over (or failed): the button back
+    def on_done(self, _):   # the writing over (or failed, or stopped): the button back
+        self.stop.clear()
         self.go.configure(text=GO, style='Go.TButton')
         self.go.state(['!disabled'])
 
-    def tell(self, head, part, text):   # (from the writing thread: through the queue)
+    def chosen_there(self, drive):
+        """The chosen ones on the drive, and their titles."""
+        have = self.have()
+        there = sorted(n for n in self.chosen if n in have or n == TRUNK and trunk_date(drive))
+        titles = {r['name']: r.get('title', r['name']) for r in self.cat['regions']}
+        titles[TRUNK] = TRUNK_TITLE
+        return there, [titles.get(n, n) for n in there]
+
+    def remove_chosen(self):
+        """The chosen regions that are on the drive off it, asked first; not while writing."""
+        drive = self.drive.get()
+        there, titles = self.chosen_there(drive)
+        if not there or self.go['text'] != GO:
+            self.status.set('Нечего удалять: выбранных областей на флешке нет' if not there else 'Идёт запись')
+            return
+        if ask('Удалить с флешки', 'Удалить с %s:\n%s?' % (drive, ', '.join(titles))):
+            gone = remove_regions(drive, there)
+            self.chosen -= set(gone)
+            self.refresh()
+            self.status.set('Удалено: %d. ' % len(gone) + self.status.get())
+
+    def tell(self, head, part, text):   # (from the writing thread: through the queue); stopped - Cancelled
+        if self.stop.is_set():
+            raise Cancelled()
         self.news.put(('progress', part))
         self.news.put(('status', '%s: %s' % (head, text)))
 

@@ -233,12 +233,16 @@ class Maps(unittest.TestCase):
                 app.write_chosen()
                 self.assertEqual(thread.call_args[1]['args'][1:], ([cat['regions'][0]], drive, True))   # no trunk
                                                                                    # roads there: they too
-                self.assertEqual(app.go['text'], 'Идёт запись…')                     # the button tells it is busy
+                self.assertEqual(app.go['text'], 'Отменить запись')                 # busy: the button cancels
                 self.assertEqual(str(app.go['style']), 'Busy.TButton')
-                self.assertTrue(app.go.instate(['disabled']))
+                self.assertFalse(app.go.instate(['disabled']))
                 app.write_chosen()
                 self.assertEqual(thread.call_count, 1)                              # not twice at once
+                self.assertTrue(app.stop.is_set())                                  # stopped
+                self.assertEqual(app.go['text'], 'Отмена…')
+                self.assertTrue(app.go.instate(['disabled']))
                 app.on_done(None)
+                self.assertFalse(app.stop.is_set())                                 # the next one not stopped
                 app.chosen = {'trunk'}                                              # the trunk roads alone
                 app.write_chosen()
                 self.assertEqual(thread.call_args[1]['args'][1:], ([], drive, True))
@@ -246,6 +250,22 @@ class Maps(unittest.TestCase):
                 self.assertEqual(app.go['text'], 'Записать выбранные')
                 self.assertEqual(str(app.go['style']), 'Go.TButton')
                 self.assertFalse(app.go.instate(['disabled']))
+            app.chosen = {'a_oblast', 'b_oblast'}                                    # only b on the card
+            asked = []
+            with unittest.mock.patch.object(maps_app, 'ask', lambda title, text: asked.append(text) or False):
+                app.remove_chosen()
+            self.assertIn('Бета', asked[0])
+            self.assertNotIn('Альфа', asked[0])
+            self.assertIn('b_oblast', maps_app.installed(drive))                     # "no": kept
+            with unittest.mock.patch.object(maps_app, 'ask', lambda title, text: True):
+                app.remove_chosen()
+            self.assertEqual(maps_app.installed(drive), {})
+            self.assertIn('Удалено: 1', app.status.get())
+            app.chosen = {'a_oblast'}                                                 # none of them there
+            with unittest.mock.patch.object(maps_app, 'ask', lambda title, text: asked.append(text)):
+                app.remove_chosen()
+            self.assertEqual(len(asked), 1)                                          # not asked
+            self.assertIn('Нечего удалять', app.status.get())
         finally:
             app.root.destroy()
 
@@ -284,12 +304,15 @@ class Maps(unittest.TestCase):
 
     installs = []
 
-    def staged_job(self, free=None):
+    def staged_job(self, free=None, stop=False):
         """write_all with install / install_trunk writing small files where they are told (the PC's temp folder);
         returns the news, the stage the regions went to, the files copied in order."""
         cat = {'regions': [{'name': 'a', 'title': 'A', 'date': 'd'}, {'name': 'b', 'title': 'B', 'date': 'd'}]}
         app = type('A', (), {})()
         app.news, app.cat = __import__('queue').Queue(), cat
+        app.stop = __import__('threading').Event()
+        if stop:
+            app.stop.set()
         app.tell = lambda head, part, text: maps_app.App.tell(app, head, part, text)
         app.write_stage = lambda *a: maps_app.App.write_stage(app, *a)
         stages, copied = self.installs, []
@@ -332,6 +355,47 @@ class Maps(unittest.TestCase):
         while not app.news.empty():
             news.append(app.news.get())
         return news, stages, copied, target
+
+    def test_app_cancelled(self):
+        """"Отменить" (the user 2026-10-30): the job stopped at its next step, told; what was downloaded kept in the
+        temp folder (the next time goes on there), nothing onto the card."""
+        self.installs = []
+        news, stages, copied, target = self.staged_job(stop=True)
+        self.assertTrue(any(k == 'status' and v.startswith('Остановлено') for k, v in news), news)
+        self.assertEqual(copied, [])
+        self.assertTrue(os.path.isdir(os.path.join(self.tmp, 'T', 'OSMapsCE-Maps')))   # kept
+
+    def test_copy_cancelled_never_looks_whole(self):
+        """Stopped in the middle of a region's copy over an older one: its old region.txt gone first - the card's
+        folder never looks whole with half its files new."""
+        stage, card = os.path.join(self.tmp, 'S'), os.path.join(self.tmp, 'C')
+        for root, date in ((stage, b'new'), (card, b'old')):
+            os.makedirs(os.path.join(root, 'OSMapsData', 'a'))
+            for f, data in (('route.grf', b'G' * 10), ('region.txt', b'date=' + date + b'\n')):
+                with open(os.path.join(root, 'OSMapsData', 'a', f), 'wb') as out:
+                    out.write(data)
+
+        def tell(part, text):
+            raise maps_app.Cancelled()
+        with self.assertRaises(maps_app.Cancelled):
+            maps_app.copy_to(stage, card, tell)
+        self.assertEqual(maps_app.installed(card), {})
+
+    def test_remove_regions(self):
+        """"Удалить с флешки" (the user 2026-10-30): the chosen regions' folders gone (region.txt first), the trunk
+        roads too when chosen; a name that is no folder there - or no plain name - touches nothing."""
+        drive = os.path.join(self.tmp, 'E')
+        for name in ('a', 'b', 'trunk'):
+            os.makedirs(os.path.join(drive, 'OSMapsData', name))
+            with open(os.path.join(drive, 'OSMapsData', name, 'region.txt'), 'w') as f:
+                f.write('date=d\n')
+        with open(os.path.join(drive, 'keep.txt'), 'w') as f:
+            f.write('x')
+        got = maps_app.remove_regions(drive, ['a', 'trunk', 'zz', '..', '', os.path.join('b', '..')])
+        self.assertEqual(got, ['a', 'trunk'])
+        self.assertEqual(maps_app.installed(drive), {'b': 'd'})
+        self.assertIsNone(maps_app.trunk_date(drive))
+        self.assertTrue(os.path.exists(os.path.join(drive, 'keep.txt')))
 
     def test_app_writes_all_with_one_progress(self):
         """The whole job (the user 2026-10-29: the bar full before the end; 2026-10-30: written straight to the card,

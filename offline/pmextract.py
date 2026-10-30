@@ -98,15 +98,20 @@ def fetch(archive, located, pool, progress=None):
     groups = merged(located.values())
     total, done = sum(e - b for b, e, _ in groups) or 1, 0
     jobs = {pool.submit(archive.get_bytes, b, e - b): (b, e, spans) for b, e, spans in groups}
-    for job in as_completed(jobs):
-        start, end, spans = jobs[job]
-        chunk = job.result()
-        for off, n in spans:
-            data[(off, n)] = chunk[off - start:off - start + n]
-        done += end - start
-        if progress:
-            progress(kDirsPart + (kDataEnd - kDirsPart) * done / total,
-                     'плитки: %.1f из %.1f МБ' % (done / 1e6, total / 1e6))
+    try:
+        for job in as_completed(jobs):
+            start, end, spans = jobs[job]
+            chunk = job.result()
+            for off, n in spans:
+                data[(off, n)] = chunk[off - start:off - start + n]
+            done += end - start
+            if progress:
+                progress(kDirsPart + (kDataEnd - kDirsPart) * done / total,
+                         'плитки: %.1f из %.1f МБ' % (done / 1e6, total / 1e6))
+    except BaseException:   # (stopped - the app's "Отменить" - or failed: the fetches not begun dropped, not waited)
+        for job in jobs:
+            job.cancel()
+        raise
     return data
 
 
