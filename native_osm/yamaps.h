@@ -187,6 +187,8 @@ bool MapsGetRegion(int i);       // the catalog's region i (and the trunk roads 
 int  MapsCount();
 bool MapsAt(int i, MapRegion* out);
 int  MapsJob(wchar_t* text, int cap, int* gotKb, int* totalKb);   // MAPS_BUSY / MAPS_IDLE, its line, progress
+int  MapsBusyRegion();            // the catalog's region being downloaded, -1 none
+void MapsCancel();                // the download stopped (its part kept: goes on from there next time)
 
 // offline.cpp - routes from a region's road graph (OSMapsData\<region>\route.grf), answered as OSRM's JSON
 bool  OfflineRoute(const char* osrmPath, char** body, int* len);   // false: no region / no way - ask OSRM

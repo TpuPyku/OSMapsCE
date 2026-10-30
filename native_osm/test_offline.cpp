@@ -152,9 +152,10 @@ static bool FileIs(const wchar_t* name, const char* want, int n)   // a file und
 }
 
 // A made-up GitHub for the download (offmaps.cpp): github.com redirects to the storage, which answers ranges of the
-// test zip (206); s_failOnce - the next range request times out (a lost link)
+// test zip (206); s_failOnce - the next range request times out (a lost link); s_cancelNow - the screen's "ОТМЕНА"
+// pressed meanwhile; s_seen - the region the job said it downloads
 static char* s_zip;
-static int   s_zipLen, s_asked, s_failOnce;
+static int   s_zipLen, s_asked, s_failOnce, s_cancelNow, s_seen;
 
 static int FakeGet(const char* host, bool, const char* path, unsigned char** body, int* len, int* status,
                    const HttpExtra* x)
@@ -181,6 +182,9 @@ static int FakeGet(const char* host, bool, const char* path, unsigned char** bod
         *status = 0;
         return NET_TIMEOUT;
     }
+    s_seen = MapsBusyRegion();
+    if (s_cancelNow)
+        MapsCancel();
     int a = 0, b = 0;
     sscanf(x->headers, "Range: bytes=%d-%d", &a, &b);
     if (a >= s_zipLen) {
@@ -278,6 +282,7 @@ static void DownloadChecks()
 
     // the job, as the screen starts it: the catalog, then a region (into the program's OSMapsData here - no card),
     // the trunk roads after it when the card has none (they are there: obj\test\OSMapsData\trunk)
+    Check(MapsBusyRegion() == -1, "job: no region downloaded before any", NULL);
     Check(MapsList() && WaitMaps() && MapsCount() == 2, "job: the catalog loaded", NULL);
     MapRegion m;
     Check(MapsAt(0, &m) && !strcmp(m.name, "tiny") && MapState(m) == MAP_OK && MapsAt(1, &m) && MapState(m) == MAP_NEW
@@ -287,11 +292,26 @@ static void DownloadChecks()
           "job: a region downloaded, the card's state after", NULL);
     Check(FileIs(L"OSMapsData\\zz\\search.idx", "IDXIDXIDXIDXIDXIDXIDXIDXIDXIDX", 30), "job: into the program's folder",
           NULL);
+    Check(s_seen == 1 && MapsBusyRegion() == -1, "job: the region being downloaded told (its row's ОТМЕНА), none after",
+          NULL);
     wchar_t text[128];
     int gotKb = 0, total = 0;
     Check(MapsJob(text, 128, &gotKb, &total) == MAPS_IDLE && total == 2 && wcsstr(text, L"Z"), "job: its result told",
           NULL);
     Check(!MapsGetRegion(5), "job: no such region", NULL);
+
+    // cancelled (the user 2026-10-30): stopped, nothing installed, the part kept for the next time; not sticking
+    wchar_t zz[MAX_PATH], zzPart[MAX_PATH];
+    PathInDir(zz, L"OSMapsData\\zz");
+    Remove(zz);
+    PathInDir(zzPart, L"OSMapsData\\zz.zip.part");
+    s_cancelNow = 1;
+    Check(MapsGetRegion(1) && WaitMaps() && MapsAt(1, &m) && MapState(m) == MAP_NEW &&
+          GetFileAttributes(zzPart) != 0xFFFFFFFF, "cancel: stopped, not installed, the part kept", NULL);
+    Check(MapsJob(text, 128, &gotKb, &total) == MAPS_IDLE && wcsstr(text, L"остановлена"), "cancel: told", NULL);
+    s_cancelNow = 0;
+    Check(MapsGetRegion(1) && WaitMaps() && MapsAt(1, &m) && MapState(m) == MAP_OK, "cancel: the next one goes on",
+          NULL);
     MapsSetGet(NULL, 0);
     free(s_zip);
 

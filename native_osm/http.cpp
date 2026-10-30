@@ -597,6 +597,9 @@ static int Fetch(Conn* c, const char* host, const char* path, unsigned char** bo
                 return NET_TLS;
             }
         }
+        if (!answered)   // (the user's log 2026-10-30: the catalog "HTTP 0" with nothing about it)
+            Log("http: %s: no answer (%d, TLS %d, %s)", host, err, c->https ? br_ssl_engine_last_error(&c->sc.eng) : 0,
+                reused ? "kept" : "new");
         if (!reused || answered)
             return err;
         // the server had closed the idle keep-alive connection: try once more on a new one

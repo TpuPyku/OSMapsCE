@@ -224,6 +224,7 @@ static int RealGet(const char* host, bool https, const char* path, unsigned char
 static MapsGetFn     s_get = RealGet;
 static int           s_retryMs = 3000;
 static volatile LONG s_got;   // the bytes of the file being downloaded (for the screen)
+static volatile LONG s_cancel;   // "ОТМЕНА" pressed: the download stops before its next piece
 
 void MapsSetGet(MapsGetFn fn, int retryMs)   // tests: a made-up server; NULL - the real one
 {
@@ -286,7 +287,7 @@ static int Piece(const char* url, const wchar_t* file, DWORD have, int chunk, in
 bool MapsFetch(const char* url, const wchar_t* file, int chunk)
 {
     DWORD have = SizeOf(file);
-    for (int fails = 0; fails <= kFails;) {
+    for (int fails = 0; fails <= kFails && !s_cancel;) {
         int len = 0, r = Piece(url, file, have, chunk, &len);
         if (r == 0)
             return have > 0;
@@ -317,7 +318,7 @@ bool MapsInstall(const char* url, const wchar_t* data, const char* name, bool tr
     zip[MAX_PATH - 1] = part[MAX_PATH - 1] = dir[MAX_PATH - 1] = 0;
     InterlockedExchange((LONG*)&s_got, (LONG)SizeOf(part));
     DeleteFile(zip);
-    bool ok = MapsFetch(url, part, kChunk) && MoveFile(part, zip);
+    bool ok = MapsFetch(url, part, kChunk) && !s_cancel && MoveFile(part, zip);
     if (ok) {   // (a route, the search let go of the files written over - and wait meanwhile: CE, Windows refuse them)
         OffUseScope use;
         OfflineDrop();
@@ -340,6 +341,7 @@ static MapRegion        s_reg[kMaxRegions];
 static int              s_nReg;
 static CRITICAL_SECTION s_cs;
 static volatile LONG    s_csDone, s_busy;
+static volatile LONG    s_busyRegion = -1;   // the region GetThread downloads
 static wchar_t          s_text[128];   // what goes on / the last result
 static int              s_totalKb;     // the file being downloaded
 
@@ -378,7 +380,8 @@ static DWORD WINAPI ListThread(LPVOID)
     _snprintf(url, sizeof(url), "%scatalog.json", kAssets);
     unsigned char* body = NULL;
     int len = 0, status = 0;
-    bool ok = GetUrl(url, NULL, &body, &len, &status) == NET_OK && status == 200 && body;
+    int err = GetUrl(url, NULL, &body, &len, &status);
+    bool ok = err == NET_OK && status == 200 && body;
     static MapRegion got[kMaxRegions];
     int n = ok ? MapsCatalog((const char*)body, got, kMaxRegions) : 0;
     free(body);
@@ -389,7 +392,7 @@ static DWORD WINAPI ListThread(LPVOID)
     s_nReg = n;
     _snwprintf(s_text, 128, n ? L"Областей: %d" : L"Каталог не получен (нет связи с GitHub?)", n);
     LeaveCriticalSection(&s_cs);
-    Log("maps: catalog %d regions (HTTP %d)", n, status);
+    Log("maps: catalog %d regions (HTTP %d, error %d)", n, status, err);
     InterlockedExchange((LONG*)&s_busy, 0);
     return 0;
 }
@@ -424,8 +427,10 @@ static DWORD WINAPI GetThread(LPVOID p)
     Lock();
     MapsHave(s_reg, s_nReg);
     LeaveCriticalSection(&s_cs);
-    Say(ok ? L"«%s» записана" : L"«%s» не скачана: нет связи или нет места", r.title);
-    Log("maps: %s %s", r.name, ok ? "downloaded" : "failed");
+    Say(ok ? L"«%s» записана" : s_cancel ? L"«%s»: загрузка остановлена" : L"«%s» не скачана: нет связи или нет места",
+        r.title);
+    Log("maps: %s %s", r.name, ok ? "downloaded" : s_cancel ? "cancelled" : "failed");
+    InterlockedExchange((LONG*)&s_busyRegion, -1);
     InterlockedExchange((LONG*)&s_busy, 0);
     return 0;
 }
@@ -434,6 +439,7 @@ static bool Start(LPTHREAD_START_ROUTINE fn, LPVOID arg)
 {
     if (InterlockedExchange((LONG*)&s_busy, 1))
         return false;
+    InterlockedExchange((LONG*)&s_cancel, 0);
     HANDLE t = CreateThread(NULL, 0, fn, arg, 0, NULL);
     if (!t) {
         InterlockedExchange((LONG*)&s_busy, 0);
@@ -454,11 +460,26 @@ bool MapsGetRegion(int i)   // region i of the catalog, on its thread; false - n
     Lock();
     bool there = i >= 0 && i < s_nReg;
     LeaveCriticalSection(&s_cs);
-    if (!there || !Start(GetThread, (LPVOID)i))
+    if (!there || s_busy)
         return false;
+    InterlockedExchange((LONG*)&s_busyRegion, i);   // (before the thread: it may be done at once)
+    if (!Start(GetThread, (LPVOID)i)) {
+        InterlockedExchange((LONG*)&s_busyRegion, -1);
+        return false;
+    }
     InterlockedExchange((LONG*)&s_got, 0);
     Say(L"«%s»…", s_reg[i].title);
     return true;
+}
+
+int MapsBusyRegion()
+{
+    return s_busyRegion;
+}
+
+void MapsCancel()
+{
+    InterlockedExchange((LONG*)&s_cancel, 1);
 }
 
 int MapsCount()
