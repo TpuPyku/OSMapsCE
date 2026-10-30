@@ -14,6 +14,7 @@ import os
 import queue
 import shutil
 import string
+import tempfile
 import threading
 import urllib.request
 import zipfile
@@ -69,17 +70,18 @@ def trunk_date(drive):
     return release_regions.region_info(path).get('date') if os.path.exists(path) else None
 
 
-def install_trunk(drive, get_file, tell=lambda part, text: None):
+def install_trunk(drive, get_file, tell=lambda part, text: None, have=None):
     """The trunk roads' graph on the drive (\\OSMapsData\\trunk\\, region.txt last): 'written', 'same' (that build
-    there already) or 'none' (no graph in the release)."""
+    there already - on have, the card, when written elsewhere first) or 'none' (no graph in the release)."""
     try:
         data = get_file(release_regions.ASSETS + TRUNK + '.zip', tell)
     except Exception:
         return 'none'
     dst = os.path.join(drive, 'OSMapsData', TRUNK)
+    there = os.path.join(have or drive, 'OSMapsData', TRUNK, 'region.txt')
     with zipfile.ZipFile(io.BytesIO(data)) as z:
         info = z.read('region.txt')
-        if os.path.exists(os.path.join(dst, 'region.txt')) and read_bytes(os.path.join(dst, 'region.txt')) == info:
+        if os.path.exists(there) and read_bytes(there) == info:
             return 'same'
         os.makedirs(dst, exist_ok=True)
         for f in ('trunk.grf', 'region.txt'):
@@ -116,6 +118,41 @@ def install(entry, drive, get_file, get_bytes, maxzoom, progress=None, tiles_dat
         for f in release_regions.FILES:   # (only these: the zip's own names never chose a path)
             with open(os.path.join(dst, f), 'wb') as out:
                 out.write(z.read(f) + (b'tiles=%s\n' % tiles_date.encode() if f == 'region.txt' else b''))
+
+
+def copy_file(src, dst, tell, piece=1 << 20):
+    """A file copied in pieces, tell(bytes) after each."""
+    with open(src, 'rb') as f, open(dst, 'wb') as out:
+        while True:
+            chunk = f.read(piece)
+            if not chunk:
+                return
+            out.write(chunk)
+            tell(len(chunk))
+
+
+def copy_to(stage, drive, tell):
+    """The folders written on the PC (stage\\OSMapsData\\*) onto the card at once (the user 2026-10-30: written there
+    straight, the card's sectors went astray; a slow card takes it faster too): its room checked first, a folder's
+    region.txt last (a region half copied never looks whole); tell(part, text)."""
+    src_root = os.path.join(stage, 'OSMapsData')
+    files = []
+    for name in sorted(os.listdir(src_root)) if os.path.isdir(src_root) else []:
+        folder = os.listdir(os.path.join(src_root, name))
+        files += [(name, f) for f in sorted(folder, key=lambda f: f == 'region.txt')]
+    total = sum(os.path.getsize(os.path.join(src_root, n, f)) for n, f in files)
+    free = shutil.disk_usage(drive).free
+    if free < total:
+        raise OSError('Мало места на флешке: свободно %.0f МБ, нужно %.0f МБ' % (free / 1e6, total / 1e6))
+    done = [0]
+
+    def step(n):
+        done[0] += n
+        tell(done[0] / total, '%.1f из %.1f МБ' % (done[0] / 1e6, total / 1e6))
+    for name, f in files:
+        os.makedirs(os.path.join(drive, 'OSMapsData', name), exist_ok=True)
+        copy_file(os.path.join(src_root, name, f), os.path.join(drive, 'OSMapsData', name, f), step)
+    tell(1.0, 'готово')
 
 
 def toggled(chosen, name):
@@ -414,25 +451,35 @@ class App:
         self.news.put(('status', '%s: %s' % (head, text)))
 
     def write_all(self, entries, drive, trunk):
-        """The regions, then the trunk roads; the bar for the whole job (the user 2026-10-29: full before the end) -
-        each a part of it."""
-        total = len(entries) + (1 if trunk else 0)
+        """The regions, then the trunk roads into the PC's temp folder, then all onto the card (copy_to); the bar for
+        the whole job (the user 2026-10-29: full before the end) - each a part of it, the copy the last."""
+        total = len(entries) + (1 if trunk else 0) + 1
+        stage = tempfile.mkdtemp(prefix='OSMapsCE-Maps-')
+        try:
+            done = self.write_stage(entries, stage, drive, trunk, total)
+            copy_to(stage, drive, lambda part, text: self.tell('На флешку', (total - 1 + part) / total, text))
+        finally:
+            shutil.rmtree(stage, ignore_errors=True)
+        self.news.put(('status', done + '. Флешку — в ГУ (папка OSMapsData в корне).'))
+        self.news.put(('catalog', self.cat))
+
+    def write_stage(self, entries, stage, drive, trunk, total):   # the regions and the trunk roads into stage
         if entries:
             build = pmextract.latest_build()
             get_bytes, day = pmextract.http_bytes(build), build.rsplit('/', 1)[1].split('.')[0]
         for i, e in enumerate(entries):
             head = '%s (%d из %d)' % (e.get('title', e['name']), i + 1, len(entries))
             self.news.put(('status', head + ': начало…'))
-            install(e, drive, download, get_bytes, MAXZOOM,
+            install(e, stage, download, get_bytes, MAXZOOM,
                     lambda part, text, h=head, k=i: self.tell(h, (k + part) / total, text), day)
         done = 'Готово: областей %d' % len(entries)
         if trunk:
             head = 'Магистрали России и СНГ'
-            got = install_trunk(drive, download, lambda part, text: self.tell(head, (total - 1 + part) / total, text))
+            got = install_trunk(stage, download, lambda part, text: self.tell(head, (total - 2 + part) / total, text),
+                                drive)
             done += {'written': ', магистрали записаны', 'same': ', магистрали уже свежие',
                      'none': ', магистралей в релизе нет'}[got]
-        self.news.put(('status', done + '. Флешку — в ГУ (папка OSMapsData в корне).'))
-        self.news.put(('catalog', self.cat))
+        return done
 
 
 if __name__ == '__main__':
