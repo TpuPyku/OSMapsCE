@@ -16,6 +16,7 @@ import shutil
 import string
 import tempfile
 import threading
+import time
 import urllib.request
 import zipfile
 
@@ -25,6 +26,8 @@ import release_regions
 MAXZOOM = 15   # Protomaps' deepest: the house numbers, the car parks
 STATE = {'new': 'нет', 'update': 'есть новее', 'ok': 'свежая'}
 kTilesPart = 0.75   # a region's progress: its tiles up to here, then the release's zip (the graph, the search)
+STAGE = 'OSMapsCE-Maps'   # the PC's temp folder the maps go to first (copy_to: onto the card after)
+STAGE_DAYS = 7            # left longer (a job given up): removed, not gone on with
 
 
 http_get = pmextract.http_get
@@ -153,6 +156,26 @@ def copy_to(stage, drive, tell):
         os.makedirs(os.path.join(drive, 'OSMapsData', name), exist_ok=True)
         copy_file(os.path.join(src_root, name, f), os.path.join(drive, 'OSMapsData', name, f), step)
     tell(1.0, 'готово')
+
+
+def stage_dir(now=None):
+    """The temp folder (the user 2026-10-30: kept after a break - the next time goes on there); one older than
+    STAGE_DAYS removed first."""
+    path = os.path.join(tempfile.gettempdir(), STAGE)
+    now = now or time.time()
+    if os.path.isdir(path) and now - os.path.getmtime(path) > STAGE_DAYS * 86400:
+        shutil.rmtree(path, ignore_errors=True)
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def staged(stage, entry, day):
+    """The region in the temp folder whole: its region.txt (written last) of this catalog's date and these tiles."""
+    path = os.path.join(stage, 'OSMapsData', entry['name'], 'region.txt')
+    if not os.path.exists(path):
+        return False
+    info = release_regions.region_info(path)
+    return info.get('date') == entry.get('date') and info.get('tiles') == day
 
 
 def toggled(chosen, name):
@@ -454,12 +477,10 @@ class App:
         """The regions, then the trunk roads into the PC's temp folder, then all onto the card (copy_to); the bar for
         the whole job (the user 2026-10-29: full before the end) - each a part of it, the copy the last."""
         total = len(entries) + (1 if trunk else 0) + 1
-        stage = tempfile.mkdtemp(prefix='OSMapsCE-Maps-')
-        try:
-            done = self.write_stage(entries, stage, drive, trunk, total)
-            copy_to(stage, drive, lambda part, text: self.tell('На флешку', (total - 1 + part) / total, text))
-        finally:
-            shutil.rmtree(stage, ignore_errors=True)
+        stage = stage_dir()
+        done = self.write_stage(entries, stage, drive, trunk, total)
+        copy_to(stage, drive, lambda part, text: self.tell('На флешку', (total - 1 + part) / total, text))
+        shutil.rmtree(stage, ignore_errors=True)   # (an error before: kept - the next time goes on there)
         self.news.put(('status', done + '. Флешку — в ГУ (папка OSMapsData в корне).'))
         self.news.put(('catalog', self.cat))
 
@@ -469,6 +490,9 @@ class App:
             get_bytes, day = pmextract.http_bytes(build), build.rsplit('/', 1)[1].split('.')[0]
         for i, e in enumerate(entries):
             head = '%s (%d из %d)' % (e.get('title', e['name']), i + 1, len(entries))
+            if staged(stage, e, day):   # downloaded before a break
+                self.tell(head, (i + 1) / total, 'уже скачано')
+                continue
             self.news.put(('status', head + ': начало…'))
             install(e, stage, download, get_bytes, MAXZOOM,
                     lambda part, text, h=head, k=i: self.tell(h, (k + part) / total, text), day)

@@ -282,15 +282,17 @@ class Maps(unittest.TestCase):
         self.assertEqual(told[-1], (1.0, '0.8 из 0.8 МБ'))
         self.assertEqual([p for p, _ in told], sorted(p for p, _ in told))
 
+    installs = []
+
     def staged_job(self, free=None):
         """write_all with install / install_trunk writing small files where they are told (the PC's temp folder);
         returns the news, the stage the regions went to, the files copied in order."""
-        cat = {'regions': [{'name': 'a', 'title': 'A'}, {'name': 'b', 'title': 'B'}]}
+        cat = {'regions': [{'name': 'a', 'title': 'A', 'date': 'd'}, {'name': 'b', 'title': 'B', 'date': 'd'}]}
         app = type('A', (), {})()
         app.news, app.cat = __import__('queue').Queue(), cat
         app.tell = lambda head, part, text: maps_app.App.tell(app, head, part, text)
         app.write_stage = lambda *a: maps_app.App.write_stage(app, *a)
-        stages, copied = [], []
+        stages, copied = self.installs, []
 
         def put(folder, files):
             os.makedirs(folder, exist_ok=True)
@@ -301,7 +303,8 @@ class Maps(unittest.TestCase):
         def install(e, drive, get_file, get_bytes, maxzoom, progress, day):
             stages.append(drive)
             progress(0.5, 'half')
-            put(os.path.join(drive, 'OSMapsData', e['name']), {'tiles.vtp': b'T' * 3000, 'region.txt': b'date=d\n'})
+            put(os.path.join(drive, 'OSMapsData', e['name']), {'tiles.vtp': b'T' * 3000,
+                                                             'region.txt': b'date=d\ntiles=%s\n' % day.encode()})
             progress(1.0, 'done')
 
         def install_trunk(drive, get_file, tell, have=None):
@@ -315,12 +318,13 @@ class Maps(unittest.TestCase):
             copied.append(os.path.relpath(dst, target))
             return keep(src, dst, tell)
         target = os.path.join(self.tmp, 'E')
-        os.makedirs(target)
+        os.makedirs(target, exist_ok=True)
         patch = unittest.mock.patch.object
         with patch(maps_app, 'install', install), patch(maps_app, 'install_trunk', install_trunk), \
                 patch(maps_app, 'copy_file', copy_file), \
                 patch(maps_app.pmextract, 'latest_build', lambda: 'https://b/20261029.pmtiles'), \
                 patch(maps_app.pmextract, 'http_bytes', lambda url: None), \
+                patch(maps_app.tempfile, 'gettempdir', lambda: os.path.join(self.tmp, 'T')), \
                 patch(maps_app.shutil, 'disk_usage', (lambda p: type('U', (), {'free': free})()) if free is not None
                       else maps_app.shutil.disk_usage):
             maps_app.App.work(app, maps_app.App.write_all.__get__(app), cat['regions'], target, True)
@@ -334,6 +338,7 @@ class Maps(unittest.TestCase):
         its tiles got broken - first all on the PC, then onto the card at once, faster on a slow card too): the regions
         and the trunk roads into the PC's temp folder, each a part of the bar, then the copy - its last part; a
         folder's region.txt copied last (a region half copied never looks whole); the temp folder gone after."""
+        self.installs = []
         news, stages, copied, target = self.staged_job()
         bar = [v for k, v in news if k == 'progress']
         self.assertEqual(bar[:6], [1 / 8, 1 / 4, 3 / 8, 1 / 2, 5 / 8, 3 / 4])
@@ -352,12 +357,32 @@ class Maps(unittest.TestCase):
         self.assertEqual(maps_app.trunk_date(target), 't')
 
     def test_app_copy_needs_room(self):
-        """Not room enough on the card: told before any copy, nothing half written there, the temp folder gone."""
+        """Not room enough on the card (or the link lost): told, nothing half written there; what was downloaded kept
+        in the temp folder (the user 2026-10-30: go on there after a break) - the next time those regions are not
+        downloaded again, only copied."""
+        self.installs = []
         news, stages, copied, target = self.staged_job(free=1000)
         self.assertEqual(copied, [])
         self.assertTrue(any(k == 'status' and 'Мало места' in v for k, v in news), news)
-        self.assertFalse(os.path.exists(stages[0]))
+        self.assertTrue(os.path.exists(os.path.join(stages[0], 'OSMapsData', 'b', 'region.txt')))   # kept
         self.assertFalse(os.path.exists(os.path.join(target, 'OSMapsData')))
+        self.installs = []
+        news, stages, copied, target = self.staged_job()
+        self.assertEqual(stages, [])                                         # none downloaded again
+        self.assertEqual(sorted(maps_app.installed(target)), ['a', 'b'])     # copied
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, 'T', 'OSMapsCE-Maps')))   # gone after
+
+    def test_app_old_temp_folder_removed(self):
+        """A temp folder left over a week: not gone on with (its maps old), removed first."""
+        old = os.path.join(self.tmp, 'T', 'OSMapsCE-Maps', 'OSMapsData', 'z')
+        os.makedirs(old)
+        with open(os.path.join(old, 'region.txt'), 'w') as f:
+            f.write('date=old\n')
+        stamp = __import__('time').time() - 8 * 86400
+        os.utime(os.path.join(self.tmp, 'T', 'OSMapsCE-Maps'), (stamp, stamp))
+        self.installs = []
+        news, stages, copied, target = self.staged_job()
+        self.assertNotIn('z', maps_app.installed(target))
 
     def test_outlines(self):
         """The regions' outlines for the map of the app's (the user 2026-10-29: a visual choice): their sources'
