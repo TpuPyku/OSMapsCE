@@ -59,7 +59,7 @@ jobs:
           retention-days: 3
 
   publish:
-    needs: build
+    needs: [build, trunk]   # (trunk: its date into the catalog first - this run's catalog keeps it)
     if: ${{ !cancelled() && (inputs.only == '' || inputs.only == 'all') }}
     runs-on: ubuntu-latest
     env:
@@ -130,7 +130,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: sudo apt-get install -y osmium-tool && pip install osmium
+      - run: sudo apt-get install -y osmium-tool && pip install osmium pmtiles
       - name: The countries' trunk roads
         run: |
           df -h / | tail -1
@@ -162,3 +162,10 @@ jobs:
         run: |
           gh release upload maps dist/trunk.zip --clobber
           gh release view maps --json assets --jq '[.assets[].size] | add / 1e6 | "release maps: \(.) MB"'
+      - name: Its build into the catalog (the app and OSMapsCE tell an older one on the card - 2026-10-30)
+        run: |
+          mkdir -p cat
+          if gh release download maps -p catalog.json -D cat; then
+            python offline/release_regions.py trunk cat/catalog.json dist/trunk.zip
+            gh release upload maps cat/catalog.json --clobber
+          fi

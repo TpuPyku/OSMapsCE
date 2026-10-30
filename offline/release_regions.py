@@ -8,6 +8,8 @@ Actions - .github/workflows/maps.yml; the tiles are not ours: the PC app cuts th
                                                    <dist>/catalog.json of the entries there, the previous catalog's
                                                    regions not built this time kept (their zips stay in the release)
     python release_regions.py disk <dist>          the overview whole up, the disk's folder public: into the catalog
+    python release_regions.py trunk <catalog.json> <trunk.zip>
+                                                   the trunk roads' build into the catalog (trunk {zip, size, date})
 
 With YANDEX_DISK_TOKEN set (the user 2026-10-30: GitHub's downloads slow) "build" also cuts the region's tiles out of
 Protomaps' build and puts the region whole (graph, search, tiles) on the owner's Yandex Disk, DISK/<name>.zip - the
@@ -187,6 +189,19 @@ def publish_disk(dist, disk, get_bytes, day):
     return cat
 
 
+def trunk_into(cat_path, zpath):
+    """The trunk roads' build into the catalog (the user 2026-10-30: an old graph on the card took the toll road -
+    nothing told it was old): trunk = {zip, size, date}."""
+    with zipfile.ZipFile(zpath) as z:
+        info = dict(line.split('=', 1) for line in z.read('region.txt').decode().splitlines() if '=' in line)
+    with open(cat_path, encoding='utf-8') as f:
+        cat = json.load(f)
+    cat['trunk'] = {'zip': 'trunk.zip', 'size': os.path.getsize(zpath), 'date': info['date']}
+    with open(cat_path, 'w', encoding='utf-8') as f:
+        json.dump(cat, f, ensure_ascii=False)
+    return cat
+
+
 def kept(previous, built, known):
     """The previous catalog's entries not built now, still among the regions; with today's title (the user
     2026-10-29: "Украина:" off the oblasts - not only those rebuilt)."""
@@ -209,7 +224,7 @@ def catalog(dist, previous=None, known=()):
     entries += kept(previous, built, known)
     cat = {'version': 1, 'made': time.strftime('%Y-%m-%d', time.gmtime()),
            'regions': sorted(entries, key=lambda e: e['name'])}
-    for k in ('disk', 'overview'):   # (a run without the disk: the previous one's still there)
+    for k in ('disk', 'overview', 'trunk'):   # (a run without the disk / the trunk roads: the previous ones')
         if previous and k in previous:
             cat[k] = previous[k]
     with open(os.path.join(dist, 'catalog.json'), 'w', encoding='utf-8') as f:
@@ -227,6 +242,8 @@ def main(argv):
             entry = build_full(entry, os.path.join(make_region.WORK, 'data', argv[1]), argv[2],
                                pmextract.http_bytes(build), build_day(build), yadisk.Disk(os.environ['YANDEX_DISK_TOKEN']))
         print(entry)
+    elif argv[0] == 'trunk':
+        trunk_into(argv[1], argv[2])
     elif argv[0] == 'disk':
         build = pmextract.latest_build()
         publish_disk(argv[1], yadisk.Disk(os.environ['YANDEX_DISK_TOKEN']), pmextract.http_bytes(build),
