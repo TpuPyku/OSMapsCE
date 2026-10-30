@@ -135,6 +135,31 @@ class Maps(unittest.TestCase):
         self.assertEqual(graph, [(maps_app.kTilesPart + (1 - maps_app.kTilesPart) * 0.5, 'граф и поиск: half'),
                                  (1.0, 'граф и поиск: all')])
 
+    def test_app_writes_the_overview(self):
+        """The overview pack (the user 2026-10-30: a region's pack holds its region only - its small zooms empty round
+        it): z0..OVERVIEW_Z of all the regions' box whole, slim, its region.txt last (tiles= its build); not a region
+        of the list."""
+        cat = {'regions': [{'name': 'a', 'bbox': [37.0, 55.0, 38.0, 56.0]}, {'name': 'b', 'bbox': [49.0, 53.0, 50.0, 54.0]}]}
+        self.assertEqual(maps_app.overview_box(cat), (37.0, 53.0, 50.0, 56.0))
+        planet = os.path.join(self.tmp, 'planet.pmtiles')
+        inside, outside, deep = (8, 154, 79), (8, 10, 10), (9, 308, 158)
+        make_pmtiles(planet, {(0, 0, 0): mvt({'water': ['ocean']}), inside: mvt({'landuse': ['wood', 'park']}),
+                              outside: b'far', deep: b'deep'})
+        data = read(planet)
+        drive = os.path.join(self.tmp, 'E')
+        told = []
+        maps_app.install_overview(cat, drive, lambda off, n: data[off:off + n], '20261030',
+                                  lambda part, text: told.append(part))
+        folder = os.path.join(drive, 'OSMapsData', 'overview')
+        self.assertEqual(sorted(os.listdir(folder)), ['overview.vtp', 'region.txt'])
+        _, _, got = pack_tiles(os.path.join(folder, 'overview.vtp'))
+        self.assertEqual(sorted(got), [(0, 0, 0), inside])                     # its box, z8 at most
+        self.assertEqual(mvt_kinds(got[inside]), {'landuse': ['park']})         # slim
+        self.assertEqual(maps_app.overview_date(drive), '20261030')
+        self.assertIsNone(maps_app.overview_date(self.tmp))
+        self.assertEqual(maps_app.installed(drive), {})
+        self.assertEqual(told[-1], 1.0)
+
     def test_app_writes_the_trunk_graph(self):
         """4b (2026-10-29): the trunk roads' graph of Russia and the CIS - with any regions written, once a build."""
         def trunk_zip(date):
@@ -202,7 +227,8 @@ class Maps(unittest.TestCase):
             app.root.geometry('+-3000+-3000')   # (shown - its rows laid out - but off the screen)
             app.on_catalog(cat)
             app.root.update()
-            self.assertEqual(app.tree.get_children(), ('trunk', 'a_oblast', 'b_oblast'))   # the trunk roads first
+            self.assertEqual(app.tree.get_children(), ('trunk', 'overview', 'a_oblast', 'b_oblast'))   # the trunk
+                                                                                   # roads, the overview first
             self.assertEqual(app.tree.item('b_oblast', 'tags'), ('update',))       # newer in the catalog
             self.assertTrue(app.tree['yscrollcommand'])                             # the list scrolls (2026-10-29)
             self.assertEqual(app.scroll.get(), (0.0, 1.0))
@@ -231,8 +257,8 @@ class Maps(unittest.TestCase):
                 self.assertFalse(thread.called)                                     # nothing chosen: nothing
                 app.chosen = {'a_oblast'}
                 app.write_chosen()
-                self.assertEqual(thread.call_args[1]['args'][1:], ([cat['regions'][0]], drive, True))   # no trunk
-                                                                                   # roads there: they too
+                self.assertEqual(thread.call_args[1]['args'][1:], ([cat['regions'][0]], drive, True, True))   # no
+                                                                                   # trunk roads, no overview there: too
                 self.assertEqual(app.go['text'], 'Отменить запись')                 # busy: the button cancels
                 self.assertEqual(str(app.go['style']), 'Busy.TButton')
                 self.assertFalse(app.go.instate(['disabled']))
@@ -245,7 +271,7 @@ class Maps(unittest.TestCase):
                 self.assertFalse(app.stop.is_set())                                 # the next one not stopped
                 app.chosen = {'trunk'}                                              # the trunk roads alone
                 app.write_chosen()
-                self.assertEqual(thread.call_args[1]['args'][1:], ([], drive, True))
+                self.assertEqual(thread.call_args[1]['args'][1:], ([], drive, True, False))
                 app.on_done(None)
                 self.assertEqual(app.go['text'], 'Записать выбранные')
                 self.assertEqual(str(app.go['style']), 'Go.TButton')
@@ -304,7 +330,7 @@ class Maps(unittest.TestCase):
 
     installs = []
 
-    def staged_job(self, free=None, stop=False):
+    def staged_job(self, free=None, stop=False, overview=False):
         """write_all with install / install_trunk writing small files where they are told (the PC's temp folder);
         returns the news, the stage the regions went to, the files copied in order."""
         cat = {'regions': [{'name': 'a', 'title': 'A', 'date': 'd'}, {'name': 'b', 'title': 'B', 'date': 'd'}]}
@@ -315,6 +341,7 @@ class Maps(unittest.TestCase):
             app.stop.set()
         app.tell = lambda head, part, text: maps_app.App.tell(app, head, part, text)
         app.write_stage = lambda *a: maps_app.App.write_stage(app, *a)
+        app.write_overview = lambda *a: maps_app.App.write_overview(app, *a)
         stages, copied = self.installs, []
 
         def put(folder, files):
@@ -330,6 +357,12 @@ class Maps(unittest.TestCase):
                                                              'region.txt': b'date=d\ntiles=%s\n' % day.encode()})
             progress(1.0, 'done')
 
+        def install_overview(cat, drive, get_bytes, day, tell):
+            stages.append(drive)
+            tell(1.0, 'overview done')
+            put(os.path.join(drive, 'OSMapsData', 'overview'), {'overview.vtp': b'O' * 500,
+                                                               'region.txt': b'name=overview\ntiles=%s\n' % day.encode()})
+
         def install_trunk(drive, get_file, tell, have=None):
             tell(0.5, 'trunk half')
             put(os.path.join(drive, 'OSMapsData', 'trunk'), {'trunk.grf': b'G' * 1000, 'region.txt': b'date=t\n'})
@@ -344,13 +377,14 @@ class Maps(unittest.TestCase):
         os.makedirs(target, exist_ok=True)
         patch = unittest.mock.patch.object
         with patch(maps_app, 'install', install), patch(maps_app, 'install_trunk', install_trunk), \
+                patch(maps_app, 'install_overview', install_overview), \
                 patch(maps_app, 'copy_file', copy_file), \
                 patch(maps_app.pmextract, 'latest_build', lambda: 'https://b/20261029.pmtiles'), \
                 patch(maps_app.pmextract, 'http_bytes', lambda url: None), \
                 patch(maps_app.tempfile, 'gettempdir', lambda: os.path.join(self.tmp, 'T')), \
                 patch(maps_app.shutil, 'disk_usage', (lambda p: type('U', (), {'free': free})()) if free is not None
                       else maps_app.shutil.disk_usage):
-            maps_app.App.work(app, maps_app.App.write_all.__get__(app), cat['regions'], target, True)
+            maps_app.App.work(app, maps_app.App.write_all.__get__(app), cat['regions'], target, True, overview)
         news = []
         while not app.news.empty():
             news.append(app.news.get())
@@ -420,6 +454,15 @@ class Maps(unittest.TestCase):
         self.assertEqual(sorted(maps_app.installed(target)), ['a', 'b'])
         self.assertEqual(maps_app.trunk_date(target), 't')
 
+    def test_app_writes_all_with_the_overview(self):
+        """The overview with the regions (none on the card): its own part of the bar, after the regions, copied too."""
+        self.installs = []
+        news, stages, copied, target = self.staged_job(overview=True)
+        bar = [v for k, v in news if k == 'progress']
+        self.assertEqual(bar[:7], [1 / 10, 1 / 5, 3 / 10, 2 / 5, 3 / 5, 7 / 10, 4 / 5])
+        self.assertEqual(maps_app.overview_date(target), '20261029')
+        self.assertTrue(any(k == 'status' and 'обзорная карта записана' in v for k, v in news), news)
+
     def test_app_copy_needs_room(self):
         """Not room enough on the card (or the link lost): told, nothing half written there; what was downloaded kept
         in the temp folder (the user 2026-10-30: go on there after a break) - the next time those regions are not
@@ -469,6 +512,17 @@ class Maps(unittest.TestCase):
         self.assertEqual(got['a'], [[[30.0, 50.0], [31.0, 50.0], [31.0, 51.0], [30.0, 51.0], [30.0, 50.0]],
                                     [[180.5, 65.0], [181.0, 65.0], [181.0, 66.0], [180.5, 65.0]]])
         self.assertEqual(len(got['ab']), 3)                                 # both extracts' rings
+
+    def test_region_colours(self):
+        """The map's regions (the user 2026-10-30: the outline of one with an update hid under its neighbours'): chosen -
+        orange, on the drive and fresh - green, both edged white; with an update - white, edged black; else as the
+        panel."""
+        A = maps_app
+        self.assertEqual(A.region_look(True, 'update'), (A.ACCENT, A.WHITE))
+        self.assertEqual(A.region_look(False, 'ok'), (A.FRESH, A.WHITE))
+        self.assertEqual(A.region_look(False, 'update'), (A.WHITE, A.BLACK))
+        self.assertEqual(A.region_look(False, 'new'), (A.ROW, A.EDGE))
+        self.assertEqual(A.region_look(False, None), (A.ROW, A.EDGE))
 
     def test_app_map(self):
         """The map of the regions: their outlines, a click picks one (lit as in the list), again lets it go; a drag

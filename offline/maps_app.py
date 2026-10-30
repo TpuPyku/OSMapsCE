@@ -64,17 +64,52 @@ def installed(drive):
     root = os.path.join(drive, 'OSMapsData')
     names = os.listdir(root) if os.path.isdir(root) else []
     return {n: release_regions.region_info(os.path.join(root, n, 'region.txt')).get('date') for n in names
-            if n != TRUNK and os.path.exists(os.path.join(root, n, 'region.txt'))}
+            if n not in (TRUNK, OVERVIEW) and os.path.exists(os.path.join(root, n, 'region.txt'))}
 
 
 TRUNK = 'trunk'   # the trunk roads of Russia and the CIS (4b): routes from one region to another
 TRUNK_TITLE = 'Магистрали России и СНГ'   # (the routes between the regions)
+OVERVIEW = 'overview'   # the small zooms of all the regions' box whole (the user 2026-10-30: a region's pack holds its
+OVERVIEW_TITLE = 'Обзорная карта СНГ'    # region only - empty round it); OSMapsCE takes it when no cached tile
+OVERVIEW_Z = 8          # z0-8: ~60 MB (z7: 24, z9: ~150)
+
+
+def bounds(pts):
+    """(minX, minY, maxX, maxY) of the points."""
+    return min(p[0] for p in pts), min(p[1] for p in pts), max(p[0] for p in pts), max(p[1] for p in pts)
+
+
+def overview_box(cat):
+    """All the regions' bounds: (minLon, minLat, maxLon, maxLat)."""
+    return bounds([c for r in cat['regions'] for c in (r['bbox'][:2], r['bbox'][2:])])
+
+
+def folder_info(drive, name, key):
+    """A key of the drive's OSMapsData\\<name>\\region.txt, None: not there."""
+    path = os.path.join(drive, 'OSMapsData', name, 'region.txt')
+    return release_regions.region_info(path).get(key) if os.path.exists(path) else None
+
+
+def overview_date(drive):
+    """The overview's tiles' build on the drive, None: not there."""
+    return folder_info(drive, OVERVIEW, 'tiles')
+
+
+def install_overview(cat, drive, get_bytes, day, tell=lambda part, text: None):
+    """The overview pack on the drive (\\OSMapsData\\overview\\overview.vtp - not tiles.vtp: no region's), cut out of
+    Protomaps' build like a region's tiles; region.txt last (tiles= its build)."""
+    dst = os.path.join(drive, 'OSMapsData', OVERVIEW)
+    os.makedirs(dst, exist_ok=True)
+    out = os.path.join(dst, 'overview.vtp')
+    pmextract.extract(get_bytes, overview_box(cat), OVERVIEW_Z, out + '.part', tell, pmextract.slim)
+    os.replace(out + '.part', out)
+    with open(os.path.join(dst, 'region.txt'), 'w') as f:
+        f.write('name=%s\ntiles=%s\n' % (OVERVIEW, day))
 
 
 def trunk_date(drive):
     """The trunk roads' build on the drive, None: not there."""
-    path = os.path.join(drive, 'OSMapsData', TRUNK, 'region.txt')
-    return release_regions.region_info(path).get('date') if os.path.exists(path) else None
+    return folder_info(drive, TRUNK, 'date')
 
 
 def install_trunk(drive, get_file, tell=lambda part, text: None, have=None):
@@ -258,11 +293,21 @@ def fit(shapes, w, h, pad=12):
     return lambda lon, lat: (pad + (lon - lon0) * kx * s, pad + (lat1 - lat) * s)
 
 
+def region_look(chosen, state):
+    """A region's fill and edge on the map (the user 2026-10-30: an update's orange edge hid under its neighbours'):
+    chosen orange, fresh on the drive green - edged white; with an update white, edged black; else the panel's."""
+    if chosen or state == 'ok':
+        return (ACCENT if chosen else FRESH), WHITE
+    return (WHITE, BLACK) if state == 'update' else (ROW, EDGE)
+
+
 def box_area(rings):
     """The rings' bounding box's area, degrees squared (0: no rings)."""
     pts = [p for r in rings for p in r]
-    return (max(p[0] for p in pts) - min(p[0] for p in pts)) * (max(p[1] for p in pts) - min(p[1] for p in pts)) \
-        if pts else 0
+    if not pts:
+        return 0
+    x0, y0, x1, y1 = bounds(pts)
+    return (x1 - x0) * (y1 - y0)
 
 
 # ---- the window (tkinter): the work in a thread, its news through a queue
@@ -270,6 +315,7 @@ def box_area(rings):
 # OSMapsCE's colours (VestaHome's tokens): the background, the panel, the rows, the text, the dim text, the accent
 INK, PANEL, ROW, TEXT, DIM, ACCENT = '#0E1013', '#1A1D22', '#23272E', '#F5F3EE', '#AAB0B8', '#FF6B1A'
 FRESH, EDGE = '#2E5D45', '#4A505A'   # the map: a region on the drive and fresh; the regions' borders
+WHITE, BLACK = '#FFFFFF', '#000000'   # ... one with an update on the drive (the user 2026-10-30), its edge
 GO, BUSY, STOPPING = 'Записать выбранные', 'Отменить запись', 'Отмена…'   # the button; while it writes it cancels
                                                                            # (the user 2026-10-30)
 MAP_W, MAP_H = 560, 520
@@ -406,19 +452,24 @@ class App:
         have = self.have()
         st = states(self.cat, have)
         self.tree.delete(*self.tree.get_children())
-        find = self.find.get().strip().casefold()
-        if find in TRUNK_TITLE.casefold():   # the trunk roads first (the user 2026-10-29: "where are they?")
-            trunk = trunk_date(self.drive.get())
-            self.tree.insert('', 'end', iid=TRUNK, text=TRUNK_TITLE, tags=('chosen',) if TRUNK in self.chosen else (),
-                             values=('≈10 МБ', trunk or '—', 'есть' if trunk else 'нет'))
+        self.special_rows(self.find.get().strip().casefold())
         for r in matching(self.cat, self.find.get()):
             tags = ('chosen',) if r['name'] in self.chosen else ('update',) if st[r['name']] == 'update' else ()
             self.tree.insert('', 'end', iid=r['name'], text=r.get('title', r['name']), tags=tags,
                              values=('%.1f МБ' % (r['size'] / 1e6), have.get(r['name'], '—'), STATE[st[r['name']]]))
         self.paint(st)
         self.status.set('Областей: %d, выбрано %d (%.0f МБ графа и поиска; плитки ещё в 5–15 раз больше). '
-                        'Свободно: %s' % (len(self.cat['regions']), len(self.chosen - {TRUNK}),
+                        'Свободно: %s' % (len(self.cat['regions']), len(self.chosen - {TRUNK, OVERVIEW}),
                                           chosen_size(self.cat, self.chosen) / 1e6, self.free()))
+
+    def special_rows(self, find):
+        """The trunk roads (the user 2026-10-29: "where are they?") and the overview first, if the search lets them."""
+        for name, title, size, date in ((TRUNK, TRUNK_TITLE, '≈10 МБ', trunk_date),
+                                        (OVERVIEW, OVERVIEW_TITLE, '≈60 МБ', overview_date)):
+            if find in title.casefold():
+                there = date(self.drive.get())
+                self.tree.insert('', 'end', iid=name, text=title, tags=('chosen',) if name in self.chosen else (),
+                                 values=(size, there or '—', 'есть' if there else 'нет'))
 
     def click(self, event):   # a click picks a region or lets it go (no Ctrl)
         name = self.tree.identify_row(event.y)
@@ -445,8 +496,8 @@ class App:
 
     def paint(self, st):
         for name in self.shapes or ():
-            fill = ACCENT if name in self.chosen else FRESH if st.get(name) == 'ok' else ROW
-            self.map.itemconfigure('r:' + name, fill=fill, outline=ACCENT if st.get(name) == 'update' else EDGE)
+            fill, edge = region_look(name in self.chosen, st.get(name))
+            self.map.itemconfigure('r:' + name, fill=fill, outline=edge)
 
     def region_at(self, x, y):
         for item in reversed(self.map.find_overlapping(x, y, x, y)):
@@ -502,17 +553,24 @@ class App:
         self.drive.set(self.tk.filedialog.askdirectory() or self.drive.get())
         self.refresh()
 
-    def write_chosen(self):
+    def job(self, drive):
+        """What to write: the chosen regions, the trunk roads and the overview (chosen, or none there: with any region)."""
         entries = [r for r in self.cat['regions'] if r['name'] in self.chosen]
+        trunk = TRUNK in self.chosen or bool(entries) and trunk_date(drive) is None
+        overview = OVERVIEW in self.chosen or bool(entries) and overview_date(drive) is None
+        return entries, trunk, overview
+
+    def write_chosen(self):
         drive = self.drive.get()
-        trunk = TRUNK in self.chosen or bool(entries) and trunk_date(drive) is None   # (none there: with any region)
+        entries, trunk, overview = self.job(drive)
         if self.go['text'] == BUSY:   # writing: this press stops it (once at a time)
             self.stop.set()
             self.go.configure(text=STOPPING)
             self.go.state(['disabled'])
-        elif entries or trunk:
+        elif entries or trunk or overview:
             self.go.configure(text=BUSY, style='Busy.TButton')
-            threading.Thread(target=self.work, args=(self.write_all, entries, drive, trunk), daemon=True).start()
+            threading.Thread(target=self.work, args=(self.write_all, entries, drive, trunk, overview),
+                             daemon=True).start()
 
     def on_done(self, _):   # the writing over (or failed, or stopped): the button back
         self.stop.clear()
@@ -522,9 +580,10 @@ class App:
     def chosen_there(self, drive):
         """The chosen ones on the drive, and their titles."""
         have = self.have()
-        there = sorted(n for n in self.chosen if n in have or n == TRUNK and trunk_date(drive))
+        there = sorted(n for n in self.chosen if n in have or n == TRUNK and trunk_date(drive) or
+                       n == OVERVIEW and overview_date(drive))
         titles = {r['name']: r.get('title', r['name']) for r in self.cat['regions']}
-        titles[TRUNK] = TRUNK_TITLE
+        titles[TRUNK], titles[OVERVIEW] = TRUNK_TITLE, OVERVIEW_TITLE
         return there, [titles.get(n, n) for n in there]
 
     def remove_chosen(self):
@@ -540,25 +599,31 @@ class App:
             self.refresh()
             self.status.set('Удалено: %d. ' % len(gone) + self.status.get())
 
+    def write_overview(self, stage, get_bytes, day, k, total):   # the overview into stage: the bar's part k
+        if overview_date(stage) == day:   # (downloaded before a break)
+            return
+        install_overview(self.cat, stage, get_bytes, day,
+                         lambda part, text: self.tell(OVERVIEW_TITLE, (k + part) / total, text))
+
     def tell(self, head, part, text):   # (from the writing thread: through the queue); stopped - Cancelled
         if self.stop.is_set():
             raise Cancelled()
         self.news.put(('progress', part))
         self.news.put(('status', '%s: %s' % (head, text)))
 
-    def write_all(self, entries, drive, trunk):
-        """The regions, then the trunk roads into the PC's temp folder, then all onto the card (copy_to); the bar for
-        the whole job (the user 2026-10-29: full before the end) - each a part of it, the copy the last."""
-        total = len(entries) + (1 if trunk else 0) + 1
+    def write_all(self, entries, drive, trunk, overview=False):
+        """The regions, the overview, the trunk roads into the PC's temp folder, then all onto the card (copy_to); the
+        bar for the whole job (the user 2026-10-29: full before the end) - each a part of it, the copy the last."""
+        total = len(entries) + (1 if trunk else 0) + (1 if overview else 0) + 1
         stage = stage_dir()
-        done = self.write_stage(entries, stage, drive, trunk, total)
+        done = self.write_stage(entries, stage, drive, trunk, total, overview)
         copy_to(stage, drive, lambda part, text: self.tell('На флешку', (total - 1 + part) / total, text))
         shutil.rmtree(stage, ignore_errors=True)   # (an error before: kept - the next time goes on there)
         self.news.put(('status', done + '. Флешку — в ГУ (папка OSMapsData в корне).'))
         self.news.put(('catalog', self.cat))
 
-    def write_stage(self, entries, stage, drive, trunk, total):   # the regions and the trunk roads into stage
-        if entries:
+    def write_stage(self, entries, stage, drive, trunk, total, overview=False):   # the regions, the overview, the
+        if entries or overview:                                                  # trunk roads into stage
             build = pmextract.latest_build()
             get_bytes, day = pmextract.http_bytes(build), build.rsplit('/', 1)[1].split('.')[0]
         for i, e in enumerate(entries):
@@ -570,6 +635,9 @@ class App:
             install(e, stage, download, get_bytes, MAXZOOM,
                     lambda part, text, h=head, k=i: self.tell(h, (k + part) / total, text), day)
         done = 'Готово: областей %d' % len(entries)
+        if overview:
+            self.write_overview(stage, get_bytes, day, len(entries), total)
+            done += ', обзорная карта записана'
         if trunk:
             head = 'Магистрали России и СНГ'
             got = install_trunk(stage, download, lambda part, text: self.tell(head, (total - 2 + part) / total, text),

@@ -3,7 +3,7 @@ holding b'tile 14', its z13 parent b'tile 13' and its top left z15 child b'tile 
 make_tiles, as a region's real pack is. With a second path: an old pack (version 1) over Moscow holding its z14 tile
 9907/5118 - not read.
 
-    python make_test_tiles.py <out>/tiles.vtp [<old>/tiles.vtp]
+    python make_test_tiles.py <out>/tiles.vtp [<old>/tiles.vtp [<overview>/overview.vtp]]
 """
 import math
 import os
@@ -33,6 +33,11 @@ def main(out):
         make_tiles.build(src, out)
 
 
+def overview(out):
+    """The overview pack (the PC app's, the CIS's small zooms whole): z0 and Moscow's z8 tile, 154/79."""
+    make_tiles.write_pack(out, [(make_tiles.key(0, 0, 0), b'ov 0'), (make_tiles.key(8, 154, 79), b'ov 8')])
+
+
 def old_pack(out):
     make_tiles.write_pack(out, [(make_tiles.key(14, 9907, 5118), b'old')])
     with open(out, 'r+b') as f:
@@ -44,3 +49,5 @@ if __name__ == '__main__':
     main(sys.argv[1])
     if len(sys.argv) > 2:
         old_pack(sys.argv[2])
+    if len(sys.argv) > 3:
+        overview(sys.argv[3])
