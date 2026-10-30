@@ -7,6 +7,11 @@ Actions - .github/workflows/maps.yml; the tiles are not ours: the PC app cuts th
     python release_regions.py catalog <dist> [previous.json]
                                                    <dist>/catalog.json of the entries there, the previous catalog's
                                                    regions not built this time kept (their zips stay in the release)
+    python release_regions.py disk <dist>          the overview whole up, the disk's folder public: into the catalog
+
+With YANDEX_DISK_TOKEN set (the user 2026-10-30: GitHub's downloads slow) "build" also cuts the region's tiles out of
+Protomaps' build and puts the region whole (graph, search, tiles) on the owner's Yandex Disk, DISK/<name>.zip - the
+big files stored, not deflated (OSMapsCE unpacks them piece by piece: no memory for them whole); its entry's "full".
 
 A catalog entry: name, date (the OSM extract's), zip, size, bbox (minLon, minLat, maxLon, maxLat: the road graph's
 bounds, for the tiles' cut). The release: the tag "maps" (a pre-release: never the program's latest), its assets
@@ -14,16 +19,22 @@ replaced on each run - the app reads ASSETS + "catalog.json".
 """
 import json
 import os
+import shutil
 import struct
 import sys
+import tempfile
 import time
 import zipfile
 
 import make_graph
 import make_region
+import pmextract
+import yadisk
 
 ASSETS = 'https://github.com/TpuPyku/OSMapsCE/releases/download/maps/'
 FILES = ('route.grf', 'search.idx', 'region.txt')
+DISK = 'disk:/OSMapsCE/maps'   # the regions whole on the owner's Yandex Disk, the folder public
+TILES_Z = 15                   # the tiles' deepest zoom (Protomaps': the house numbers)
 
 
 # The regions' Russian names, for the app's list (the catalog's title; a region not here: its name)
@@ -115,6 +126,66 @@ def build_region(name, url, dist, work):
     return entry
 
 
+def build_day(build):
+    """Protomaps' build's day: https://build.protomaps.com/20261030.pmtiles -> '20261030'."""
+    return build.rsplit('/', 1)[1].split('.')[0]
+
+
+def stored_zip(out, folder, files, info):
+    """The folder's files into out, stored (unpacked by the unit piece by piece); region.txt: info."""
+    with zipfile.ZipFile(out, 'w', zipfile.ZIP_STORED) as z:
+        for f in files:
+            z.write(os.path.join(folder, f), f)
+        z.writestr('region.txt', info)
+
+
+def upload_zip(disk, name, path):
+    """path up as DISK/name, gone here after (not into the workflow's artifacts); its size."""
+    disk.upload('%s/%s' % (DISK, name), path)
+    size = os.path.getsize(path)
+    os.remove(path)
+    return size
+
+
+def build_full(entry, folder, dist, get_bytes, day, disk):
+    """The region whole up (its tiles cut now), its entry told: full = {zip, size, tiles}."""
+    tiles = os.path.join(folder, 'tiles.vtp')
+    pmextract.extract(get_bytes, entry['bbox'], TILES_Z, tiles + '.part', None, pmextract.slim)
+    os.replace(tiles + '.part', tiles)
+    with open(os.path.join(folder, 'region.txt'), encoding='utf-8') as f:
+        info = f.read() + 'tiles=%s\n' % day
+    zpath = os.path.join(dist, entry['name'] + '.full.zip')
+    stored_zip(zpath, folder, ('route.grf', 'search.idx', 'tiles.vtp'), info)
+    entry['full'] = {'zip': entry['zip'], 'size': upload_zip(disk, entry['zip'], zpath), 'tiles': day}
+    with open(os.path.join(dist, entry['name'] + '.json'), 'w', encoding='utf-8') as f:
+        json.dump(entry, f)
+    return entry
+
+
+def publish_disk(dist, disk, get_bytes, day):
+    """The overview whole up (maps_app's: z0-8 of all the regions' box), the folder public; the catalog in dist
+    told: disk (the folder's public link), overview = {zip, size, tiles}."""
+    import maps_app   # (its overview: one cut for the app and the release)
+    path = os.path.join(dist, 'catalog.json')
+    with open(path, encoding='utf-8') as f:
+        cat = json.load(f)
+    work = tempfile.mkdtemp()
+    try:
+        maps_app.install_overview(cat, work, get_bytes, day)
+        folder = os.path.join(work, 'OSMapsData', maps_app.OVERVIEW)
+        with open(os.path.join(folder, 'region.txt'), encoding='utf-8') as f:
+            info = f.read()
+        zpath = os.path.join(dist, 'overview.zip')
+        stored_zip(zpath, folder, ('overview.vtp',), info)
+        cat['overview'] = {'zip': 'overview.zip', 'size': upload_zip(disk, 'overview.zip', zpath), 'tiles': day}
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    cat['disk'] = disk.publish(DISK)
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(cat, f, ensure_ascii=False)
+    return cat
+
+
 def kept(previous, built, known):
     """The previous catalog's entries not built now, still among the regions; with today's title (the user
     2026-10-29: "Украина:" off the oblasts - not only those rebuilt)."""
@@ -137,6 +208,9 @@ def catalog(dist, previous=None, known=()):
     entries += kept(previous, built, known)
     cat = {'version': 1, 'made': time.strftime('%Y-%m-%d', time.gmtime()),
            'regions': sorted(entries, key=lambda e: e['name'])}
+    for k in ('disk', 'overview'):   # (a run without the disk: the previous one's still there)
+        if previous and k in previous:
+            cat[k] = previous[k]
     with open(os.path.join(dist, 'catalog.json'), 'w', encoding='utf-8') as f:
         json.dump(cat, f, ensure_ascii=False)
     return cat
@@ -146,7 +220,16 @@ def main(argv):
     if argv[0] == 'list':
         print(json.dumps(sorted(make_region.regions())))
     elif argv[0] == 'build':
-        print(build_region(argv[1], make_region.regions()[argv[1]], argv[2], make_region.WORK))
+        entry = build_region(argv[1], make_region.regions()[argv[1]], argv[2], make_region.WORK)
+        if os.environ.get('YANDEX_DISK_TOKEN'):
+            build = pmextract.latest_build()
+            entry = build_full(entry, os.path.join(make_region.WORK, 'data', argv[1]), argv[2],
+                               pmextract.http_bytes(build), build_day(build), yadisk.Disk(os.environ['YANDEX_DISK_TOKEN']))
+        print(entry)
+    elif argv[0] == 'disk':
+        build = pmextract.latest_build()
+        publish_disk(argv[1], yadisk.Disk(os.environ['YANDEX_DISK_TOKEN']), pmextract.http_bytes(build),
+                     build_day(build))
     else:
         catalog(argv[1], json.load(open(argv[2], encoding='utf-8')) if len(argv) > 2 else None, make_region.regions())
 
