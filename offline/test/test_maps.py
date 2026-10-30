@@ -48,6 +48,57 @@ class Maps(unittest.TestCase):
         self.assertTrue(49.95 < lon0 <= 50.0 < lon1 < 50.05 and 52.95 < lat0 < 53.0 < lat1 < 53.05, entry['bbox'])
         self.assertEqual(json.loads(read(os.path.join(self.dist, 'tiny.json'))), entry)
 
+    def planet(self):   # Protomaps' build in little: the test town's z14 tile, a far one, z0
+        planet = os.path.join(self.tmp, 'planet.pmtiles')
+        make_pmtiles(planet, {(14, 10467, 5336): mvt({'roads': ['major_road']}), (14, 100, 100): b'far',
+                              (0, 0, 0): mvt({'water': ['ocean']})})
+        data = read(planet)
+        return lambda off, n: data[off:off + n]
+
+    def test_release_full_region(self):
+        """The region whole on Yandex Disk (the user 2026-10-30: GitHub's downloads slow): its tiles cut out of
+        Protomaps' build, one zip - the big files stored (the unit unpacks them piece by piece, no memory for them
+        whole), region.txt with tiles= - uploaded, its catalog entry told (full: zip, size, tiles), not left in dist."""
+        entry = self.release_tiny()
+        folder = os.path.join(self.tmp, 'work', 'data', 'tiny')
+        up = []
+        disk = type('D', (), {'upload': lambda self, path, file: up.append((path, read(file)))})()
+        got = release_regions.build_full(entry, folder, self.dist, self.planet(), '20261030', disk)
+        self.assertEqual(up[0][0], 'disk:/OSMapsCE/maps/tiny.zip')
+        with zipfile.ZipFile(io.BytesIO(up[0][1])) as z:
+            self.assertEqual(sorted(z.namelist()), ['region.txt', 'route.grf', 'search.idx', 'tiles.vtp'])
+            self.assertEqual({i.compress_type for i in z.infolist()}, {zipfile.ZIP_STORED})
+            self.assertIn(b'tiles=20261030', z.read('region.txt'))
+            z.extract('tiles.vtp', self.tmp)
+        _, _, tiles = pack_tiles(os.path.join(self.tmp, 'tiles.vtp'))
+        self.assertEqual(sorted(tiles), [(0, 0, 0), (14, 10467, 5336)])         # the region's tiles
+        self.assertEqual(got['full'], {'zip': 'tiny.zip', 'size': len(up[0][1]), 'tiles': '20261030'})
+        self.assertEqual(json.loads(read(os.path.join(self.dist, 'tiny.json'))), got)
+        self.assertEqual(sorted(os.listdir(self.dist)), ['tiny.json', 'tiny.zip'])   # (the full zip not in dist)
+
+    def test_release_disk_catalog(self):
+        """The publish job: the overview whole too (overview.zip), the folder public - the catalog tells its link and
+        the overview; a run without the disk keeps the previous catalog's."""
+        os.makedirs(self.dist)
+        cat = {'regions': [{'name': 'tiny', 'bbox': [49.9, 52.9, 50.1, 53.1]}]}
+        with open(os.path.join(self.dist, 'catalog.json'), 'w', encoding='utf-8') as f:
+            json.dump(cat, f)
+        up = []
+        disk = type('D', (), {'upload': lambda self, path, file: up.append((path, read(file))),
+                              'publish': lambda self, path: up.append(('publish', path)) or 'https://disk.example/d/x'})()
+        got = release_regions.publish_disk(self.dist, disk, self.planet(), '20261030')
+        self.assertEqual(up[0][0], 'disk:/OSMapsCE/maps/overview.zip')
+        with zipfile.ZipFile(io.BytesIO(up[0][1])) as z:
+            self.assertEqual(sorted(z.namelist()), ['overview.vtp', 'region.txt'])
+        self.assertEqual(up[1], ('publish', 'disk:/OSMapsCE/maps'))
+        self.assertEqual(got['disk'], 'https://disk.example/d/x')
+        self.assertEqual(got['overview'], {'zip': 'overview.zip', 'size': len(up[0][1]), 'tiles': '20261030'})
+        self.assertEqual(json.loads(read(os.path.join(self.dist, 'catalog.json'))), got)
+        self.assertFalse(os.path.exists(os.path.join(self.dist, 'overview.zip')))
+        os.makedirs(os.path.join(self.tmp, 'd2'))
+        again = release_regions.catalog(os.path.join(self.tmp, 'd2'), got, {'tiny'})
+        self.assertEqual((again['disk'], again['overview']), (got['disk'], got['overview']))
+
     def test_catalog_of_the_regions(self):
         os.makedirs(self.dist)
         for name in ('b_oblast', 'a_krai'):

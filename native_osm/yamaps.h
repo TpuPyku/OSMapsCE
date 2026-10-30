@@ -170,8 +170,10 @@ enum { MAP_NEW, MAP_UPDATE, MAP_OK };
 struct MapRegion {
     char name[48], title[96], date[12], zip[64], have[12];   // title: UTF-8; have: the card's date, "" none
     int  sizeKb;
+    int  fullKb;   // the region whole (its tiles too) on the catalog's Yandex Disk; 0 none
 };
 int  MapsCatalog(const char* json, MapRegion* out, int cap);
+void UrlEncode(const char* s, char* out, int cap);   // json.cpp: all but letters, digits, -_.~ as %XX
 void MapsHave(MapRegion* r, int n);
 int  MapState(const MapRegion& r);
 bool UrlSplit(const char* url, char* host, int cap, bool* https, const char** path);
@@ -180,7 +182,8 @@ typedef int (*MapsGetFn)(const char* host, bool https, const char* path, unsigne
                          const HttpExtra* extra);
 void MapsSetGet(MapsGetFn fn, int retryMs);   // tests: a made-up server; NULL - HttpGet
 bool MapsFetch(const char* url, const wchar_t* file, int chunk);   // resumable, in ranges, through redirects
-bool MapsInstall(const char* url, const wchar_t* data, const char* name, bool trunk);   // a release zip unpacked
+enum { MAPS_GRAPH, MAPS_TRUNK, MAPS_FULL, MAPS_OVERVIEW };   // what a zip holds (its files unpacked)
+bool MapsInstall(const char* url, const wchar_t* data, const char* name, int kind);   // a zip downloaded, unpacked
 enum { MAPS_IDLE, MAPS_BUSY };
 bool MapsList();                 // the release's catalog, on a thread (false: busy)
 bool MapsGetRegion(int i);       // the catalog's region i (and the trunk roads when none), on a thread

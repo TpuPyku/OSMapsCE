@@ -2809,7 +2809,8 @@ static void MapsRow(HDC dc, int r, int i, const MapRegion& m)
         t[0] = 0;
     t[95] = 0;
     int st = MapState(m);
-    _snwprintf(sub, 64, L"%d,%d МБ · %s", m.sizeKb / 1024, m.sizeKb % 1024 * 10 / 1024, kState[st]);
+    int kb = m.fullKb ? m.fullKb : m.sizeKb;   // (whole from the disk: with its tiles)
+    _snwprintf(sub, 64, L"%d,%d МБ · %s", kb / 1024, kb % 1024 * 10 / 1024, kState[st]);
     sub[63] = 0;
     SetRow(dc, kSetRow0 + r * kSetRowH, t, sub, r < kMapsRows - 1);
     const RECT& b = kRegCtl[R_ROW0 + r];

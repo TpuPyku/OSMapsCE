@@ -19,24 +19,6 @@ static const double kArriveM      = 30;     // the destination this close: arriv
 
 // ---------------------------------------------------------------- requests
 
-static void UrlEncode(const char* s, char* out, int cap)
-{
-    static const char hex[] = "0123456789ABCDEF";
-    int n = 0;
-    for (; *s && n < cap - 4; s++) {
-        unsigned char c = (unsigned char)*s;
-        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' ||
-            c == '.' || c == '~') {
-            out[n++] = (char)c;
-        } else {
-            out[n++] = '%';
-            out[n++] = hex[c >> 4];
-            out[n++] = hex[c & 15];
-        }
-    }
-    out[n] = 0;
-}
-
 static bool Budget()
 {
     if (g_cfg.apiCount >= g_cfg.apiLimit) {

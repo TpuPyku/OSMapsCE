@@ -156,6 +156,73 @@ static bool FileIs(const wchar_t* name, const char* want, int n)   // a file und
 // pressed meanwhile; s_seen - the region the job said it downloads
 static char* s_zip;
 static int   s_zipLen, s_asked, s_failOnce, s_cancelNow, s_seen;
+// Yandex Disk (the user 2026-10-30: the regions whole there): s_withDisk - the catalog tells its folder, zz whole and
+// the overview; its API answers a public file's link (dl.example), which serves full.zip / overview.zip in ranges
+static char* s_full;
+static char* s_ov;
+static int   s_fullLen, s_ovLen, s_withDisk, s_apiFail, s_ovAsks, s_trunkAsks;
+static char  s_apiQuery[512];
+
+static char* FileBytes(const wchar_t* name, int* len)   // a file of obj\test (malloc)
+{
+    wchar_t path[MAX_PATH];
+    PathInDir(path, name);
+    HANDLE f = CreateFile(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    *len = 0;
+    if (f == INVALID_HANDLE_VALUE)
+        return NULL;
+    *len = (int)GetFileSize(f, NULL);
+    char* b = (char*)malloc(*len);
+    DWORD got;
+    ReadFile(f, b, *len, &got, NULL);
+    CloseHandle(f);
+    return b;
+}
+
+static int Body(const char* s, unsigned char** body, int* len, int* status)   // a JSON answer, 200
+{
+    free(*body);
+    *body = (unsigned char*)_strdup(s);
+    *len = (int)strlen(s);
+    *status = 200;
+    return NET_OK;
+}
+
+static int Ranged(const char* data, int n, const HttpExtra* x, unsigned char** body, int* len, int* status)
+{
+    int a = 0, b = 0;
+    sscanf(x->headers, "Range: bytes=%d-%d", &a, &b);
+    if (a >= n) {
+        *status = 416;
+        return NET_OK;
+    }
+    b = b < n ? b : n - 1;
+    free(*body);
+    *body = (unsigned char*)malloc(b - a + 2);
+    memcpy(*body, data + a, b - a + 1);
+    *len = b - a + 1;
+    *status = 206;
+    return NET_OK;
+}
+
+static int DiskGet(const char* host, const char* path, unsigned char** body, int* len, int* status,
+                   const HttpExtra* x)
+{
+    if (!strcmp(host, "cloud-api.yandex.net")) {
+        strncpy(s_apiQuery, path, sizeof(s_apiQuery) - 1);
+        s_ovAsks += strstr(path, "overview.zip") != NULL;
+        if (s_apiFail || strstr(path, "yy.zip")) {   // (yy: not there whole)
+            *status = 404;
+            return NET_OK;
+        }
+        return Body(strstr(path, "overview.zip") ? "{\"href\":\"https:\\/\\/dl.example\\/ov?sig=1\"}"
+                                                 : "{\"href\":\"https:\\/\\/dl.example\\/full?sig=1\"}", body, len, status);
+    }
+    if (!x->headers)
+        return NET_TIMEOUT;
+    return strstr(path, "/ov") ? Ranged(s_ov, s_ovLen, x, body, len, status)
+                               : Ranged(s_full, s_fullLen, x, body, len, status);
+}
 
 static int FakeGet(const char* host, bool, const char* path, unsigned char** body, int* len, int* status,
                    const HttpExtra* x)
@@ -167,12 +234,15 @@ static int FakeGet(const char* host, bool, const char* path, unsigned char** bod
         static const char* kCat = "{\"regions\":[{\"name\":\"tiny\",\"title\":\"T\",\"date\":\"2026-10-20\",\"zip\":"
                                   "\"tiny.zip\",\"size\":10},{\"name\":\"zz\",\"title\":\"Z\",\"date\":\"2026-10-29\","
                                   "\"zip\":\"zz.zip\",\"size\":2048}]}";
-        free(*body);
-        *body = (unsigned char*)_strdup(kCat);
-        *len = (int)strlen(kCat);
-        *status = 200;
-        return NET_OK;
+        static const char* kDiskCat = "{\"disk\":\"https://disk.example/d/x y\",\"overview\":{\"zip\":\"overview.zip\","
+                                      "\"size\":2048},\"regions\":[{\"name\":\"yy\",\"title\":\"Y\",\"date\":\"2026-10-29\","
+                                      "\"zip\":\"yy.zip\",\"size\":2048},{\"name\":\"zz\",\"title\":\"Z\",\"date\":\"2026-10-30\","
+                                      "\"zip\":\"zz.zip\",\"size\":2048,\"full\":{\"zip\":\"zz.zip\",\"size\":300000}}]}";
+        return Body(s_withDisk ? kDiskCat : kCat, body, len, status);
     }
+    if (s_withDisk && (!strcmp(host, "cloud-api.yandex.net") || !strcmp(host, "dl.example")))
+        return DiskGet(host, path, body, len, status, x);
+    s_trunkAsks += strstr(path, "trunk.zip") != NULL;
     if (!strcmp(host, "github.com")) {
         *status = 302;
         _snprintf(x->location, x->locCap, "https://store.example/f%s?sig=%d", strrchr(path, '/'), s_asked);
@@ -230,13 +300,66 @@ static bool WaitMaps()   // the job's thread done (5 s at most)
 
 static void Remove(const wchar_t* dir)   // a folder of the test's last run (its files, then itself)
 {
-    static const wchar_t* kNames[4] = { L"route.grf", L"search.idx", L"region.txt", L"trunk.grf" };
+    static const wchar_t* kNames[6] = { L"route.grf", L"search.idx", L"region.txt", L"trunk.grf", L"tiles.vtp",
+                                        L"overview.vtp" };
     wchar_t path[MAX_PATH];
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < 6; i++) {
         _snwprintf(path, MAX_PATH, L"%s\\%s", dir, kNames[i]);
         DeleteFile(path);
     }
     RemoveDirectory(dir);
+}
+
+// The region whole from Yandex Disk (the user 2026-10-30: GitHub's downloads slow): the catalog's folder - a public
+// file's link asked of the disk's API (public_key and path encoded), the zip in ranges, its big files stored - unpacked
+// piece by piece (tiles.vtp over a few pieces); the overview after it when the card has none
+static void DiskChecks()
+{
+    s_full = FileBytes(L"..\\full.zip", &s_fullLen);
+    s_ov = FileBytes(L"..\\overview.zip", &s_ovLen);
+    s_withDisk = 1;
+    MapRegion m;
+    Check(MapsList() && WaitMaps() && MapsCount() == 2 && MapsAt(1, &m) && m.fullKb == 292,
+          "disk: the catalog's region whole, its size", NULL);
+    wchar_t zz[MAX_PATH], ov[MAX_PATH], yy[MAX_PATH];
+    PathInDir(zz, L"OSMapsData\\zz");
+    Remove(zz);
+    s_trunkAsks = 0;
+    Check(MapsGetRegion(1) && WaitMaps() && MapsAt(1, &m) && MapState(m) == MAP_OK, "disk: the region downloaded", NULL);
+    Check(strstr(s_apiQuery, "/v1/disk/public/resources/download?public_key=https%3A%2F%2Fdisk.example%2Fd%2Fx%20y") &&
+          strstr(s_apiQuery, "&path=%2Foverview.zip"), "disk: the link asked of its API, encoded", s_apiQuery);
+    int n = 0;
+    char* tiles = FileBytes(L"OSMapsData\\zz\\tiles.vtp", &n);
+    bool same = n == 251000;
+    for (int i = 0; same && i < n; i++)
+        same = (unsigned char)tiles[i] == i % 251;
+    free(tiles);
+    Check(same && FileIs(L"OSMapsData\\zz\\search.idx", "IDXIDXIDXIDXIDXIDXIDXIDXIDXIDX", 30),
+          "disk: the region whole - its tiles too, unpacked piece by piece", NULL);
+    char* ovb = FileBytes(L"OSMapsData\\overview\\overview.vtp", &n);
+    Check(n == 800 && !memcmp(ovb, "OVERVIEW", 8), "disk: the overview after it", NULL);
+    free(ovb);
+    Check(s_trunkAsks == 0, "disk: the trunk roads there - not downloaded", NULL);
+    Remove(zz);
+    Check(MapsGetRegion(1) && WaitMaps() && s_ovAsks == 1, "disk: the overview there - not asked again", NULL);
+    PathInDir(yy, L"OSMapsData\\yy");
+    Remove(yy);
+    Check(MapsGetRegion(0) && WaitMaps() && FileIs(L"OSMapsData\\yy\\search.idx", "IDXIDXIDXIDXIDXIDXIDXIDXIDXIDX", 30),
+          "disk: a region not there whole - its graph and search from the release", NULL);
+    Remove(yy);
+    Remove(zz);
+    s_apiFail = 1;
+    MapsAt(1, &m);
+    Check(MapsGetRegion(1) && WaitMaps() && MapsAt(1, &m) && MapState(m) == MAP_NEW,
+          "disk: no link from its API - not written", NULL);
+    s_apiFail = 0;
+    Remove(zz);
+    PathInDir(ov, L"OSMapsData\\overview");
+    Remove(ov);
+    s_withDisk = 0;
+    free(s_full);
+    free(s_ov);
+    Check(MapsList() && WaitMaps() && MapsCount() == 2, "disk: (the catalog as before)", NULL);
 }
 
 static void DownloadChecks()
@@ -272,7 +395,7 @@ static void DownloadChecks()
     s_failOnce = 0;
 
     PathInDir(dir, L"..\\dldata");
-    Check(MapsInstall("https://github.com/x/releases/download/maps/tiny.zip", dir, "zipped", false) &&
+    Check(MapsInstall("https://github.com/x/releases/download/maps/tiny.zip", dir, "zipped", MAPS_GRAPH) &&
           FileIs(L"..\\dldata\\zipped\\region.txt", "name=zipped\ndate=2026-10-29\n", 28) &&
           FileIs(L"..\\dldata\\zipped\\search.idx", "IDXIDXIDXIDXIDXIDXIDXIDXIDXIDX", 30),
           "download: a region installed into its folder", NULL);
@@ -312,6 +435,7 @@ static void DownloadChecks()
     s_cancelNow = 0;
     Check(MapsGetRegion(1) && WaitMaps() && MapsAt(1, &m) && MapState(m) == MAP_OK, "cancel: the next one goes on",
           NULL);
+    DiskChecks();
     MapsSetGet(NULL, 0);
     free(s_zip);
 

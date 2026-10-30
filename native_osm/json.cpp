@@ -161,3 +161,26 @@ void JWide(const char* p, wchar_t* out, int cap)
         out[0] = 0;
     out[cap - 1] = 0;
 }
+
+static bool Unreserved(unsigned char c)   // a URL's letters, digits, -_.~
+{
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || (c && strchr("-_.~", c));
+}
+
+// A URL's part: all but letters, digits, -_.~ as %XX (route.cpp's requests, offmaps.cpp's Yandex Disk link)
+void UrlEncode(const char* s, char* out, int cap)
+{
+    static const char hex[] = "0123456789ABCDEF";
+    int n = 0;
+    for (; *s && n < cap - 4; s++) {
+        unsigned char c = (unsigned char)*s;
+        if (Unreserved(c)) {
+            out[n++] = (char)c;
+        } else {
+            out[n++] = '%';
+            out[n++] = hex[c >> 4];
+            out[n++] = hex[c & 15];
+        }
+    }
+    out[n] = 0;
+}

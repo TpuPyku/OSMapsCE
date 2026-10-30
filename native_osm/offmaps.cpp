@@ -25,6 +25,7 @@ int MapsCatalog(const char* json, MapRegion* out, int cap)
         Copy(m.date, sizeof(m.date), JKey(r, "date"));
         Copy(m.zip, sizeof(m.zip), JKey(r, "zip"));
         m.sizeKb = (int)(JNum(JKey(r, "size"), 0) / 1024);
+        m.fullKb = (int)(JNum(JKey(JKey(r, "full"), "size"), 0) / 1024);
         if (m.name[0] && m.zip[0])
             n++;
     }
@@ -182,13 +183,37 @@ static bool Put(const wchar_t* path, const void* data, DWORD n, bool append)   /
     return ok;
 }
 
+// A stored entry into path piece by piece (the region whole: tiles.vtp's hundreds of MB - no memory for them whole)
+static bool CopyStored(HANDLE f, const ZipEntry& e, const wchar_t* path)
+{
+    enum { kPiece = 64 * 1024 };
+    BYTE lh[30];
+    if (!OffRead(f, e.local, lh, 30) || U32(lh) != 0x04034b50)
+        return false;
+    DWORD off = e.local + 30 + U16(lh + 26) + U16(lh + 28), left = e.size;
+    char* buf = (char*)malloc(kPiece);
+    bool ok = buf && Put(path, "", 0, false);
+    while (ok && left) {
+        DWORD n = left < kPiece ? left : kPiece;
+        ok = OffRead(f, off, buf, n) && Put(path, buf, n, true);
+        off += n;
+        left -= n;
+    }
+    free(buf);
+    return ok;
+}
+
 static bool ZipFile(HANDLE f, const wchar_t* dir, const char* name)   // one entry into dir\name
 {
     ZipEntry e;
-    char* data = ZipFind(f, name, &e) ? ZipData(f, e) : NULL;
     wchar_t path[MAX_PATH];
     _snwprintf(path, MAX_PATH, L"%s\\%S", dir, name);
     path[MAX_PATH - 1] = 0;
+    if (!ZipFind(f, name, &e))
+        return false;
+    if (e.method == 0)
+        return CopyStored(f, e, path);
+    char* data = ZipData(f, e);
     bool ok = data && Put(path, data, e.size, false);
     free(data);
     return ok;
@@ -304,12 +329,14 @@ bool MapsFetch(const char* url, const wchar_t* file, int chunk)
     return false;
 }
 
-// A release's zip (url) into data\<name>\ - a region (route.grf, search.idx, region.txt) or the trunk roads
-// (trunk.grf, region.txt) - through data\<name>.zip, removed after
-bool MapsInstall(const char* url, const wchar_t* data, const char* name, bool trunk)
+// A zip (url) into data\<name>\ - kind MAPS_*: a region's graph and search, the trunk roads, a region whole (its
+// tiles too), the overview - through data\<name>.zip, removed after; region.txt last
+bool MapsInstall(const char* url, const wchar_t* data, const char* name, int kind)
 {
-    static const char* kRegion[3] = { "route.grf", "search.idx", "region.txt" };
-    static const char* kTrunk[2] = { "trunk.grf", "region.txt" };
+    static const char* const kFiles[4][4] = { { "route.grf", "search.idx", "region.txt" }, { "trunk.grf", "region.txt" },
+                                              { "route.grf", "search.idx", "tiles.vtp", "region.txt" },
+                                              { "overview.vtp", "region.txt" } };
+    static const int kCount[4] = { 3, 2, 4, 2 };
     wchar_t zip[MAX_PATH], part[MAX_PATH], dir[MAX_PATH];
     CreateDirectory(data, NULL);
     _snwprintf(zip, MAX_PATH, L"%s\\%S.zip", data, name);
@@ -322,7 +349,7 @@ bool MapsInstall(const char* url, const wchar_t* data, const char* name, bool tr
     if (ok) {   // (a route, the search let go of the files written over - and wait meanwhile: CE, Windows refuse them)
         OffUseScope use;
         OfflineDrop();
-        ok = ZipExtract(zip, dir, trunk ? kTrunk : kRegion, trunk ? 2 : 3);
+        ok = ZipExtract(zip, dir, kFiles[kind], kCount[kind]);
     }
     if (ok)
         DeleteFile(zip);
@@ -344,6 +371,8 @@ static volatile LONG    s_csDone, s_busy;
 static volatile LONG    s_busyRegion = -1;   // the region GetThread downloads
 static wchar_t          s_text[128];   // what goes on / the last result
 static int              s_totalKb;     // the file being downloaded
+static char             s_disk[256];   // the catalog's Yandex Disk folder (public link): the regions whole; "" none
+static int              s_ovKb;        // ... its overview's size
 
 static void Lock()
 {
@@ -384,12 +413,18 @@ static DWORD WINAPI ListThread(LPVOID)
     bool ok = err == NET_OK && status == 200 && body;
     static MapRegion got[kMaxRegions];
     int n = ok ? MapsCatalog((const char*)body, got, kMaxRegions) : 0;
+    char disk[256] = "";
+    if (n)
+        Copy(disk, sizeof(disk), JKey((const char*)body, "disk"));
+    int ovKb = n ? (int)(JNum(JKey(JKey((const char*)body, "overview"), "size"), 0) / 1024) : 0;
     free(body);
     qsort(got, n, sizeof(MapRegion), ByTitle);
     MapsHave(got, n);
     Lock();
     memcpy(s_reg, got, n * sizeof(MapRegion));
     s_nReg = n;
+    strcpy(s_disk, disk);
+    s_ovKb = ovKb;
     _snwprintf(s_text, 128, n ? L"Областей: %d" : L"Каталог не получен (нет связи с GitHub?)", n);
     LeaveCriticalSection(&s_cs);
     Log("maps: catalog %d regions (HTTP %d, error %d)", n, status, err);
@@ -403,6 +438,62 @@ static bool TrunkThere()
     return OffRegion(L"trunk.grf", Exists, NULL, dir);
 }
 
+// A public file of the catalog's Yandex Disk folder: its download link, asked of the disk's API (no token); false -
+// none (no link)
+static bool DiskHref(const char* name, char* href, int cap)
+{
+    char key[512], path[96], file[128], url[1024];
+    UrlEncode(s_disk, key, sizeof(key));
+    _snprintf(file, sizeof(file), "/%s", name);
+    file[sizeof(file) - 1] = 0;
+    UrlEncode(file, path, sizeof(path));
+    _snprintf(url, sizeof(url), "https://cloud-api.yandex.net/v1/disk/public/resources/download?public_key=%s&path=%s",
+              key, path);
+    url[sizeof(url) - 1] = 0;
+    unsigned char* body = NULL;
+    int len = 0, status = 0;
+    bool ok = GetUrl(url, NULL, &body, &len, &status) == NET_OK && status == 200 && body;
+    href[0] = 0;
+    if (ok)
+        JStr(JKey((const char*)body, "href"), href, cap);
+    free(body);
+    return href[0] != 0;
+}
+
+// The region: whole from the disk when the catalog has it there (the user 2026-10-30: GitHub's downloads slow), else
+// its graph and search from the release
+static bool GetRegion(const MapRegion& r, const wchar_t* data)
+{
+    char url[2048];
+    if (s_disk[0] && r.fullKb) {
+        s_totalKb = r.fullKb;
+        return DiskHref(r.zip, url, sizeof(url)) && MapsInstall(url, data, r.name, MAPS_FULL);
+    }
+    _snprintf(url, sizeof(url), "%s%s", kAssets, r.zip);
+    return MapsInstall(url, data, r.name, MAPS_GRAPH);
+}
+
+// After a region: the overview (the disk's; none where the region went) and the trunk roads (~10 MB, none on a card)
+static void GetExtras(const wchar_t* data)
+{
+    char url[2048];
+    wchar_t ov[MAX_PATH];
+    _snwprintf(ov, MAX_PATH, L"%s\\overview\\overview.vtp", data);
+    ov[MAX_PATH - 1] = 0;
+    if (s_disk[0] && s_ovKb && !Exists(ov, NULL) && !s_cancel) {
+        Say(L"Обзорная карта СНГ…", NULL);
+        s_totalKb = s_ovKb;
+        if (DiskHref("overview.zip", url, sizeof(url)))
+            MapsInstall(url, data, "overview", MAPS_OVERVIEW);
+    }
+    if (!TrunkThere() && !s_cancel) {
+        Say(L"Магистрали России и СНГ…", NULL);
+        _snprintf(url, sizeof(url), "%strunk.zip", kAssets);
+        s_totalKb = 10 * 1024;
+        MapsInstall(url, data, "trunk", MAPS_TRUNK);
+    }
+}
+
 static DWORD WINAPI GetThread(LPVOID p)
 {
     MapRegion r;
@@ -411,19 +502,13 @@ static DWORD WINAPI GetThread(LPVOID p)
     s_totalKb = r.sizeKb;
     LeaveCriticalSection(&s_cs);
     wchar_t data[MAX_PATH];
-    char url[256];
     if (s_get == RealGet)
         OffWriteDir(data);
     else
         PathInDir(data, L"OSMapsData");   // (the tests' made-up server: never onto a disk of the PC's)
-    _snprintf(url, sizeof(url), "%s%s", kAssets, r.zip);
-    bool ok = MapsInstall(url, data, r.name, false);
-    if (ok && !TrunkThere()) {   // the routes between the regions (~10 MB, once)
-        Say(L"Магистрали России и СНГ…", NULL);
-        _snprintf(url, sizeof(url), "%strunk.zip", kAssets);
-        s_totalKb = 10 * 1024;
-        MapsInstall(url, data, "trunk", true);
-    }
+    bool ok = GetRegion(r, data);
+    if (ok)
+        GetExtras(data);
     Lock();
     MapsHave(s_reg, s_nReg);
     LeaveCriticalSection(&s_cs);

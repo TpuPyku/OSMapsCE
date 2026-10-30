@@ -29,7 +29,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: pip install osmium   # (release_regions imports the builders)
+      - run: pip install osmium pmtiles   # (release_regions imports the builders)
       - id: list
         run: echo "regions=$(python offline/release_regions.py list)" >> "$GITHUB_OUTPUT"
 
@@ -46,8 +46,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: pip install osmium
+      - run: pip install osmium pmtiles
+      # with the secret (the user 2026-10-30: GitHub's downloads slow): the region whole - its tiles cut out of
+      # Protomaps' build too - onto the owner's Yandex Disk (offline/yadisk.py), only its entry into the artifact
       - run: python offline/release_regions.py build ${{ matrix.region }} dist
+        env:
+          YANDEX_DISK_TOKEN: ${{ secrets.YANDEX_DISK_TOKEN }}
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.region }}
@@ -60,6 +64,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
+      YANDEX_DISK_TOKEN: ${{ secrets.YANDEX_DISK_TOKEN }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -69,7 +74,7 @@ jobs:
         with:
           path: dist
           merge-multiple: true
-      - run: pip install osmium
+      - run: pip install osmium pmtiles
       - name: The release (once)
         run: |
           gh release view maps >/dev/null 2>&1 || gh release create maps --prerelease --title "Карты OSMapsCE" \
@@ -78,6 +83,9 @@ jobs:
         run: |
           gh release download maps -p catalog.json -O previous.json || echo '{"regions": []}' > previous.json
           python offline/release_regions.py catalog dist previous.json
+      - name: The overview whole onto Yandex Disk, its folder public (the catalog tells the link)
+        if: ${{ env.YANDEX_DISK_TOKEN != '' }}
+        run: python offline/release_regions.py disk dist
       - name: The regions' outlines for the app's map (the sources' .poly)
         run: python offline/make_outlines.py dist/outlines.json
       - run: gh release upload maps dist/*.zip dist/catalog.json dist/outlines.json --clobber
