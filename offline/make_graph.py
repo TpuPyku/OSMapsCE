@@ -38,8 +38,9 @@ kSignalS = 8   # a traffic light's wait, seconds (on average: half the time it i
 # access tag - kGateS more (a way through avoided, a place inside still reached), the passed ones - nothing, any
 # other (a block, a bollard, a gate closed by its access tag) - the road cut there
 kGateS = 600
-kGates = {'gate', 'swing_gate', 'sliding_gate', 'hampshire_gate', 'wicket_gate'}
-kPassed = {'lift_gate', 'toll_booth', 'cattle_grid', 'border_control', 'entrance', 'no', 'height_restrictor', 'kerb',
+kGates = {'gate', 'swing_gate', 'sliding_gate', 'hampshire_gate', 'wicket_gate',
+          'lift_gate'}   # (2026-10-31: grounds behind lift gates - into them, not across)
+kPassed = {'toll_booth', 'cattle_grid', 'border_control', 'entrance', 'no', 'height_restrictor', 'kerb',
            'sally_port', 'checkpoint'}
 kAccessKeys = ('access', 'motor_vehicle', 'motorcar', 'vehicle')
 kNoAccess = {'no', 'private', 'agricultural', 'forestry', 'delivery', 'destination_no'}

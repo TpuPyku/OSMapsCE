@@ -149,13 +149,15 @@ class Tools(unittest.TestCase):
 
     def test_graph_barriers(self):
         """The barriers on roads (the user 2026-10-29: a route through a hospital's grounds, closed by gates): a gate
-        with no access tag - 10 minutes more (no way through, unless going there), a block, a bollard, a private
-        gate - no way past (the road cut there), a lift gate, a toll booth, a cattle grid - passed."""
+        with no access tag - 10 minutes more (no way through, unless going there), a lift gate too (the user
+        2026-10-31: a route through grounds behind two of them - only into them, never across), a block, a bollard, a
+        private gate - no way past (the road cut there), a toll booth, a cattle grid, an open lift gate - passed."""
         self.assertEqual([make_graph.barrier_of(t) for t in (
             {}, {'barrier': 'gate'}, {'barrier': 'gate', 'access': 'private'}, {'barrier': 'gate', 'access': 'yes'},
             {'barrier': 'lift_gate'}, {'barrier': 'block'}, {'barrier': 'bollard'}, {'barrier': 'toll_booth'},
-            {'barrier': 'cattle_grid'}, {'barrier': 'entrance'}, {'barrier': 'lift_gate', 'motor_vehicle': 'no'})],
-            [None, 'gate', 'block', None, None, 'block', 'block', None, None, None, 'block'])
+            {'barrier': 'cattle_grid'}, {'barrier': 'entrance'}, {'barrier': 'lift_gate', 'motor_vehicle': 'no'},
+            {'barrier': 'lift_gate', 'access': 'yes'})],
+            [None, 'gate', 'block', None, 'gate', 'block', 'block', None, None, None, 'block', None])
         osm = os.path.join(self.tmp, 'barriers.osm')
         nodes = {1: (53.1, 50.000), 2: (53.1, 50.002), 3: (53.1, 50.004), 4: (53.1, 50.006),
                  5: (53.101, 50.002), 6: (53.102, 50.002), 7: (53.101, 50.004), 8: (53.102, 50.004)}
