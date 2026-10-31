@@ -257,6 +257,11 @@ void MapsSetGet(MapsGetFn fn, int retryMs)   // tests: a made-up server; NULL - 
     s_retryMs = fn ? retryMs : 3000;
 }
 
+static bool Redirected(int err, int status, const char* loc)   // a hop's answer: on to loc
+{
+    return err == NET_OK && status >= 300 && status < 400 && loc[0];
+}
+
 // GET url following the redirects (GitHub's release files: github.com -> its storage); range "a-b" or NULL; last (2048,
 // may be url itself): the link asked last - the storage's after the redirects
 static int GetUrl(const char* url, const char* range, unsigned char** body, int* len, int* status, char* last = NULL)
@@ -276,7 +281,7 @@ static int GetUrl(const char* url, const char* range, unsigned char** body, int*
         *body = NULL;
         *len = 0;
         int err = s_get(host, https, path, body, len, status, &x);
-        if (err != NET_OK || *status < 300 || *status >= 400 || !loc[0]) {
+        if (!Redirected(err, *status, loc)) {
             if (last)
                 strcpy(last, cur);
             return err;
