@@ -281,12 +281,39 @@ def adjacency(pieces, n):   # each node's next nodes by the pieces' directions
     return adj
 
 
-def renumbered(nodes, keep):   # the kept pieces' nodes only, numbered in the order met
-    new = {}
-    for p in keep:
-        new.setdefault(p.a, len(new))
-        new.setdefault(p.b, len(new))
-    return [nodes[n] for n in sorted(new, key=new.get)], [p._replace(a=new[p.a], b=new[p.b]) for p in keep]
+def hilbert(x, y, order):
+    """(x, y) of a 2^order square's grid -> its place along the Hilbert curve (from (0, 0) up first)."""
+    d, s = 0, 1 << (order - 1)
+    while s:
+        rx, ry = int(x & s > 0), int(y & s > 0)
+        d += s * s * ((3 * rx) ^ ry)
+        if not ry:
+            if rx:
+                x, y = s - 1 - x, s - 1 - y
+            x, y = y, x
+        s >>= 1
+    return d
+
+
+def curve_keys(nodes, used):   # each used node's place along the Hilbert curve over their box (65536 a side)
+    if not used:
+        return {}
+    lats, lons = [nodes[n][0] for n in used], [nodes[n][1] for n in used]
+    la0, lo0 = min(lats), min(lons)
+    span = max(max(lats) - la0, max(lons) - lo0, 1)
+    return {n: hilbert((nodes[n][1] - lo0) * 65535 // span, (nodes[n][0] - la0) * 65535 // span, 16) for n in used}
+
+
+def renumbered(nodes, keep):
+    """The kept pieces' nodes only, numbered along a Hilbert curve over their box (the user's Shturmann 2026-10-31: in
+    the order met a 115 km way read most of the 96 MB graph into memory - a place's neighbours were all over the
+    file); the pieces by their first node, their inner points and edges near too."""
+    used = sorted({p.a for p in keep} | {p.b for p in keep})
+    key = curve_keys(nodes, used)
+    order = sorted(used, key=lambda n: (key[n], n))
+    new = {n: i for i, n in enumerate(order)}
+    pieces = [p._replace(a=new[p.a], b=new[p.b]) for p in keep]
+    return [nodes[n] for n in order], sorted(pieces, key=lambda p: min(p.a, p.b))
 
 
 class Tarjan:
