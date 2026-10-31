@@ -581,6 +581,11 @@ static void DropChecks()
     r = Route("50.000,53.000;50.006,53.000");
     Check(r != NULL, "drop: loaded again when asked", r);
     free(r);
+    free(Ask("/api/?q=%D0%A2%D0%B5%D1%81%D1%82%D0%BE%D0%B2%D1%81%D0%BA&limit=7&lat=53.0&lon=50.0"));
+    r = Route("50.000,53.000;50.006,53.000");   // (the user's Shturmann 2026-10-31: a long way ran out of memory)
+    Check(r && Writable(L"..\\OSMapsData\\tiny\\search.idx") && !Writable(L"..\\OSMapsData\\tiny\\route.grf"),
+          "drop: a route lets the search's index go first", r);
+    free(r);
 }
 
 int main()

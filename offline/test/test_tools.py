@@ -147,6 +147,25 @@ class Tools(unittest.TestCase):
         main = [dm for a, b, dm, _, n in edges if n == 'Главная улица' and a == (53000000, 50000000)]
         self.assertTrue(1300 < main[0] < 1400)        # ~134 m, in decimetres
 
+    def test_graph_nodes_by_place(self):
+        # the user's Shturmann 2026-10-31: a 115 km way read most of the 96 MB graph into memory - its nodes numbered in
+        # the order met, a place's neighbours all over the file. Numbered along a Hilbert curve: near on the map, near
+        # in the file; the pieces after their first node, so their points and edges near too
+        far, near = (55000000, 37000000), (55000100, 37000100)
+        nodes = [far, (54000000, 36000000), near, (54000050, 36000050)]
+        P = make_graph.Piece
+        pieces = [P(0, 1, [], 1, 0, 0, False, 50, 0, 0, 0, False), P(2, 0, [], 1, 0, 0, False, 50, 0, 0, 0, False),
+                  P(3, 1, [], 1, 0, 0, False, 50, 0, 0, 0, False)]
+        pts, kept = make_graph.renumbered(nodes, pieces)
+        self.assertEqual(sorted(pts), sorted(nodes))
+        self.assertEqual(abs(pts.index(far) - pts.index(near)), 1)   # (met first and third)
+        self.assertEqual(abs(pts.index(nodes[1]) - pts.index(nodes[3])), 1)
+        self.assertEqual({(pts[p.a], pts[p.b]) for p in kept}, {(far, nodes[1]), (near, far), (nodes[3], nodes[1])})
+        self.assertEqual([min(p.a, p.b) for p in kept], sorted(min(p.a, p.b) for p in kept))
+        self.assertLess(make_graph.hilbert(0, 0, 4), make_graph.hilbert(0, 1, 4))
+        self.assertEqual(sorted(make_graph.hilbert(x, y, 2) for x in range(4) for y in range(4)), list(range(16)))
+        self.assertEqual([make_graph.hilbert(x, y, 1) for x, y in ((0, 0), (0, 1), (1, 1), (1, 0))], [0, 1, 2, 3])
+
     def test_graph_barriers(self):
         """The barriers on roads (the user 2026-10-29: a route through a hospital's grounds, closed by gates): a gate
         with no access tag - 10 minutes more (no way through, unless going there), a lift gate too (the user

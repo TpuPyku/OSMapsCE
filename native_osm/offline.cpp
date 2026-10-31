@@ -1037,6 +1037,8 @@ bool OfflineRoute(const char* path, char** body, int* len)
     if (!ParseRequest(path, &r))
         return false;
     DWORD t0 = GetTickCount();
+    OfflineSearchDrop();   // (the search's index pages out of the graph's way - the user's Shturmann 2026-10-31: a
+                           // 115 km way in Moscow's oblast ran out of memory)
     return Region(r.pts, r.n) && Answer(r, body, len, t0);
 }
 
@@ -1296,6 +1298,7 @@ bool OfflineTrunkRoute(const char* path, char** body, int* len)
     if (!ParseRequest(path, &r) || !OffRegion(L"trunk.grf", AnyGraph, NULL, dir))
         return false;
     DWORD t0 = GetTickCount();
+    OfflineSearchDrop();
     _snwprintf(file, MAX_PATH, L"%s\\trunk.grf", dir);
     file[MAX_PATH - 1] = 0;
     if (!Load(file))
