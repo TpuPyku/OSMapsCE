@@ -1,0 +1,9 @@
+---- VTileTest 2026-10-26 19:43
+z12: 14 tiles, 401 KB: read 0 ms, decode 0 ms; 2965 features kept, 108663 points
+z13: 15 tiles, 389 KB: read 0 ms, decode 0 ms; 1692 features kept, 110376 points
+z14: 34 tiles, 1208 KB: read 0 ms, decode 15 ms; 4290 features kept, 148770 points
+zoom 14 (z14 data): frame north 47 ms, turned avg 31 max 47 ms; 1408 areas, 504 lines, 33 labels; ram free 2097151 KB, proc 2011052 KB
+zoom 15 (z14 data): frame north 15 ms, turned avg 19 max 32 ms; 464 areas, 198 lines, 8 labels; ram free 2097151 KB, proc 2012332 KB
+zoom 16 (z14 data): frame north 0 ms, turned avg 9 max 16 ms; 132 areas, 37 lines, 8 labels; ram free 2097151 KB, proc 2012332 KB
+zoom 12 (z12 data): frame north 32 ms, turned avg 32 max 47 ms; 629 areas, 668 lines, 99 labels; ram free 2097151 KB, proc 2012332 KB
+zoom 13 (z13 data): frame north 63 ms, turned avg 53 max 63 ms; 266 areas, 655 lines, 51 labels; ram free 2097151 KB, proc 2012332 KB
