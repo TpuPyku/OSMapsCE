@@ -5,10 +5,6 @@ OSMapsCE/OSMapsCE.ini
 OSMapsCE/OSMapsPC.exe
 OSMapsCE/*.nmea
 native_osm/.env
-native_vtest/obj/
-VTileTest/*PC.exe
-VTileTest/*.txt
-VTileTest/tiles/
 offline/work/
 OSMapsData/
 __pycache__/
