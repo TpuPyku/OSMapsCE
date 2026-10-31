@@ -41,7 +41,9 @@ static const Style kStyle[2][K_COUNT] = { {
     { 58, 118, 196, 0, true, 11, 12, 14 }, { 58, 118, 196, 0, true, 11, 12, 14 },
 } };
 static const unsigned char kBg[2][3] = { { 243, 240, 235 }, { 17, 19, 23 } };
-static const unsigned char kShadow[2][3] = { { 206, 200, 190 }, { 6, 7, 9 } };   // a bridge's shadow on the ground
+// A bridge's shadow (the user 2026-10-31: see-through, not solid grey): what is under it darker by this many 32nds
+static const int kShadowA[2] = { 5, 16 };
+enum { kFloors = 4 };   // bridges' floors over the ground (OpenMapTiles' layer: more cut to it), tunnels' under it
 // The map's detail (the user 2026-10-30, as Shturmann's "fast" style - MAIN/SHTURMANN, PROJECT.md): full; medium -
 // no casings, no bridges' shadows, buildings and service roads from z16, paths from z17; fast - water, rails and the
 // streets from the tertiary up (the minor ones from z15), no buildings, no areas but water, no service roads and
@@ -109,7 +111,7 @@ struct Feat {
     int name;                   // K_PLACE, K_ROADNAME, K_HOUSENUM: into VTile::names, -1 none
     unsigned char rank;         // the names: 0 the biggest (a city, a main road) .. 2
     unsigned char minz;         // the name shown from this zoom (places: by their size, PlaceMinZoom)
-    signed char level;          // -1 a tunnel, 0 the ground, 1 a bridge (Level)
+    signed char level;          // the floor: -1.. a tunnel, 0 the ground, 1.. a bridge (Level)
 };
 
 struct VTile {
@@ -260,12 +262,14 @@ static const KindRow* Row(const Pb& layer, const Pb& cls, const Pb& detail, int 
 
 // The tags read: a feature's class (Protomaps: "kind", its finer "kind_detail"), its name and the Russian one (when
 // there is one: "Киев", not "Київ"), a house number (its own key), a bridge or tunnel (OpenMapTiles' "brunnel") -
-// strings; a place's rank, capital level and population, Protomaps' is_bridge, is_tunnel - numbers (0: none)
+// strings; a place's rank, capital level and population, Protomaps' is_bridge, is_tunnel, OpenMapTiles' layer (OSM's:
+// a bridge's floor) - numbers (0: none)
 enum { T_CLASS, T_DETAIL, T_NAME, T_NAMERU, T_HOUSE, T_BRUNNEL, T_STRINGS, T_RANK = T_STRINGS, T_CAPITAL, T_POPULATION,
-       T_BRIDGE, T_TUNNEL, T_COUNT };
+       T_BRIDGE, T_TUNNEL, T_LAYER, T_COUNT };
 static const char* const kTagKeys[T_COUNT][2] = { { "class", "kind" }, { "kind_detail" }, { "name" }, { "name:ru" },
                                                    { "housenumber", "addr_housenumber" }, { "brunnel" }, { "rank" },
-                                                   { "capital" }, { "population" }, { "is_bridge" }, { "is_tunnel" } };
+                                                   { "capital" }, { "population" }, { "is_bridge" }, { "is_tunnel" },
+                                                   { "layer" } };
 
 // A layer's name and the indexes of its keys of the tags read (-1 none); its values in s_vals (the strings) and
 // s_nums (as numbers)
@@ -415,11 +419,17 @@ static int PlaceMinZoom(const Tags& t, int nameRank)
     return nameRank < 2 ? 10 : 14;
 }
 
-static int Level(const Tags& t)   // -1 a tunnel, 0 the ground, 1 a bridge
+// The floor: a bridge 1.., a tunnel -1.. by OpenMapTiles' layer (the user 2026-10-31: interchanges of more floors;
+// Protomaps has no layer - its bridges all 1), 0 the ground
+static int Level(const Tags& t)
 {
+    int layer = t.n[T_LAYER - T_STRINGS];
+    layer = layer > kFloors ? kFloors : layer < -kFloors ? -kFloors : layer;
     if (StrEq(t.s[T_BRUNNEL], "bridge") || t.n[T_BRIDGE - T_STRINGS])
-        return 1;
-    return StrEq(t.s[T_BRUNNEL], "tunnel") || t.n[T_TUNNEL - T_STRINGS] ? -1 : 0;
+        return layer > 1 ? layer : 1;
+    if (StrEq(t.s[T_BRUNNEL], "tunnel") || t.n[T_TUNNEL - T_STRINGS])
+        return layer < -1 ? layer : -1;
+    return 0;
 }
 
 // ---- geometry: MoveTo starts a part, LineTo adds points; false = out of memory
@@ -1029,10 +1039,22 @@ static void StrokeLines(HDC dc, const VTile& t, const Xf& xf, int z, const Style
     }
 }
 
-// The bridges' shadows (the user 2026-10-28: their height seen, in the third person's view too): each bridge's line
-// as wide as its casing, shifted south-east by 3/4 of its width - drawn over the ground, under the bridges
-static void StrokeShadows(HDC dc, const VTile& t, const Xf& xf, int z, const Style* pal, const unsigned char* c)
+// The bridges' shadows of a floor (the user 2026-10-28: their height seen, in the third person's view too): each
+// bridge's line as wide as its casing, shifted south-east by 3/4 of its width - drawn over what is under the floor,
+// under its bridges. See-through (2026-10-31): the floor's shadows into a mask first, then what the mask covers darker
+// by alpha / 32 - once, where the floor's shadows overlap too
+static Image s_shade;   // the mask (a tile; s_cs held)
+static unsigned short* s_shadeBits;
+
+static void StrokeShadows(HDC dc, const VTile& t, const Xf& xf, int z, const Style* pal, int level, int alpha,
+                          unsigned short* bits)
 {
+    unsigned short* m = s_shadeBits ? s_shadeBits : (s_shadeBits = ImageCreate(TILE, TILE, &s_shade));
+    if (!m)
+        return;
+    memset(m, 0, TILE * TILE * 2);
+    HDC mdc = CreateCompatibleDC(dc);
+    HGDIOBJ old = SelectObject(mdc, s_shade.bmp);
     for (int k = kFirstLine; k < K_PLACE; k++) {
         if (z < MinZoom(k, s_drawLevel))
             continue;
@@ -1040,7 +1062,24 @@ static void StrokeShadows(HDC dc, const VTile& t, const Xf& xf, int z, const Sty
         Xf sh = xf;
         sh.ox -= off * 16;
         sh.oy -= off * 16;
-        StrokeKind(dc, t, sh, k, 1, w + 2, RGB(c[0], c[1], c[2]), off + (w + 2) / 2);
+        StrokeKind(mdc, t, sh, k, level, w + 2, RGB(255, 255, 255), off + (w + 2) / 2);
+    }
+    SelectObject(mdc, old);
+    DeleteDC(mdc);
+#ifndef UNDER_CE
+    GdiFlush();
+#endif
+    for (int i = 0; i < TILE * TILE; i++)
+        if (m[i])
+            bits[i] = Blend565(bits[i], 0, alpha);
+}
+
+static void Floors(const VTile& t, int* lo, int* hi)   // the lowest and the highest floor in the tile
+{
+    *lo = *hi = 0;
+    for (int i = 0; i < t.nf; i++) {
+        if (t.f[i].level < *lo) *lo = t.f[i].level;
+        if (t.f[i].level > *hi) *hi = t.f[i].level;
     }
 }
 
@@ -1051,15 +1090,17 @@ static void Draw(const VTile& t, const Xf& xf, int z, bool night, HDC dc, unsign
     unsigned short bg = RGB565(bc[0], bc[1], bc[2]);
     for (int i = 0; i < TILE * TILE; i++)
         bits[i] = bg;
-    // areas, kind by kind, then the lines with their casings level by level: the tunnels, the ground, the bridges'
-    // shadows and the bridges (the labels: over the frame, VLabelsDraw)
+    // areas, kind by kind, then the lines with their casings floor by floor: the tunnels, the ground, then each floor
+    // of bridges over its shadows (the labels: over the frame, VLabelsDraw)
     FillAreas(t, xf, z, pal, bits);
 #ifndef UNDER_CE
     GdiFlush();   // the desktop's GDI may batch: our pixels before its lines (CE draws at once)
 #endif
-    for (int level = -1; level <= 1; level++) {
+    int lo, hi;
+    Floors(t, &lo, &hi);
+    for (int level = lo; level <= hi; level++) {
         if (level > 0 && !s_drawLevel)
-            StrokeShadows(dc, t, xf, z, pal, kShadow[night ? 1 : 0]);
+            StrokeShadows(dc, t, xf, z, pal, level, kShadowA[night ? 1 : 0], bits);
         StrokeLines(dc, t, xf, z, pal, bc, level, true);
         StrokeLines(dc, t, xf, z, pal, bc, level, false);
     }

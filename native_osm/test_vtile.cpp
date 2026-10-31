@@ -751,12 +751,14 @@ static void Levels()
     Check(Column(ia, 64, 116, 140, casing) >= 2, "the road's casing over the tunnel under it");
     Check(Px(ia, 64, 40) == RGB565(249, 234, 205), "the tunnel paler: half the background");
     Check(Row(ia, 40, 54, 74, casing) == 0, "the tunnel without a casing");
-    const unsigned short shadow = RGB565(206, 200, 190);   // the user 2026-10-28: a bridge's height shown by its shadow
+    // the user 2026-10-28: a bridge's height shown by its shadow; 2026-10-31: see-through - what is under it darker by 5/32
+    const unsigned short shadow = Blend565(RGB565(243, 240, 235), 0, 5);
     Check(Row(ia, 40, 133, 145, shadow) >= 4 && Row(ia, 40, 110, 123, shadow) == 0,
           "the bridge's shadow beside it, to one side (south-east), over the ground");
     Check(Row(ia, 40, 120, 150, shadow) == 6 && Px(ia, 138, 40) == shadow,
           "the shadow: the bridge's casing wide, 3/4 of its width aside");
-    Check(Column(ia, 136, 123, 134, shadow) == 11, "the shadow over the road under the bridge, its casing too");
+    Check(Px(ia, 136, 128) == Blend565(Px(ia, 60, 128), 0, 5) && Column(ia, 136, 123, 133, shadow) == 0,
+          "the shadow over the road under the bridge: the road seen through it, darker");
     Check(Px(ia, 136, 12) != shadow && Px(ia, 136, 13) == shadow,
           "the shadow shifted down too (south-east), its ends cut back to the bridge's");
     Check(Row(ia, 40, 50, 80, shadow) == 0 && Column(ia, 20, 116, 150, shadow) == 0,
@@ -766,7 +768,8 @@ static void Levels()
     g_cfg.night = 1;   // (no casings at night: the bridge's own, of the background)
     Check(VTileRender(n, omt, no, &ib) && Row(ib, 128, 118, 138, RGB565(17, 19, 23)) >= 2,
           "night: the bridge parted from the road it crosses");
-    Check(Row(ib, 40, 133, 145, RGB565(6, 7, 9)) >= 4, "night: the bridge's shadow darker than the night's ground");
+    Check(Row(ib, 40, 133, 145, Blend565(RGB565(17, 19, 23), 0, 16)) >= 4,
+          "night: the bridge's shadow darker than the night's ground");
     Check(Column(ib, 64, 118, 138, RGB565(17, 19, 23)) == 0, "night: no casing of the ground road over the tunnel");
     g_cfg.night = 0;
     ImageFree(&ia);
@@ -776,6 +779,48 @@ static void Levels()
     VTileSetDetail(0);
     ImageFree(&ia);
     ImageFree(&ib);
+}
+
+// Bridges over bridges (the user 2026-10-31: interchanges of more than two floors): OpenMapTiles' "layer" - in the tile
+// the first road down at x 128, the second across at y 128
+static int TwoFloors(unsigned char* out, const char* const* first, const char* const* second)
+{
+    static const char* kKeys[] = { "class", "brunnel", "layer" };
+    Pbw w = { { 0 }, 0 };
+    Keyed l;
+    BeginKeys(l, "transportation", kKeys, 3);
+    unsigned int g[6] = { 9, Zz(128 * 16), 0, 2 | 1 << 3, 0, Zz(256 * 16) };
+    AddVals(l, first, 2, g, 6);
+    HLine(g, 0, 256, 128);
+    AddVals(l, second, 2, g, 6);
+    Bytes(w, 3, l.w.b, l.w.n);
+    memcpy(out, w.b, w.n);
+    return w.n;
+}
+
+static void Floors()
+{
+    static const char* kUp[] = { "primary", "bridge", "%2" }, *kLow[] = { "primary", "bridge", "%1" };
+    static unsigned char tile[4096];
+    int n = TwoFloors(tile, kUp, kLow);
+    const unsigned short casing = RGB565(224, 182, 120);
+    MapRequest a = { SRC_OSM, 14, 9600, 5100 }, b = { SRC_OSM, 14, 9600, 5101 }, c = { SRC_OSM, 14, 9600, 5102 };
+    Image im = { 0 };
+    g_cfg.night = 0;
+    Check(VTileRender(a, tile, n, &im) && Row(im, 128, 118, 138, casing) == 2 && Column(im, 128, 116, 140, casing) == 0,
+          "floors: the upper bridge over the lower one, whatever their order in the tile");
+    Check(Px(im, 136, 128) == Blend565(Px(im, 60, 128), 0, 5) && Px(im, 136, 40) == Blend565(RGB565(243, 240, 235), 0, 5),
+          "floors: the upper one's shadow over the lower bridge and over the ground, both seen through it");
+    ImageFree(&im);
+    static const char* kDeepest[] = { "motorway", "tunnel", "%-9" }, *kTunnel2[] = { "primary", "tunnel", "%-2" },
+                       *kTunnel1[] = { "primary", "tunnel", "%-1" }, *kMotorway2[] = { "motorway", "tunnel", "%-2" };
+    n = TwoFloors(tile, kDeepest, kTunnel2);
+    Check(VTileRender(b, tile, n, &im) && Px(im, 128, 128) == Px(im, 60, 128) && Px(im, 128, 40) != Px(im, 60, 128),
+          "floors: tunnels too, the deeper under (a layer past the floors' as the deepest)");
+    ImageFree(&im);
+    n = TwoFloors(tile, kTunnel1, kMotorway2);   // (on one floor the motorway would be over the primary road)
+    Check(VTileRender(c, tile, n, &im) && Px(im, 128, 128) == Px(im, 128, 40), "floors: layer -1 over layer -2");
+    ImageFree(&im);
 }
 
 // The third person's view (the user 2026-10-27): the flat map tilted, the car at its row and size, the far smaller and
@@ -890,7 +935,8 @@ static void Joints()
     Check(Px(im, 104, 150) == casing && Px(im, 103, 150) == road, "a road's end on the ground: its casing round it");
     Check(Row(im, 59, 88, 112, casing) == 21 && Row(im, 59, 168, 196, casing) == 25,
           "the bridge's casing cut at its ends only a little (3 px of its top side)");
-    Check(Row(im, 70, 168, 196, RGB565(206, 200, 190)) == 12 && Row(im, 67, 168, 196, RGB565(206, 200, 190)) == 0,
+    const unsigned short shade = Blend565(RGB565(243, 240, 235), 0, 5), shadeRoad = Blend565(road, 0, 5);
+    Check(Row(im, 70, 168, 196, shade) == 12 && Row(im, 67, 168, 196, shadeRoad) == 0,
           "its shadow ends with it: not over the road on the ground after it");
     int shortCasing = 0;
     for (int y = 190; y < 211; y++)
@@ -1445,6 +1491,7 @@ int main()
     Twins();
     Deep();
     Levels();
+    Floors();
     Joints();
     JunctionChecks();
     WheelChecks();
