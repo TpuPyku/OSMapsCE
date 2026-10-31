@@ -257,8 +257,9 @@ void MapsSetGet(MapsGetFn fn, int retryMs)   // tests: a made-up server; NULL - 
     s_retryMs = fn ? retryMs : 3000;
 }
 
-// GET url following the redirects (GitHub's release files: github.com -> its storage); range "a-b" or NULL
-static int GetUrl(const char* url, const char* range, unsigned char** body, int* len, int* status)
+// GET url following the redirects (GitHub's release files: github.com -> its storage); range "a-b" or NULL; last (2048,
+// may be url itself): the link asked last - the storage's after the redirects
+static int GetUrl(const char* url, const char* range, unsigned char** body, int* len, int* status, char* last = NULL)
 {
     char cur[2048], loc[2048], hdr[64];
     _snprintf(hdr, sizeof(hdr), "Range: bytes=%s\r\n", range ? range : "");
@@ -275,13 +276,31 @@ static int GetUrl(const char* url, const char* range, unsigned char** body, int*
         *body = NULL;
         *len = 0;
         int err = s_get(host, https, path, body, len, status, &x);
-        if (err != NET_OK || *status < 300 || *status >= 400 || !loc[0])
+        if (err != NET_OK || *status < 300 || *status >= 400 || !loc[0]) {
+            if (last)
+                strcpy(last, cur);
             return err;
+        }
         free(*body);
         *body = NULL;
         strcpy(cur, loc);
     }
     return NET_HTTP;
+}
+
+// GET with a lost link asked again, kFails tries s_retryMs apart (GitHub's storage over our TLS: one in five lost,
+// 2026-10-31 - the catalog then "not got")
+static int GetAgain(const char* url, unsigned char** body, int* len, int* status)
+{
+    int err = NET_CONNECT;
+    for (int i = 0; i < kFails && err != NET_OK; i++) {
+        if (i)
+            Sleep(s_retryMs);
+        free(*body);
+        *body = NULL;
+        err = GetUrl(url, NULL, body, len, status);
+    }
+    return err;
 }
 
 static DWORD SizeOf(const wchar_t* path)   // a file's size, 0 none
@@ -294,14 +313,15 @@ static DWORD SizeOf(const wchar_t* path)   // a file's size, 0 none
     return n;
 }
 
-// The next range onto the file: 1 a piece, 0 the end (past it: 416), -1 failed
-static int Piece(const char* url, const wchar_t* file, DWORD have, int chunk, int* len)
+// The next range onto the file from at (the link after the redirects into it): 1 a piece, 0 the end (past it: 416),
+// -1 failed
+static int Piece(char* at, const wchar_t* file, DWORD have, int chunk, int* len)
 {
     char range[48];
     _snprintf(range, sizeof(range), "%lu-%lu", have, have + chunk - 1);
     unsigned char* body = NULL;
     int status = 0;
-    int err = GetUrl(url, range, &body, len, &status);
+    int err = GetUrl(at, range, &body, len, &status, at);
     int r = err == NET_OK && status == 416 ? 0 :
             err == NET_OK && status == 206 && *len > 0 && Put(file, body, *len, true) ? 1 : -1;
     free(body);
@@ -311,13 +331,19 @@ static int Piece(const char* url, const wchar_t* file, DWORD have, int chunk, in
 // url into file (a .part), from what it has on, in ranges of chunk; false - the link lost kFails times running
 bool MapsFetch(const char* url, const wchar_t* file, int chunk)
 {
-    DWORD have = SizeOf(file);
+    char at[2048];   // the storage's link once redirected there, kept for the next ranges (the user's Yandex Disk
+    DWORD have = SizeOf(file);   // 2026-10-31: a redirect a piece took a quarter of the time); expired - url again
+    strncpy(at, url, sizeof(at) - 1);
+    at[sizeof(at) - 1] = 0;
     for (int fails = 0; fails <= kFails && !s_cancel;) {
-        int len = 0, r = Piece(url, file, have, chunk, &len);
+        bool kept = strcmp(at, url) != 0;
+        int len = 0, r = Piece(at, file, have, chunk, &len);
         if (r == 0)
             return have > 0;
         if (r < 0) {
-            Sleep(s_retryMs * ++fails);
+            strcpy(at, url);
+            if (!kept)   // (a kept link failed: asked through url at once)
+                Sleep(s_retryMs * ++fails);
             continue;
         }
         have += len;
@@ -410,7 +436,7 @@ static DWORD WINAPI ListThread(LPVOID)
     _snprintf(url, sizeof(url), "%scatalog.json", kAssets);
     unsigned char* body = NULL;
     int len = 0, status = 0;
-    int err = GetUrl(url, NULL, &body, &len, &status);
+    int err = GetAgain(url, &body, &len, &status);
     bool ok = err == NET_OK && status == 200 && body;
     static MapRegion got[kMaxRegions];
     int n = ok ? MapsCatalog((const char*)body, got, kMaxRegions) : 0;
@@ -464,7 +490,7 @@ static bool DiskHref(const char* name, char* href, int cap)
     url[sizeof(url) - 1] = 0;
     unsigned char* body = NULL;
     int len = 0, status = 0;
-    bool ok = GetUrl(url, NULL, &body, &len, &status) == NET_OK && status == 200 && body;
+    bool ok = GetAgain(url, &body, &len, &status) == NET_OK && status == 200 && body;
     href[0] = 0;
     if (ok)
         JStr(JKey((const char*)body, "href"), href, cap);

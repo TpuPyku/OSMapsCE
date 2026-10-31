@@ -156,11 +156,13 @@ static bool FileIs(const wchar_t* name, const char* want, int n)   // a file und
 // pressed meanwhile; s_seen - the region the job said it downloads
 static char* s_zip;
 static int   s_zipLen, s_asked, s_failOnce, s_cancelNow, s_seen;
+// the storage's signed links: s_expireAt - after that many range answers every link given so far expires (403)
+static int   s_stored, s_expireAt, s_sigFloor;
 // Yandex Disk (the user 2026-10-30: the regions whole there): s_withDisk - the catalog tells its folder, zz whole and
 // the overview; its API answers a public file's link (dl.example), which serves full.zip / overview.zip in ranges
 static char* s_full;
 static char* s_ov;
-static int   s_fullLen, s_ovLen, s_withDisk, s_apiFail, s_ovAsks, s_trunkAsks;
+static int   s_fullLen, s_ovLen, s_withDisk, s_apiFail, s_ovAsks, s_trunkAsks, s_catFails;
 static char  s_apiQuery[512];
 
 static char* FileBytes(const wchar_t* name, int* len)   // a file of obj\test (malloc)
@@ -230,6 +232,10 @@ static int FakeGet(const char* host, bool, const char* path, unsigned char** bod
     s_asked++;
     *body = (unsigned char*)malloc(1);
     *len = 0;
+    if (!strcmp(host, "github.com") && strstr(path, "catalog.json") && s_catFails-- > 0) {
+        *status = 0;   // (the link lost: GitHub's storage over our TLS, 2026-10-31 - one in five)
+        return NET_TIMEOUT;
+    }
     if (!strcmp(host, "github.com") && strstr(path, "catalog.json")) {   // the catalog: two regions, zz's zip ours
         static const char* kCat = "{\"regions\":[{\"name\":\"tiny\",\"title\":\"T\",\"date\":\"2026-10-20\",\"zip\":"
                                   "\"tiny.zip\",\"size\":10},{\"name\":\"zz\",\"title\":\"Z\",\"date\":\"2026-10-29\","
@@ -252,6 +258,13 @@ static int FakeGet(const char* host, bool, const char* path, unsigned char** bod
         *status = 0;
         return NET_TIMEOUT;
     }
+    const char* sig = strstr(path, "sig=");
+    if (sig && atoi(sig + 4) < s_sigFloor) {
+        *status = 403;   // (a link expired)
+        return NET_OK;
+    }
+    if (s_expireAt && ++s_stored == s_expireAt)
+        s_sigFloor = s_asked + 1;   // (this answer still given; the links given so far expire after it)
     s_seen = MapsBusyRegion();
     if (s_cancelNow)
         MapsCancel();
@@ -390,7 +403,16 @@ static void DownloadChecks()
     s_asked = 0;
     Check(MapsFetch("https://github.com/x/releases/download/maps/tiny.zip", part, 100) &&
           FileIs(L"..\\dl.zip.part", s_zip, s_zipLen), "download: in 100-byte ranges, through the redirect", NULL);
-    Check(s_asked >= 2 * (s_zipLen / 100), "download: each range asked through github.com (a fresh signature)", NULL);
+    Check(s_asked <= s_zipLen / 100 + 3, "download: the storage's link kept for the next ranges (the user's Yandex Disk "
+          "2026-10-31: a redirect a piece - a quarter of the time)", NULL);
+    DeleteFile(part);
+    s_asked = 0;
+    s_stored = 0;
+    s_expireAt = 3;
+    Check(MapsFetch("https://github.com/x/releases/download/maps/tiny.zip", part, 100) &&
+          FileIs(L"..\\dl.zip.part", s_zip, s_zipLen), "download: the kept link expired - asked again, the file whole", NULL);
+    s_expireAt = 0;
+    s_sigFloor = 0;
 
     HANDLE h = CreateFile(part, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);   // a half: resumed from there
     DWORD put;
@@ -417,7 +439,12 @@ static void DownloadChecks()
     // the job, as the screen starts it: the catalog, then a region (into the program's OSMapsData here - no card),
     // the trunk roads after it when the card has none (they are there: obj\test\OSMapsData\trunk)
     Check(MapsBusyRegion() == -1, "job: no region downloaded before any", NULL);
-    Check(MapsList() && WaitMaps() && MapsCount() == 2, "job: the catalog loaded", NULL);
+    s_catFails = 2;
+    Check(MapsList() && WaitMaps() && MapsCount() == 2, "job: the catalog loaded (the link lost twice: asked again)", NULL);
+    s_catFails = 3;
+    Check(MapsList() && WaitMaps() && MapsCount() == 0, "job: the link lost for good - no catalog", NULL);
+    s_catFails = 0;
+    Check(MapsList() && WaitMaps() && MapsCount() == 2, "job: the catalog again", NULL);
     MapRegion m;
     Check(MapsAt(0, &m) && !strcmp(m.name, "tiny") && MapState(m) == MAP_OK && MapsAt(1, &m) && MapState(m) == MAP_NEW
           && !MapsAt(2, &m), "job: the card's states", NULL);
