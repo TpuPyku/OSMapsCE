@@ -72,22 +72,25 @@ enum { FOLLOW_OFF, FOLLOW_NORTH, FOLLOW_HEADING };
 static const double kCarAhead        = 0.25; // heading-up: view center this part of map height ahead of the car
 // The third person's view (tilt.cpp, ring.cpp; the user 2026-10-27..28): heading-up from z15, the camera's angle from
 // straight down by the zoom, the fog this far ahead; the near ring loaded +-kNearHalf round the view's centre, the far
-// one (two zooms out) +-kFarHalf of its own px
+// one (the same zoom, the user 2026-10-31: two zooms out was blurred, its roads too wide) +-kFarHalf round a point
+// kFarAhead px ahead by the course - together they cover the frame to the fog at z15..17 (2026-10-31, counted for every
+// course: on z17 under 1% left, in the fog's haze)
 static const int    kTiltMinZ        = 15;
 static const double kTiltFog         = 1150;
-static const double kNearHalf        = 380;  // (5 slots: 2 x 380 + the 256 px the centre moves in its tile < 1280)
-static const double kFarHalf         = 384;
+static const double kNearHalf        = 511;  // (5 slots: 2 x 511 spans 5 tiles at most)
+static const double kFarHalf         = 639;  // (6 slots: 2 x 639 spans 6 at most)
+static const double kFarAhead        = 600;
 static const double kAroundHalf      = 200;  // the next zooms' tiles kept ready +-this of their px round the centre
 static const UINT   kDiskStepMs      = 30;   // the view's tiles at hand drawn kDiskLoads at a time, a frame between
 enum { kDiskLoads = 3 };
                                              // (0.25 of 480: the car stays above the bottom bar)
 static const double kHeadingMinSpeed = 5;    // km/h: below it the course is noise, keep the last heading
-static const int    kMaxKeys         = 32;   // tiles one view can need from one source
+static const int    kMaxKeys         = 36;   // tiles one view can need from one source (the far ring: 6 x 6)
 static const int    kMaxParentLevels = 6;    // missing tile: show a coarser cached one, up to 6 levels up
 
 // Small ring of map keys: "not on disk" / "no coarser tile" memos,
 // so the card is not searched again every second.
-enum { kRingKeys = 128 };   // (the view 32, the far ring 25, the next zooms 2 x 9 and their parents: all fit)
+enum { kRingKeys = 160 };   // (the view 25, the far ring 36, the next zooms 2 x 9 and their parents: all fit)
 struct KeyRing {
     MapRequest k[kRingKeys];
     int        n, next;
@@ -344,14 +347,12 @@ static const Tilt* ViewTilt()
 
 static bool ScreenOf(double gx, double gy, double vx, double vy, double cx, double cy, double angle, double* x, double* y);
 
-// Zoom dz from the view's: the tiles +-half of that zoom's px round the view's centre; their count
-static int SquareKeys(int dz, double half, MapRequest* out, int max)
+// Zoom z's tiles +-half of its px round (vx, vy); their count
+static int SquareKeysAt(int z, double vx, double vy, double half, MapRequest* out, int max)
 {
-    int z = g_cfg.z + dz, n = 0, tiles = 1 << z;
+    int n = 0, tiles = 1 << z;
     if (z < 2 || z > 19)
         return 0;
-    double vx, vy;
-    GeoToWorld(g_cfg.lon, g_cfg.lat, z, &vx, &vy);
     for (int j = (int)floor((vy - half) / TILE); j <= (int)floor((vy + half) / TILE); j++)
         for (int i = (int)floor((vx - half) / TILE); i <= (int)floor((vx + half) / TILE); i++)
             if (n < max && i >= 0 && j >= 0 && i < tiles && j < tiles) {
@@ -361,10 +362,38 @@ static int SquareKeys(int dz, double half, MapRequest* out, int max)
     return n;
 }
 
-// The far ring's tiles (two zooms out round the view's centre) while the third person's view is on; their count
+// Zoom dz from the view's: the tiles +-half of that zoom's px round the view's centre; their count
+static int SquareKeys(int dz, double half, MapRequest* out, int max)
+{
+    double vx, vy;
+    GeoToWorld(g_cfg.lon, g_cfg.lat, g_cfg.z + dz, &vx, &vy);
+    return SquareKeysAt(g_cfg.z + dz, vx, vy, half, out, max);
+}
+
+// The far ring's tiles (the view's zoom, round the point ahead) while the third person's view is on, the nearest to the
+// view's centre first; their count
 static int FarKeys(MapRequest* out, int max)
 {
-    return Tilted() ? SquareKeys(-2, kFarHalf, out, max) : 0;
+    if (!Tilted())
+        return 0;
+    double vx, vy, ax, ay;
+    ViewWorld(&vx, &vy);
+    RingAhead(vx, vy, ViewAngle(), kFarAhead, &ax, &ay);
+    int n = SquareKeysAt(g_cfg.z, ax, ay, kFarHalf, out, max);
+    double d[kMaxKeys];
+    for (int i = 0; i < n; i++) {
+        double dx = (out[i].x + 0.5) * TILE - vx, dy = (out[i].y + 0.5) * TILE - vy;
+        d[i] = dx * dx + dy * dy;
+        for (int j = i; j > 0 && d[j] < d[j - 1]; j--) {
+            double t = d[j];
+            d[j] = d[j - 1];
+            d[j - 1] = t;
+            MapRequest k = out[j];
+            out[j] = out[j - 1];
+            out[j - 1] = k;
+        }
+    }
+    return n;
 }
 
 // Tiles of a source that touch the (rotated) map window, nearest to the view center first
@@ -584,14 +613,16 @@ static bool RefineStep(const MapRequest* keys, int n)
     return false;
 }
 
+static int Unshown(MapRequest* keys, int n);
+
 // One step of drawing what is at hand (the user 2026-10-29: no waiting, no scaled tiles where the data is here): the
-// view's tiles - as drafts in the fast style (2026-10-30, as Shturmann), then one by one in the chosen detail - then,
-// while the memory has room, the far ring's, the next zooms' round the centre (+ / - show them at once).
-// *view: the view's got some; returns true: more to do.
+// view's tiles - as drafts in the fast style (2026-10-30, as Shturmann), then one by one in the chosen detail - the far
+// ring's (a part of the third person's view), then, while the memory has room, the next zooms' round the centre (+ / -
+// show them at once). *view: the view's got some; returns true: more to do.
 static bool DiskStep(bool* view)
 {
     MapRequest keys[kMaxKeys];
-    int n = NeededKeys(SRC_OSM, keys, kMaxKeys);
+    int n = Unshown(keys, NeededKeys(SRC_OSM, keys, kMaxKeys));
     int left = LoadFromDisk(keys, n, kDiskLoads, true);
     *view = left != kDiskLoads;
     if (left < 0)
@@ -600,9 +631,11 @@ static bool DiskStep(bool* view)
         *view = true;
         return true;
     }
-    for (int k = 0; k < 3 && CacheBytes() + TILE * TILE * 2 <= CACHE_BYTES; k++) {
-        int m = k == 0 ? FarKeys(keys, kMaxKeys) : SquareKeys(k == 1 ? 1 : -1, kAroundHalf, keys, kMaxKeys);
-        left = LoadFromDisk(keys, m, left, false);
+    left = LoadFromDisk(keys, Unshown(keys, FarKeys(keys, kMaxKeys)), left, false);
+    if (left < 0)
+        return true;
+    for (int k = 1; k < 3 && CacheBytes() + TILE * TILE * 2 <= CACHE_BYTES; k++) {
+        left = LoadFromDisk(keys, SquareKeys(k == 1 ? 1 : -1, kAroundHalf, keys, kMaxKeys), left, false);
         if (left < 0)
             return true;
     }
@@ -619,7 +652,7 @@ static int JunctionKeys(MapRequest* out, double* mx, double* my);
 static void Ensure(int mode)
 {
     MapRequest keys[kMaxKeys];
-    int n = NeededKeys(SRC_OSM, keys, kMaxKeys);
+    int n = Unshown(keys, NeededKeys(SRC_OSM, keys, kMaxKeys));
     LoadFromDisk(keys, n, 6, true);
     bool parentLoaded = false;
     for (int i = 0; i < n; i++) {
@@ -629,7 +662,7 @@ static void Ensure(int mode)
             parentLoaded = true;
         }
     }
-    n = FarKeys(keys, kMaxKeys);   // the far ring's, after the view's
+    n = Unshown(keys, FarKeys(keys, kMaxKeys));   // the far ring's, after the view's
     LoadFromDisk(keys, n, 4, false);
     for (int i = 0; i < n; i++)
         Request(REQ_AUTO, keys[i], CacheFind(keys[i], false));
@@ -1537,14 +1570,15 @@ static int Round(double v)
 // slot's signature). 5 tiles: any rotation of 800 x 480 fits a circle of 933 px, plus the 256 px the view
 // center moves within its tile. Traffic and night are put into the slot once, not on every frame; a frame is
 // then only the rotation (heading-up, and only when the view, the angle or a slot changed) or 1-4 blits.
-// The third person's view (ring.cpp) adds a far ring of the same size two zooms out, only while it is on.
+// The third person's view (ring.cpp) adds a far ring of 6 x 6 tiles of the same zoom ahead, only while it is on.
 static const int kRing = 5, kRingPx = kRing * TILE;   // 1280 x 1280, 3.2 MB
-struct RingSlot { int x, y; DWORD sig; bool used; };
+static const int kFarRing = 6;                        // 1536 x 1536, 4.6 MB
 struct Ring {
     Image img;
     unsigned short* bits;
-    int z;                            // its zoom (the far ring's: the view's - 2)
-    RingSlot slot[kRing][kRing];
+    int z;                            // its zoom
+    int n;                            // its slots a side (kRing, kFarRing)
+    SlotShown slot[kFarRing][kFarRing];
     int i0, j0, i1, j1;               // the tiles last brought up to date (the part loaded)
 };
 static Ring      s_near, s_far;
@@ -1563,6 +1597,25 @@ static int Mod(int a, int m)
 static DWORD Mix(DWORD h, DWORD v)
 {
     return (h ^ v) * 16777619u;
+}
+
+// The keys less those a ring shows already as they are (exact, in the chosen detail): with the third person's two rings
+// the memory cache can't hold all their tiles, and loading them again would only push others out; their count
+static int Unshown(MapRequest* keys, int n)
+{
+    int m = 0;
+    for (int i = 0; i < n; i++) {
+        const MapRequest& k = keys[i];
+        bool shown = false;
+        for (int r = 0; r < 2 && !shown; r++) {
+            const Ring& g = r ? s_far : s_near;
+            const SlotShown& sl = g.slot[Mod(k.y, g.n ? g.n : 1)][Mod(k.x, g.n ? g.n : 1)];
+            shown = g.bits && g.z == k.z && k.src == SRC_OSM && sl.used && sl.exact && sl.x == k.x && sl.y == k.y;
+        }
+        if (!shown)
+            keys[m++] = k;
+    }
+    return m;
 }
 
 // RGB565 -> night color: lightness inverted with hue and saturation kept (light background turns dark,
@@ -1721,7 +1774,7 @@ static void BlendRing(unsigned short* bits, const Overlay* ov, double left, doub
 static void DrawSlot(Ring& r, HDC rdc, HDC src, int tx, int ty, bool inWorld, const CacheEntry** base, int nb,
                      const OvPlace* ov, int no)
 {
-    int ox = Mod(tx, kRing) * TILE, oy = Mod(ty, kRing) * TILE;
+    int ox = Mod(tx, r.n) * TILE, oy = Mod(ty, r.n) * TILE, px = r.n * TILE;
     RECT rc = { ox, oy, ox + TILE, oy + TILE };
     HBRUSH bg = CreateSolidBrush(kMapBg);
     FillRect(rdc, &rc, bg);
@@ -1764,7 +1817,7 @@ static void DrawSlot(Ring& r, HDC rdc, HDC src, int tx, int ty, bool inWorld, co
     const unsigned short* lut = g_cfg.night && !g_cfg.vector ? NightLut() : NULL;   // (vector: its own night palette)
     if (lut)
         for (int y = rc.top; y < rc.bottom; y++) {
-            unsigned short* p = r.bits + (kRingPx - 1 - y) * kRingPx + rc.left;
+            unsigned short* p = r.bits + (px - 1 - y) * px + rc.left;
             for (int x = 0; x < TILE; x++)
                 p[x] = lut[p[x]];
         }
@@ -1781,13 +1834,13 @@ static void WindowBox(double angle, double* ex, double* ey)
 }
 
 // The ring's slots in the box +-ex, +-ey round (vx, vy) (world px of its zoom), brought up to date. Returns how many
-// of them show some map. Traffic only on the view's own ring.
+// of them show some map. Traffic only on the near ring (the view's).
 static int RingUpdate(Ring& r, HDC dc, double vx, double vy, double ex, double ey)
 {
     int i0 = (int)floor((vx - ex) / TILE), i1 = (int)floor((vx + ex) / TILE);
     int j0 = (int)floor((vy - ey) / TILE), j1 = (int)floor((vy + ey) / TILE);
-    if (i1 - i0 >= kRing) i1 = i0 + kRing - 1;   // can't be with 800 x 480; never two tiles in one slot
-    if (j1 - j0 >= kRing) j1 = j0 + kRing - 1;
+    if (i1 - i0 >= r.n) i1 = i0 + r.n - 1;   // can't be with 800 x 480; never two tiles in one slot
+    if (j1 - j0 >= r.n) j1 = j0 + r.n - 1;
     r.i0 = i0;
     r.j0 = j0;
     r.i1 = i1;
@@ -1796,7 +1849,7 @@ static int RingUpdate(Ring& r, HDC dc, double vx, double vy, double ex, double e
     CacheEntry* list[CACHE_MEM];
     int n = CacheList(list, CACHE_MEM);
     OvPlace ov[CACHE_MEM];
-    int no = g_cfg.traffic && r.z == g_cfg.z ? OverlayPlaces(list, n, ov) : 0;
+    int no = g_cfg.traffic && &r == &s_near ? OverlayPlaces(list, n, ov) : 0;
     HDC rdc = NULL, src = NULL;
     HGDIOBJ old = NULL;
     int shown = 0;
@@ -1808,8 +1861,10 @@ static int RingUpdate(Ring& r, HDC dc, double vx, double vy, double ex, double e
             if (nb)
                 shown++;
             DWORD sig = SlotSig(r.z, tx, ty, inWorld, base, nb, ov, no);
-            RingSlot& sl = r.slot[Mod(ty, kRing)][Mod(tx, kRing)];
-            if (sl.used && sl.x == tx && sl.y == ty && sl.sig == sig)
+            DWORD ctx = SlotSig(r.z, tx, ty, inWorld, NULL, 0, ov, no);
+            bool exact = nb == 1 && base[0]->req.z == r.z && !base[0]->draft;
+            SlotShown& sl = r.slot[Mod(ty, r.n)][Mod(tx, r.n)];
+            if (!SlotRedraw(sl, tx, ty, sig, ctx, exact))
                 continue;   // the same as it is
             if (!rdc) {
                 rdc = CreateCompatibleDC(dc);
@@ -1820,6 +1875,8 @@ static int RingUpdate(Ring& r, HDC dc, double vx, double vy, double ex, double e
             sl.x = tx;
             sl.y = ty;
             sl.sig = sig;
+            sl.ctx = ctx;
+            sl.exact = exact;
             sl.used = true;
             s_ringStamp++;
         }
@@ -1857,10 +1914,10 @@ static void RotateRing(double vx, double vy, double angle)
 }
 
 // A ring's view for TiltWarp: its canvas (a DIB: bottom-up), the part loaded in the view zoom's world px
-static RingView RingViewOf(const Ring& r, int shift)
+static RingView RingViewOf(const Ring& r)
 {
-    RingView v = { r.bits + (kRingPx - 1) * kRingPx, -kRingPx, kRingPx, shift, (r.i0 * TILE) << shift,
-                   (r.j0 * TILE) << shift, ((r.i1 + 1) * TILE) << shift, ((r.j1 + 1) * TILE) << shift };
+    int px = r.n * TILE;
+    RingView v = { r.bits + (px - 1) * px, -px, px, 0, r.i0 * TILE, r.j0 * TILE, (r.i1 + 1) * TILE, (r.j1 + 1) * TILE };
     return v;
 }
 
@@ -1868,7 +1925,7 @@ static RingView RingViewOf(const Ring& r, int shift)
 static void TiltFrame(const Tilt& t, double vx, double vy, double angle)
 {
     const int W = s_rotated.w, H = s_rotated.h, stride = ((W * 2 + 3) & ~3) / 2;
-    RingView rings[2] = { RingViewOf(s_near, 0), RingViewOf(s_far, 2) };
+    RingView rings[2] = { RingViewOf(s_near), RingViewOf(s_far) };
     TiltWarp(rings, s_far.bits ? 2 : 1, t, W, H, vx, vy, angle, g_cfg.night != 0, s_rotatedBits + (H - 1) * stride,
              -stride);
 }
@@ -2487,11 +2544,12 @@ static void DrawMap(HDC dc)
         s_rotatedBits = NULL;
     }
 
-    // the third person's view: the far ring (3.2 MB) only while it is on
+    // the third person's view: the far ring (4.6 MB) only while it is on
     const Tilt* tilt = ViewTilt();
     if (tilt && !s_far.bits) {
         memset(s_far.slot, 0, sizeof(s_far.slot));
-        s_far.bits = ImageCreate(kRingPx, kRingPx, &s_far.img);
+        s_far.n = kFarRing;
+        s_far.bits = ImageCreate(kFarRing * TILE, kFarRing * TILE, &s_far.img);
     } else if (!tilt && s_far.bits) {
         ImageFree(&s_far.img);
         s_far.bits = NULL;
@@ -2505,8 +2563,10 @@ static void DrawMap(HDC dc)
         s_near.z = g_cfg.z;
         drawn = RingUpdate(s_near, dc, vx, vy, ex, ey);
         if (tilt && s_far.bits) {
-            s_far.z = g_cfg.z - 2;
-            RingUpdate(s_far, dc, vx / 4, vy / 4, kFarHalf, kFarHalf);
+            double ax, ay;
+            RingAhead(vx, vy, angle, kFarAhead, &ax, &ay);
+            s_far.z = g_cfg.z;
+            RingUpdate(s_far, dc, ax, ay, kFarHalf, kFarHalf);
         }
         if (rotate) {   // turned again only when something moved
             int tz = tilt ? g_cfg.z : -1;
@@ -4289,6 +4349,7 @@ static void OnCreate(HWND hwnd)
     g_cfg.mapW = s_cw;
     g_cfg.mapH = s_ch;
     LoadImages();
+    s_near.n = kRing;
     s_near.bits = ImageCreate(kRingPx, kRingPx, &s_near.img);
     CacheInit();
     VTileInit();

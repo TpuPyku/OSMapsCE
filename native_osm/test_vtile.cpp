@@ -1019,6 +1019,29 @@ static unsigned short RingPx(const RingView& r, double wx, double wy)
     return r.top[y * r.stride + x];
 }
 
+// The far ring of the third person's view (the user 2026-10-31: the view's own zoom, not two out): its centre ahead by
+// the course; a slot keeps its exact tile when only the memory let it go
+static void FarRingChecks()
+{
+    double x, y;
+    RingAhead(1000, 2000, 0, 600, &x, &y);
+    Check(Near(x, 1000) && Near(y, 1400), "far ring: course north - its centre 600 px up (the world's y down)");
+    RingAhead(1000, 2000, 90, 600, &x, &y);
+    Check(Near(x, 1600) && Near(y, 2000), "far ring: course east - to the right");
+    RingAhead(1000, 2000, 225, 600, &x, &y);
+    Check(Near(x, 1000 - 600 * sqrt(0.5)) && Near(y, 2000 + 600 * sqrt(0.5)), "far ring: course south-west");
+    SlotShown s = { 7, 9, 0x111, 0x22, true, true };
+    Check(SlotRedraw(SlotShown(), 7, 9, 0x111, 0x22, true), "slot: never drawn - drawn");
+    Check(SlotRedraw(s, 8, 9, 0x111, 0x22, true) && SlotRedraw(s, 7, 10, 0x111, 0x22, true), "slot: another tile - drawn");
+    Check(!SlotRedraw(s, 7, 9, 0x111, 0x22, true), "slot: what it shows - kept");
+    Check(!SlotRedraw(s, 7, 9, 0x333, 0x22, false), "slot: its exact tile gone from the memory only - kept");
+    Check(SlotRedraw(s, 7, 9, 0x333, 0x23, false), "slot: exact tile gone and the night or the traffic changed - drawn");
+    Check(SlotRedraw(s, 7, 9, 0x333, 0x22, true), "slot: the exact tile changed (refined, new) - drawn");
+    SlotShown coarse = { 7, 9, 0x111, 0x22, true, false };
+    Check(SlotRedraw(coarse, 7, 9, 0x333, 0x22, false) && SlotRedraw(coarse, 7, 9, 0x333, 0x22, true),
+          "slot: a coarser tile shown - drawn on any change");
+}
+
 static void TiltWarpChecks()
 {
     Check(Blend565(RGB565(0, 0, 0), RGB565(248, 252, 248), 0) == RGB565(0, 0, 0) &&
@@ -1427,6 +1450,7 @@ int main()
     WheelChecks();
     YoChecks();
     TiltWarpChecks();
+    FarRingChecks();
     RECT whole = { 0, 0, 800, 480 };
     // the Russian name when the tile has one (name:ru), else the local one: a frame named so equals one whose tile
     // holds that text as its plain name

@@ -323,6 +323,11 @@ struct RingView { const unsigned short* top; int stride, size, shift; int x0, y0
 unsigned short Blend565(unsigned short a, unsigned short b, int alpha32);   // a to b by alpha / 32
 void TiltWarp(const RingView* rings, int n, const Tilt& t, int w, int h, double vx, double vy, double angleDeg, bool night,
               unsigned short* dst, int dstride);   // rings: the first that has a pixel gives it; dst: the top row
+void RingAhead(double vx, double vy, double angleDeg, double d, double* x, double* y);   // d px ahead by the course
+// A ring's slot (main.cpp): the tile it shows, what it was drawn from (sig) and with (ctx: night, traffic), exact: the
+// tile of its own zoom (not a coarser one scaled)
+struct SlotShown { int x, y; DWORD sig, ctx; bool used, exact; };
+bool SlotRedraw(const SlotShown& s, int x, int y, DWORD sig, DWORD ctx, bool exact);   // to show (x, y) as sig says
 
 // junction.cpp: the junction card (the user 2026-10-28, on in the settings) - the route round a complex maneuver on the
 // map turned so the way in points up

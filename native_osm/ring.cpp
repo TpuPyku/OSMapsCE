@@ -64,3 +64,23 @@ void TiltWarp(const RingView* rings, int n, const Tilt& t, int w, int h, double 
         WarpRow(rings, n, walk, w, fog, (int)(fade * 32 + 0.5), d);
     }
 }
+
+// The far ring's centre (the user 2026-10-31: the view's own zoom - two zooms out was blurred and its roads too wide):
+// d px ahead of the view's centre by the course, the screen's up turned as TiltWarp turns it
+void RingAhead(double vx, double vy, double angleDeg, double d, double* x, double* y)
+{
+    double a = angleDeg * M_PI / 180;
+    *x = vx + d * sin(a);
+    *y = vy - d * cos(a);
+}
+
+// A slot showing its exact tile keeps it while only the memory let the tile go (the same night and traffic): a coarser
+// one would be worse, and the two rings' tiles don't all fit the memory cache at once
+bool SlotRedraw(const SlotShown& s, int x, int y, DWORD sig, DWORD ctx, bool exact)
+{
+    if (!s.used || s.x != x || s.y != y)
+        return true;
+    if (s.exact && !exact && s.ctx == ctx)
+        return false;
+    return s.sig != sig;
+}
