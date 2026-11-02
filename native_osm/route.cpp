@@ -338,11 +338,26 @@ void PlaceLookup(const RoutePlace& p)
     l.seq = NetApi(API_REVERSE, kPhoton, true, path);
 }
 
+static SearchHit s_revHit;   // the last place named, at the point asked (the long press's card: PlaceNamed)
+static bool      s_revGot;
+
+bool PlaceNamed(double lon, double lat, SearchHit* h)
+{
+    if (!s_revGot || s_revHit.lon != lon || s_revHit.lat != lat)
+        return false;
+    *h = s_revHit;
+    return true;
+}
+
 static void OnReverse(const char* body, double lon, double lat)
 {
     SearchHit h;
     if (!ParseHits(body, &h, 1))
         return;
+    s_revHit = h;
+    s_revHit.lon = lon;
+    s_revHit.lat = lat;
+    s_revGot = true;
     RoutePlace* all[kMaxVia + 2] = { &s_plan.from, &s_plan.to, &s_plan.via[0], &s_plan.via[1], &s_plan.via[2] };
     for (int i = 0; i < kMaxVia + 2; i++)
         if (all[i]->kind == PL_PLACE && all[i]->lon == lon && all[i]->lat == lat) {

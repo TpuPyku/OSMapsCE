@@ -193,7 +193,7 @@ enum { kKbY = 66, kKbRowH = 81, kHitY = 62, kHitH = 58 };
 // 2026-10-29: it set a new stop instead). The trip's card tapped: the editor with the route's points.
 // Slots: 0 from, 1..3 the stops, 4 to.
 enum { P_BACK = 1, P_ROW = 10, P_DEL = 20, P_ADDVIA = 30, P_GO, P_CH_GPS = 40, P_CH_SEARCH, P_CH_MAP, P_CH_CANCEL,
-       P_PICK_CANCEL = 50, M_VIA = 60, M_NEW, M_FAV, M_CANCEL, M_STOP_OUT, M_STOP_UP, M_STOP_CANCEL, P_TRIP_X = 80,
+       P_PICK_CANCEL = 50, M_VIA = 60, M_NEW, M_FAV, M_CARD, M_STOP_OUT, M_STOP_UP, M_STOP_CANCEL, P_TRIP_X = 80,
        P_TRIP, F_GO = 90, F_EDIT, F_CANCEL, E_ICON = 100, E_NAME = E_ICON + VFAV_ICONS, E_DEL, E_DONE, E_BOX };
 static bool       s_plan;
 static int        s_planChoose = -1;   // the slot whose choices are open
@@ -2427,6 +2427,26 @@ static void RouteColours(HDC dc, const int* runs, int nr, int width)
     }
 }
 
+// The long press's point (design v3): the accent's pin, its tip on the point, a dark hole in its head, a shade under it.
+static void DrawPin(HDC dc, int x, int y)
+{
+    HGDIOBJ op = SelectObject(dc, GetStockObject(NULL_PEN));
+    HBRUSH sh = CreateSolidBrush(RGB(40, 40, 40)), acc = CreateSolidBrush(kOrange), ink = CreateSolidBrush(kInk);
+    HGDIOBJ ob = SelectObject(dc, sh);
+    Ellipse(dc, x - 8, y - 3, x + 9, y + 4);
+    SelectObject(dc, acc);
+    POINT tip[3] = { { x - 12, y - 22 }, { x + 12, y - 22 }, { x, y } };
+    Polygon(dc, tip, 3);
+    Ellipse(dc, x - 14, y - 42, x + 15, y - 13);
+    SelectObject(dc, ink);
+    Ellipse(dc, x - 5, y - 33, x + 6, y - 22);
+    SelectObject(dc, ob);
+    SelectObject(dc, op);
+    DeleteObject(sh);
+    DeleteObject(acc);
+    DeleteObject(ink);
+}
+
 // A round marker with a letter or a digit (the start, the stops).
 static void RouteMarker(HDC dc, int x, int y, COLORREF fill, const wchar_t* t)
 {
@@ -2587,7 +2607,11 @@ static void DrawRoute(HDC dc, double cx, double cy, double vx, double vy, double
         }
         double gx, gy, sx, sy;
         GeoToWorld(lon, lat, g_cfg.z, &gx, &gy);
-        if (ScreenOf(gx, gy, vx, vy, cx, cy, angle, &sx, &sy))
+        if (!ScreenOf(gx, gy, vx, vy, cx, cy, angle, &sx, &sy))
+            continue;
+        if (m == 5)
+            DrawPin(dc, Round(sx), Round(sy));
+        else
             RouteMarker(dc, Round(sx), Round(sy), fill, t[0] ? t : NULL);
     }
 }
@@ -3965,8 +3989,12 @@ static void ScreenToGeo(int x, int y, double* lon, double* lat)
 static RoutePlace MapPlace(double lon, double lat)
 {
     RoutePlace p;
+    SearchHit h;
     p.kind = PL_PLACE;
-    _snwprintf(p.name, 80, L"Точка на карте (%.5f, %.5f)", lat, lon);
+    if (PlaceNamed(lon, lat, &h))
+        wcscpy(p.name, h.name);
+    else
+        _snwprintf(p.name, 80, L"Точка на карте (%.5f, %.5f)", lat, lon);
     p.name[79] = 0;
     p.lon = lon;
     p.lat = lat;
@@ -4016,6 +4044,7 @@ static void OnLongPress(int x, int y)
         s_lpRoute = on;
         s_lpLon = lon;
         s_lpLat = lat;
+        PlaceLookup(MapPlace(lon, lat));   // (its address on the card)
     }
     InvalidateRect(s_wnd, NULL, FALSE);
 }
@@ -4179,17 +4208,32 @@ static bool PickRect(RECT* r)
     return s_pickSlot >= 0;
 }
 
+// The long press's card (design v3, the user 2026-11-02: back to it): the address at the bottom, "Маршрут сюда" in the
+// accent, "Заехать сюда" with a route on (till three stops), the favourite (with a route: its star only); a tap beside
+// it closes it.
+static bool LpRect(int id, RECT* r)
+{
+    if (id == M_VIA && (!s_lpRoute || RoutePlanGet()->nvia >= kMaxVia))
+        return false;
+    if (id == M_CARD)
+        SetRect(r, 160, 300, 640, 466);
+    else if (id == M_NEW)
+        SetRect(r, 180, 384, s_lpRoute ? 360 : 400, 446);
+    else if (id == M_VIA)
+        SetRect(r, 372, 384, 552, 446);
+    else
+        SetRect(r, s_lpRoute ? 564 : 412, 384, 620, 446);
+    return true;
+}
+
 static bool MenuRect(int id, RECT* r)
 {
-    bool stop = s_lpStop >= 0 && id >= M_STOP_OUT && id <= M_STOP_CANCEL;
-    if (!stop && (!s_lpMenu || id < M_VIA || id > M_CANCEL))
+    if (s_lpMenu && id >= M_VIA && id <= M_CARD)
+        return LpRect(id, r);
+    if (s_lpStop < 0 || id < M_STOP_OUT || id > M_STOP_CANCEL || (id == M_STOP_UP && s_lpStop == 0))
         return false;
-    if ((id == M_VIA && (!s_lpRoute || RoutePlanGet()->nvia >= kMaxVia)) || (id == M_STOP_UP && s_lpStop == 0))
-        return false;
-    int i = stop ? id - M_STOP_OUT - (id > M_STOP_UP && s_lpStop == 0)   // (no "earlier": closed up)
-                 : id - (s_lpRoute ? M_VIA : M_NEW);
-    int y0 = stop ? 300 : 242;   // (the long press's four rows: higher)
-    SetRect(r, 220, y0 + i * 58, 580, y0 + i * 58 + 50);
+    int i = id - M_STOP_OUT - (id > M_STOP_UP && s_lpStop == 0);   // (no "earlier": closed up)
+    SetRect(r, 220, 300 + i * 58, 580, 300 + i * 58 + 50);
     return true;
 }
 
@@ -4317,8 +4361,6 @@ static void OnOverMap(int id)
         s_showHits = s_showFavs = false;
         VKeysOpen(&s_kb, L"", VFAV_NAME - 1);
         s_search = true;
-    } else if (id == M_CANCEL) {
-        s_lpMenu = false;
     } else if (id == M_STOP_OUT || id == M_STOP_UP) {   // the stop out / one earlier, the route again
         RoutePlan* p = RoutePlanGet();
         if (id == M_STOP_OUT)
@@ -4393,6 +4435,57 @@ static void DrawFavCards(HDC dc)
     DrawCtl(dc, r, s_planPressed == E_DONE, s_fontLabel, L"ГОТОВО");
 }
 
+// The main action of a card (design v3): the accent's fill, dark letters; pressed - the other way round.
+static void DrawMainCtl(HDC dc, const RECT& r, bool pressed, const wchar_t* caption)
+{
+    Tile(dc, r, pressed ? kPanel2 : kOrange, pressed ? kPanel2 : kOrange, 20);
+    Text(dc, s_fontLabel, pressed ? kOrange : kInk, r.left, r.top, r.right, r.bottom, DT_CENTER, caption);
+}
+
+static void LpAddress(wchar_t* title, wchar_t* sub)   // the long press's point: its address (or "Точка на карте"), how far
+{
+    SearchHit h;
+    bool named = PlaceNamed(s_lpLon, s_lpLat, &h);
+    wcscpy(title, named ? h.name : L"Точка на карте");
+    if (named)
+        wcscpy(sub, h.sub);
+    else
+        _snwprintf(sub, 96, L"%.5f, %.5f", s_lpLat, s_lpLon);
+    if (s_gps.valid) {
+        double dx = (s_lpLon - s_gps.lon) * 111320 * cos(s_lpLat * M_PI / 180), dy = (s_lpLat - s_gps.lat) * 110540;
+        wchar_t d[32];
+        FmtDist(d, 32, (int)sqrt(dx * dx + dy * dy));
+        int n = (int)wcslen(sub);
+        _snwprintf(sub + n, 140 - n, L"%s%s от вас", n ? L" · " : L"", d);
+    }
+    sub[139] = 0;
+}
+
+static void DrawLpCard(HDC dc)
+{
+    RECT box, r;
+    LpRect(M_CARD, &box);
+    Card(dc, box, 20);
+    wchar_t title[80], sub[140];
+    LpAddress(title, sub);
+    Text(dc, s_fontBig, kText, box.left + 20, box.top + 14, box.right - 20, box.top + 46, DT_LEFT, title);
+    Text(dc, s_fontSmall, kTextDim, box.left + 20, box.top + 48, box.right - 20, box.top + 72, DT_LEFT, sub);
+    LpRect(M_NEW, &r);
+    DrawMainCtl(dc, r, s_planPressed == M_NEW, L"Маршрут сюда");
+    if (LpRect(M_VIA, &r))
+        DrawCtl(dc, r, s_planPressed == M_VIA, s_fontLabel, L"Заехать сюда");
+    else if (s_lpRoute)
+        Text(dc, s_fontSmall, kTextDim, 372, 384, 552, 446, DT_CENTER, L"уже три «Заехать»");
+    LpRect(M_FAV, &r);
+    bool down = s_planPressed == M_FAV;
+    if (s_lpRoute) {
+        Tile(dc, r, down ? kOrange : kPanel2, down ? kOrange : kPanel2, 20);
+        FavSign(dc, VFAV_STAR, (r.left + r.right) / 2, (r.top + r.bottom) / 2, 13, down ? kInk : kText, kPanel2);
+    } else {
+        DrawCtl(dc, r, down, s_fontLabel, L"В избранное");
+    }
+}
+
 static void DrawOverMap(HDC dc)
 {
     RECT r;
@@ -4421,19 +4514,8 @@ static void DrawOverMap(HDC dc)
                 DrawCtl(dc, r, s_planPressed == id, s_fontLabel, kStop[id - M_STOP_OUT]);
     }
     DrawFavCards(dc);
-    if (s_lpMenu) {
-        RECT box = { 204, 230, 596, 242 + (s_lpRoute ? 4 : 3) * 58 + 4 };
-        Card(dc, box, 20);
-        static const wchar_t* kMenu[4] = { L"ЗАЕХАТЬ СЮДА", L"МАРШРУТ СЮДА", L"В ИЗБРАННОЕ", L"ОТМЕНА" };
-        for (int id = M_VIA; id <= M_CANCEL; id++) {
-            if (MenuRect(id, &r))
-                DrawCtl(dc, r, s_planPressed == id, s_fontLabel, kMenu[id - M_VIA]);
-            else if (id == M_VIA && s_lpRoute) {
-                SetRect(&r, 220, 242, 580, 292);
-                Text(dc, s_fontSmall, kTextDim, r.left, r.top, r.right, r.bottom, DT_CENTER, L"уже три точки «Заехать»");
-            }
-        }
-    }
+    if (s_lpMenu)
+        DrawLpCard(dc);
 }
 
 // The top (design v3): no bar - the map darkens softly towards the edge; on it the chips (GPS; the traffic or the
