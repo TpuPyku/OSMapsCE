@@ -13,7 +13,8 @@ on:
         type: choice
         options: [all, trunk, app]
   schedule:
-    - cron: '0 3 * * 1'   # Mondays, 03:00 UTC
+    - cron: '0 22 * * 0'   # Sundays 22:00 UTC = Mondays 01:00 Moscow: done by the morning (GitHub may start
+                             # a scheduled run hours late - 2026-11-02: 03:00 queued at 10:12)
 
 permissions:
   contents: write
