@@ -54,6 +54,33 @@ bool WheelNow(int code, int st)
     return code == 8 || code == 9 ? st == 1 : st == 0;
 }
 
+// Between the GPS's fixes (the user 2026-10-31: the map jerked, a frame a second): the car carried on ms by its speed and
+// course - 1.5 s at most (a fix late: the car not run off the road); the view's turn eased in over the second
+void GlideAhead(double lon, double lat, double kmh, double course, DWORD ms, double* outLon, double* outLat)
+{
+    double d = kmh / 3.6 * (ms < 1500 ? ms : 1500) / 1000, a = course * M_PI / 180;
+    *outLat = lat + d * cos(a) / 110540.0;
+    *outLon = lon + d * sin(a) / (111320.0 * cos(lat * M_PI / 180));
+}
+
+double GlideCourse(double from, double to, DWORD ms)
+{
+    double delta = fmod(to - from + 540, 360) - 180, c = from + delta * (ms < 1000 ? ms : 1000) / 1000;
+    return c < 0 ? c + 360 : c >= 360 ? c - 360 : c;
+}
+
+// The mark shown pulled frac of the way to the fix's place (the user 2026-11-02: no jumps - it drives on by the
+// prediction, the fixes only steer it); more than 50 m apart (a jump, a new start): put there, false
+bool GlidePull(double* lon, double* lat, double tLon, double tLat, double frac)
+{
+    double e = (tLon - *lon) * 111320.0 * cos(*lat * M_PI / 180), n = (tLat - *lat) * 110540.0;
+    bool close = e * e + n * n <= 50.0 * 50.0;
+    double f = close ? frac : 1;
+    *lon += (tLon - *lon) * f;
+    *lat += (tLat - *lat) * f;
+    return close;
+}
+
 // Metres east and north from point a to b (a small piece: the plane at a's latitude)
 static void Metres(const double* a, const double* b, double* e, double* n)
 {

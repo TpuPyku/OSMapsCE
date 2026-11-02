@@ -969,6 +969,34 @@ static void WheelChecks()
     Check(WheelNow(0x0A, 0) && WheelNow(0x12, 0) && !WheelNow(0x0A, 1) && !WheelNow(0x14, 1), "wheel: the others when pressed");
 }
 
+// Between the GPS's fixes (the user 2026-10-31: the map jerks - a frame a second): the car carried on by its speed and
+// course, the turn of the view eased in over the second
+static void GlideChecks()
+{
+    double lon, lat;
+    GlideAhead(37.0, 55.0, 72, 0, 500, &lon, &lat);   // north at 20 m/s, half a second: 10 m
+    Check(fabs((lon - 37.0) * 63850) < 0.001 && fabs((lat - 55.0) * 110540 - 10) < 0.001, "glide: 10 m north in 0.5 s at 72 km/h");
+    GlideAhead(37.0, 55.0, 72, 90, 500, &lon, &lat);
+    Check(fabs((lat - 55.0) * 110540) < 0.001 && fabs((lon - 37.0) * 111320 * cos(55 * M_PI / 180) - 10) < 0.001,
+          "glide: east by the course");
+    GlideAhead(37.0, 55.0, 72, 180, 3000, &lon, &lat);
+    Check(fabs((55.0 - lat) * 110540 - 30) < 0.001, "glide: south; at most 1.5 s on (the fix late - the car not run off)");
+    Check(Near(GlideCourse(350, 10, 0), 350) && Near(GlideCourse(350, 10, 500), 0) && Near(GlideCourse(350, 10, 1000), 10) &&
+          Near(GlideCourse(10, 350, 500), 0) && Near(GlideCourse(90, 270, 2000), 270),
+          "glide: the turn eased in over a second, the short way round");
+    // the user 2026-11-02: no jumps at all - the mark drives on by the prediction, pulled towards the fix softly
+    double sl = 37.0, sb = 55.0;
+    Check(GlidePull(&sl, &sb, 37.0, 55.0 + 8 / 110540.0, 0.25) && fabs((sb - 55.0) * 110540 - 2) < 0.001 && sl == 37.0,
+          "glide: pulled a quarter of the way to where the fix says");
+    sl = 37.0, sb = 55.0;
+    bool jumped = !GlidePull(&sl, &sb, 37.0, 55.0 + 60 / 110540.0, 0.25) && fabs((sb - 55.0) * 110540 - 60) < 0.001;
+    double kx = 111320 * cos(sb * M_PI / 180);
+    bool in = GlidePull(&sl, &sb, 37.0 + 49.9 / kx, sb, 0.5) && fabs((sl - 37.0) * kx - 24.95) < 0.001;
+    sl = 37.0;
+    Check(jumped && in && !GlidePull(&sl, &sb, 37.0 + 50.1 / kx, sb, 0.5),
+          "glide: more than 50 m apart (a jump, a new start) - there at once");
+}
+
 static void JunctionChecks()
 {
     Check(JunctionComplex("fork") && JunctionComplex("off ramp") && JunctionComplex("on ramp") &&
@@ -1504,6 +1532,7 @@ int main()
     Joints();
     JunctionChecks();
     WheelChecks();
+    GlideChecks();
     YoChecks();
     TiltWarpChecks();
     FarRingChecks();

@@ -340,7 +340,10 @@ bool JunctionShown(bool on, bool complex, int nextM, bool off, int reachM);
 int  JunctionReachM(double kmh);   // the card shown this far before the maneuver: 15 s of the way, 300 m at least
 int  JunctionZoom(int userZ, bool heading, bool complex, int nextM, bool off, int reachM);   // z17 before it
 int  WheelZoom(int code, int kind);   // a wheel button from VestaHome: +1 / -1 the zoom (up / down), 0 - not ours
-bool WheelNow(int code, int st);      // its zoom done at this event (up / down: when let go - the MCU sends only that)
+bool WheelNow(int code, int st);
+void GlideAhead(double lon, double lat, double kmh, double course, DWORD ms, double* outLon, double* outLat);   // ms on
+double GlideCourse(double from, double to, DWORD ms);
+bool GlidePull(double* lon, double* lat, double tLon, double tLat, double frac);   // false: > 50 m - put there   // the turn from -> to after ms of its second (0..360)      // its zoom done at this event (up / down: when let go - the MCU sends only that)
 int  JunctionSlice(const double* ll, int np, int at, double beforeM, double afterM, double* out, int cap, int* outAt,
                    double* course);   // lon, lat pairs; outAt: the maneuver's point in out; course: the way in's, degrees
 void JunctionTurn(const unsigned short* src, int sw, int sh, int sstride, double scx, double scy, unsigned short* dst,

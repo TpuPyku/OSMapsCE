@@ -72,7 +72,7 @@ static const COLORREF kLine    = RGB(0x2a, 0x2f, 0x37);   // separators
 static COLORREF       kOrange  = RGB(0xff, 0x6b, 0x1a);
 static const COLORREF kHair    = RGB(64, 68, 77);         // night: a card's 1 px edge over the dark map
 
-enum { TIMER_TICK = 1, TIMER_USER = 2, TIMER_DOCK = 3, TIMER_LONG = 4, TIMER_DISK = 5 };
+enum { TIMER_TICK = 1, TIMER_USER = 2, TIMER_DOCK = 3, TIMER_LONG = 4, TIMER_DISK = 5, TIMER_GLIDE = 6 };
 static const UINT kUserDelayMs = 900;    // wait for the user to stop pressing buttons
 
 // GPS button modes (g_cfg.follow)
@@ -165,7 +165,11 @@ static double     s_dragFx, s_dragFy;   // ... the flat point under the finger t
 static DWORD      s_freeTick;           // the third person's view moved by hand: when (0: it follows the car)
 static const DWORD kFreeMs = 5000;      // then back to the car (the user 2026-10-29)
 
-static GpsState   s_gps;
+static GpsState   s_gps;               // as shown: the car driving on by the prediction (GlideApply)
+static GpsState   s_fix;               // the last fix as it came
+static double     s_showLon, s_showLat, s_showCourse;   // the car shown
+static DWORD      s_showTick;          // its last step (0: none - put on the fix)
+static DWORD      s_paintMs;           // the last frame's drawing (the glide's frames: not more than the CPU allows)
 static bool       s_gpsRunning;
 
 // Settings screen (GPS port, cache size), drawn over the map
@@ -300,6 +304,44 @@ static double ViewAngle()
 
 // North-up: the car is in the center. Heading-up: the car is near the bottom edge,
 // the view center is ahead of it along the course.
+// The GPS's state taken (the fix's message, the second's tick): a new fix - the turn eased from the course shown
+static void GpsTake()
+{
+    GpsGet(&s_fix);
+    s_gps = s_fix;
+}
+
+// The car between the fixes (the user 2026-10-31: the map jerked, a frame a second; 2026-11-02: as if the map were
+// dragged by a finger - no jumps): the mark drives on by its speed and course every frame, the fixes only steer it -
+// pulled a quarter of the way a frame to where the fix says it is now (junction.cpp GlideAhead / GlidePull), the turn
+// eased in over a third of a second; standing or slow - the fix as it is
+enum { kGlideMs = 50 };   // (a frame at most every 50 ms; fewer when drawing takes longer: TIMER_GLIDE)
+static bool GlideApply()
+{
+    if (!s_fix.valid || s_fix.speedKmh <= kHeadingMinSpeed) {
+        s_showTick = 0;
+        return false;
+    }
+    DWORD now = GetTickCount();
+    double tLon, tLat;
+    GlideAhead(s_fix.lon, s_fix.lat, s_fix.speedKmh, s_fix.course, now - s_fix.fixTick, &tLon, &tLat);
+    if (!s_showTick) {
+        s_showLon = tLon;
+        s_showLat = tLat;
+        s_showCourse = s_fix.course;
+    } else {
+        DWORD step = now - s_showTick;
+        GlideAhead(s_showLon, s_showLat, s_fix.speedKmh, s_showCourse, step, &s_showLon, &s_showLat);
+        GlidePull(&s_showLon, &s_showLat, tLon, tLat, 0.25);
+        s_showCourse = GlideCourse(s_showCourse, s_fix.course, step * 3);
+    }
+    s_showTick = now;
+    s_gps.lon = s_showLon;
+    s_gps.lat = s_showLat;
+    s_gps.course = s_showCourse;
+    return true;
+}
+
 static void FollowGps()
 {
     if (g_cfg.follow == FOLLOW_OFF || !s_gps.valid)
@@ -4494,6 +4536,7 @@ static void OnCreate(HWND hwnd)
     if (g_cfg.gpsEnabled)
         EnsureGpsRunning();
     SetTimer(hwnd, TIMER_TICK, 1000, NULL);
+    SetTimer(hwnd, TIMER_GLIDE, kGlideMs, NULL);
     s_lastSaveTick = GetTickCount();
     g_today = Today();
     Ensure(REQ_AUTO);
@@ -4502,6 +4545,7 @@ static void OnCreate(HWND hwnd)
 static void OnDestroy(HWND hwnd)
 {
     KillTimer(hwnd, TIMER_TICK);
+    KillTimer(hwnd, TIMER_GLIDE);
     KillTimer(hwnd, TIMER_USER);
     KillTimer(hwnd, TIMER_DOCK);
     KillTimer(hwnd, TIMER_DISK);
@@ -4711,6 +4755,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         EndPaint(hwnd, &ps);
         s_paintSig = FrameSig();
         s_lastPaintTick = GetTickCount();
+        s_paintMs = s_lastPaintTick - t0;
         s_statPaints++;
         if (s_lastPaintTick - t0 > s_statPaintMax)
             s_statPaintMax = s_lastPaintTick - t0;
@@ -4718,6 +4763,15 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     }
 
     case WM_TIMER:
+        if (wp == TIMER_GLIDE) {   // a frame between the fixes: the map on screen, following, the CPU not taken over
+            if (g_cfg.follow != FOLLOW_OFF && !s_dragging && !s_settings && !s_search && !s_plan &&
+                GetForegroundWindow() == hwnd && GetTickCount() - s_lastPaintTick >= s_paintMs && GlideApply()) {
+                FollowGps();
+                if (FrameSig() != s_paintSig)
+                    InvalidateRect(hwnd, NULL, FALSE);
+            }
+            return 0;
+        }
         if (wp == TIMER_DOCK) {
             DockStep();
             return 0;
@@ -4747,7 +4801,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             s_userPending = false;
             Ensure(REQ_USER);
         } else {
-            GpsGet(&s_gps);
+            GpsTake();
+            GlideApply();
             g_today = Today();
             if (s_settings && s_maps)
                 InvalidateRect(hwnd, NULL, FALSE);   // the download's progress
@@ -4781,7 +4836,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         return 0;
 
     case WM_APP_GPS:
-        GpsGet(&s_gps);
+        GpsTake();
         HttpSetGpsDate(s_gps.date);   // a reliable date for HTTPS certificate checks
         if (wp == 1)
             OnGpsScanDone();
@@ -4791,6 +4846,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             RouteGps(s_gps.lon, s_gps.lat, s_gps.speedKmh, s_gps.course);
         }
         if (!s_dragging) {
+            GlideApply();
             AutoZoom();
             FollowGps();
             Ensure(REQ_AUTO);
