@@ -226,7 +226,7 @@ enum { kStopNearPx = 40 };             // a long press this near a stop's sign i
 static bool       s_longDone;          // the press became a long one: its release does nothing more
 static DWORD      s_downTick;          // when the finger went down on the map
 static const wchar_t* s_planMsg;
-enum { kRowY = 66, kRowH = 56, kLongMs = 650 };
+enum { kLongMs = 650 };
 static RoutePlace* PlanSlot(int slot);
 static int        s_setPort;        // 1..9 -> COMn:
 static int        s_setBaud;        // index in kSetBauds
@@ -4195,59 +4195,66 @@ static int ChoiceId(int i)   // "my place" only for "from"
     return s_planChoose == 0 ? P_CH_GPS + i : P_CH_SEARCH + i;
 }
 
-static bool PlanRect(int id, RECT* r)
+// The editor as design v3 (the user 2026-11-02: back to it): a panel at the left over the map - the title, a field a
+// row (its sign on the line at the left: А, the stops' numbers, Б; a stop's "x"), "+ Заехать", "ПОЕХАЛИ"; a field's
+// choices in a card beside it; a tap beside them closes them (P_BACK), beside the panel - the editor.
+static const RECT kPlanPanel = { 16, 56, 336, 466 };
+
+static int PlanRowH()   // the rows share 228 px, 74 at most
 {
-    RoutePlan* p = RoutePlanGet();
-    if (id == P_BACK) {   // VestaHome's: at the bottom left
-        *r = kBackRect;
-        return true;
-    }
-    if (s_planChoose >= 0) {   // the choices over the editor: only they answer
-        for (int i = 0; i < ChoiceCount(); i++)
-            if (ChoiceId(i) == id) {
-                SetRect(r, 220, 120 + i * 66, 580, 120 + i * 66 + 56);
-                return true;
-            }
-        return false;
-    }
-    if (id >= P_ROW && id <= P_ROW + 4) {
-        int slot = id - P_ROW;
-        if (slot >= 1 && slot <= 3 && slot > p->nvia)
-            return false;
-        int y = kRowY + SlotRow(slot) * kRowH;
-        SetRect(r, 16, y, slot >= 1 && slot <= 3 ? 720 : 784, y + kRowH - 6);
-        return true;
-    }
-    if (id >= P_DEL + 1 && id <= P_DEL + 3) {
-        int slot = id - P_DEL;
-        if (slot > p->nvia)
-            return false;
-        int y = kRowY + SlotRow(slot) * kRowH;
-        SetRect(r, 728, y, 784, y + kRowH - 6);
-        return true;
-    }
-    if (id == P_ADDVIA) {
-        if (p->nvia >= kMaxVia)
-            return false;
-        SetRect(r, 92, 416, 376, 468);
-        return true;
-    }
-    if (id == P_GO) {
-        SetRect(r, 540, 416, 784, 468);
-        return true;
-    }
+    int h = 228 / (RoutePlanGet()->nvia + 2);
+    return h > 74 ? 74 : h;
+}
+
+static bool ChoiceRect(int id, RECT* r)
+{
+    for (int i = 0; i < ChoiceCount(); i++)
+        if (ChoiceId(i) == id) {
+            SetRect(r, 360, 120 + i * 62, 680, 120 + i * 62 + 52);
+            return true;
+        }
     return false;
 }
 
-static int HitPlan(int x, int y)
+static bool RowRect(int id, RECT* r)   // a field (P_ROW + slot) or a stop's "x" (P_DEL + slot)
 {
-    static const int ids[] = { P_BACK, P_ROW, P_ROW + 1, P_ROW + 2, P_ROW + 3, P_ROW + 4, P_DEL + 1, P_DEL + 2,
-                               P_DEL + 3, P_ADDVIA, P_GO, P_CH_GPS, P_CH_SEARCH, P_CH_MAP, P_CH_CANCEL };
+    bool del = id >= P_DEL;
+    int slot = id - (del ? P_DEL : P_ROW), h = PlanRowH(), y = 112 + SlotRow(slot) * h;
+    bool stop = slot >= 1 && slot <= 3;
+    if ((stop && slot > RoutePlanGet()->nvia) || (del && !stop))
+        return false;
+    if (del)
+        SetRect(r, 286, y, 324, y + h - 8);
+    else
+        SetRect(r, 66, y, stop ? 278 : 324, y + h - 8);
+    return true;
+}
+
+static bool PlanRect(int id, RECT* r)
+{
+    if (s_planChoose >= 0)   // the choices over the editor: only they answer
+        return ChoiceRect(id, r);
+    if (id >= P_ROW && id <= P_DEL + 4)
+        return RowRect(id, r);
+    if (id == P_ADDVIA)
+        SetRect(r, 66, 344, 324, 382);
+    else if (id == P_GO)
+        SetRect(r, 28, 392, 324, 454);
+    else
+        return false;
+    return id != P_ADDVIA || RoutePlanGet()->nvia < kMaxVia;
+}
+
+static int HitPlan(int x, int y)   // beside the choices or the panel: P_BACK
+{
+    static const int ids[] = { P_ROW, P_ROW + 1, P_ROW + 2, P_ROW + 3, P_ROW + 4, P_DEL + 1, P_DEL + 2, P_DEL + 3,
+                               P_ADDVIA, P_GO, P_CH_GPS, P_CH_SEARCH, P_CH_MAP, P_CH_CANCEL };
     RECT r;
+    POINT pt = { x, y };
     for (int i = 0; i < (int)(sizeof(ids) / sizeof(ids[0])); i++)
-        if (PlanRect(ids[i], &r) && x >= r.left && x < r.right && y >= r.top && y < r.bottom)
+        if (PlanRect(ids[i], &r) && PtInRect(&r, pt))
             return ids[i];
-    return -1;
+    return s_planChoose < 0 && PtInRect(&kPlanPanel, pt) ? -1 : P_BACK;
 }
 
 // The screen point -> its place (the inverse of the map's turn).
@@ -4351,7 +4358,7 @@ static void PlanGo()
     if (p->to.kind != PL_PLACE)
         s_planMsg = L"Выберите, куда ехать";
     else if (!RouteStart(s_gps.lon, s_gps.lat, gps && s_gps.speedKmh > 10 ? s_gps.course : -1, gps))
-        s_planMsg = L"Нет GPS: выберите «Откуда» адресом или точкой на карте";
+        s_planMsg = L"Нет GPS: выберите «Откуда»";
     else {
         s_plan = false;
         if (p->from.kind == PL_PLACE) {   // a planned route: show its start
@@ -4410,69 +4417,113 @@ static void OnPlanCtl(int id)
     InvalidateRect(s_wnd, NULL, FALSE);
 }
 
+static void SlotLabel(int slot, wchar_t* label)   // "Откуда", "Заехать (n)", "Куда"
+{
+    if (slot == 0 || slot == 4)
+        wcscpy(label, slot ? L"Куда" : L"Откуда");
+    else if (RoutePlanGet()->nvia > 1)   // (the user's word 2026-10-26)
+        _snwprintf(label, 16, L"Заехать %d", slot);
+    else
+        wcscpy(label, L"Заехать");
+}
+
+static const wchar_t* SlotValue(const RoutePlace* pl)
+{
+    if (pl->kind == PL_GPS)
+        return s_gps.valid ? L"Моё местоположение" : L"Моё местоположение (нет GPS)";
+    return pl->kind == PL_PLACE ? pl->name : L"не выбрано";
+}
+
+static void PlanField(HDC dc, int slot, bool chosen)   // a field: its label, its place
+{
+    RECT r;
+    RowRect(P_ROW + slot, &r);
+    bool pr = s_planPressed == P_ROW + slot;
+    Tile(dc, r, pr ? kOrange : kPanel2, chosen || pr ? kOrange : kPanel2, 16);
+    wchar_t label[16];
+    SlotLabel(slot, label);
+    const RoutePlace* pl = PlanSlot(slot);
+    const wchar_t* v = SlotValue(pl);
+    COLORREF vc = pr ? kInk : pl->kind == PL_NONE ? kTextDim : kText;
+    if (r.bottom - r.top < 50) {   // (five rows: the place only)
+        Text(dc, s_fontLabel, vc, r.left + 12, r.top, r.right - 8, r.bottom, DT_LEFT, v);
+        return;
+    }
+    Text(dc, s_fontSmall, pr ? kInk : kTextDim, r.left + 12, r.top + 4, r.right - 8, r.top + 24, DT_LEFT, label);
+    Text(dc, s_fontLabel, vc, r.left + 12, r.top + 24, r.right - 8, r.bottom - 4, DT_LEFT, v);
+}
+
+static void PlanSigns(HDC dc)   // the line at the left: А, the stops' numbers, Б
+{
+    int n = RoutePlanGet()->nvia, h = PlanRowH(), y0 = 112 + (h - 8) / 2;
+    RECT l = { 41, y0, 43, y0 + (n + 1) * h };
+    HBRUSH b = CreateSolidBrush(kTextDim);
+    FillRect(dc, &l, b);
+    DeleteObject(b);
+    for (int row = 0; row < n + 2; row++) {
+        wchar_t t[4];
+        _snwprintf(t, 4, L"%d", row);
+        COLORREF c = row == 0 ? RGB(40, 150, 70) : row == n + 1 ? RGB(30, 50, 110) : kOrange;
+        RouteMarker(dc, 42, y0 + row * h, c, row == 0 ? L"А" : row == n + 1 ? L"Б" : t);
+    }
+}
+
+static void DrawChoices(HDC dc)   // a field's choices beside the panel
+{
+    RECT r, box = { 344, 104, 696, 120 + ChoiceCount() * 62 + 6 };
+    Card(dc, box, 20);
+    static const wchar_t* kChoice[4] = { L"Моё местоположение", L"Найти адрес", L"Точка на карте", L"Отмена" };
+    for (int i = 0; i < ChoiceCount(); i++) {
+        int id = ChoiceId(i);
+        ChoiceRect(id, &r);
+        DrawCtl(dc, r, s_planPressed == id, s_fontLabel, kChoice[id - P_CH_GPS]);
+    }
+}
+
+static void PlanDels(HDC dc)   // the stops' "x"
+{
+    RECT r;
+    for (int slot = 1; slot <= RoutePlanGet()->nvia; slot++) {
+        RowRect(P_DEL + slot, &r);
+        bool dp = s_planPressed == P_DEL + slot;
+        Tile(dc, r, dp ? kOrange : kPanel2, dp ? kOrange : kPanel2, 16);
+        Text(dc, s_fontBig, dp ? kInk : kText, r.left, r.top, r.right, r.bottom, DT_CENTER, L"×");
+    }
+}
+
+static bool PlanReady(const RoutePlan* p)   // where to and where from (the car: with a fix)
+{
+    return p->to.kind == PL_PLACE && (p->from.kind == PL_PLACE || (p->from.kind == PL_GPS && s_gps.valid));
+}
+
+static void PlanBottom(HDC dc)   // why it cannot go (or "+ Заехать"), "ПОЕХАЛИ" - in the accent when it can
+{
+    const RoutePlan* p = RoutePlanGet();
+    RECT r = { 66, 344, 324, 382 }, go = { 28, 392, 324, 454 };
+    if (s_planMsg)
+        Text(dc, s_fontSmall, kTextErr, 28, r.top, 324, r.bottom, DT_CENTER, s_planMsg);
+    else if (p->nvia < kMaxVia)
+        Text(dc, s_fontLabel, s_planPressed == P_ADDVIA ? kText : kOrange, r.left, r.top, r.right, r.bottom, DT_CENTER,
+             L"+ Заехать");
+    bool ready = PlanReady(p), lit = ready && s_planPressed != P_GO;
+    Tile(dc, go, lit ? kOrange : kPanel2, lit ? kOrange : kPanel2, 24);
+    Text(dc, s_fontSpeed, lit ? kInk : ready ? kOrange : kTextDim, go.left, go.top, go.right, go.bottom, DT_CENTER,
+         L"ПОЕХАЛИ");
+}
+
 static void DrawPlan(HDC dc)
 {
     RoutePlan* p = RoutePlanGet();
-    RECT all = { 0, 0, s_cw, s_ch };
-    HBRUSH ink = CreateSolidBrush(kInk);
-    FillRect(dc, &all, ink);
-    DeleteObject(ink);
-    RECT r;
-    Text(dc, s_fontBig, kText, 20, 0, 500, 56, DT_LEFT, L"Маршрут");
-    BackDisc(dc, s_planPressed == P_BACK);
-
-    int choose = s_planChoose;
-    s_planChoose = -1;   // (the rows' places)
-    for (int row = 0; row < p->nvia + 2; row++) {
-        int slot = RowSlot(row);
-        PlanRect(P_ROW + slot, &r);
-        bool pr = s_planPressed == P_ROW + slot;
-        Tile(dc, r, pr ? kOrange : kPanel, choose == slot || pr ? kOrange : kPanel, 16);
-        wchar_t label[16];
-        if (slot == 0)
-            wcscpy(label, L"Откуда");
-        else if (slot == 4)
-            wcscpy(label, L"Куда");
-        else if (p->nvia > 1)   // (the user's word 2026-10-26)
-            _snwprintf(label, 16, L"Заехать %d", slot);
-        else
-            wcscpy(label, L"Заехать");
-        const RoutePlace* pl = PlanSlot(slot);
-        const wchar_t* v = pl->kind == PL_PLACE ? pl->name : pl->kind == PL_GPS
-                         ? (s_gps.valid ? L"Моё местоположение" : L"Моё местоположение (нет GPS)") : L"не выбрано";
-        Text(dc, s_fontSmall, pr ? kInk : kTextDim, r.left + 16, r.top, r.left + 110, r.bottom, DT_LEFT, label);
-        Text(dc, s_fontLabel, pr ? kInk : pl->kind == PL_NONE ? kTextDim : kText, r.left + 112, r.top, r.right - 12,
-             r.bottom, DT_LEFT, v);
-        if (slot >= 1 && slot <= 3 && PlanRect(P_DEL + slot, &r)) {
-            bool dp = s_planPressed == P_DEL + slot;
-            Tile(dc, r, dp ? kOrange : kPanel2, dp ? kOrange : kPanel2, 16);
-            Text(dc, s_fontBig, dp ? kInk : kText, r.left, r.top, r.right, r.bottom, DT_CENTER, L"×");
-        }
-    }
-    if (PlanRect(P_ADDVIA, &r))
-        DrawCtl(dc, r, s_planPressed == P_ADDVIA, s_fontLabel, L"+ ЗАЕХАТЬ");
-    PlanRect(P_GO, &r);
-    bool ready = p->to.kind == PL_PLACE && (p->from.kind == PL_PLACE || (p->from.kind == PL_GPS && s_gps.valid));
-    COLORREF go = ready || s_planPressed == P_GO ? kOrange : kPanel2;
-    Tile(dc, r, go, go, 20);
-    Text(dc, s_fontLabel, ready ? kInk : kTextDim, r.left, r.top, r.right, r.bottom, DT_CENTER, L"ПОЕХАЛИ");
-    if (s_planMsg)
-        Text(dc, s_fontSmall, kTextErr, 24, 360, s_cw - 24, 400, DT_LEFT, s_planMsg);
-    else
-        Text(dc, s_fontSmall, kTextDim, 24, 360, s_cw - 24, 400, DT_LEFT,
-             L"Нажмите на поле: своё место, адрес или точка на карте. Долгое нажатие на карту — маршрут туда.");
-    s_planChoose = choose;
-    if (choose < 0)
-        return;
-    // the field's choices over the editor
-    RECT box = { 196, 96, 604, 120 + ChoiceCount() * 66 + 14 };
-    Tile(dc, box, kPanel, kPanel, 24);
-    static const wchar_t* kChoice[4] = { L"МОЁ МЕСТОПОЛОЖЕНИЕ", L"НАЙТИ АДРЕС", L"ТОЧКА НА КАРТЕ", L"ОТМЕНА" };
-    for (int i = 0; i < ChoiceCount(); i++) {
-        int id = ChoiceId(i);
-        PlanRect(id, &r);
-        DrawCtl(dc, r, s_planPressed == id, s_fontLabel, kChoice[id - P_CH_GPS]);
-    }
+    DrawStatus(dc);
+    Card(dc, kPlanPanel, 20);
+    Text(dc, s_fontBig, kText, 32, 64, 320, 104, DT_LEFT, L"Маршрут");
+    PlanSigns(dc);
+    for (int row = 0; row < p->nvia + 2; row++)
+        PlanField(dc, RowSlot(row), s_planChoose == RowSlot(row));
+    PlanDels(dc);
+    PlanBottom(dc);
+    if (s_planChoose >= 0)
+        DrawChoices(dc);
 }
 
 // The picker's bar over the map and the long press menu.
