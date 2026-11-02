@@ -332,6 +332,10 @@ void RingAhead(double vx, double vy, double angleDeg, double d, double* x, doubl
 // tile of its own zoom (not a coarser one scaled)
 struct SlotShown { int x, y; DWORD sig, ctx; bool used, exact; };
 bool SlotRedraw(const SlotShown& s, int x, int y, DWORD sig, DWORD ctx, bool exact);   // to show (x, y) as sig says
+struct CacheEntry;
+// The entry the memory's cap drops (cache.cpp's Trim): the least recently used of the base tiles and the traffic not
+// used for 30 s, none of them - of all; never keep; -1: none
+int  CacheVictim(const CacheEntry* e, int n, int keep, DWORD now);
 
 // junction.cpp: the junction card (the user 2026-10-28, on in the settings) - the route round a complex maneuver on the
 // map turned so the way in points up

@@ -84,3 +84,26 @@ bool SlotRedraw(const SlotShown& s, int x, int y, DWORD sig, DWORD ctx, bool exa
         return false;
     return s.sig != sig;
 }
+
+// The memory's cap (the user 2026-11-02: in 3D the traffic was asked again and again - the rings' tiles, more than the
+// cap, pushed it out; it came, the slots were drawn again, their tiles came from the disk and pushed it out again): a
+// base tile comes back from the disk, the traffic only from the network and its budget - it stays while used lately.
+enum { kTrafficKeepMs = 30000 };
+
+static int Older(const CacheEntry* e, int best, int i)   // i, when used less recently than best (-1: none yet)
+{
+    return best < 0 || e[i].useTick < e[best].useTick ? i : best;
+}
+
+int CacheVictim(const CacheEntry* e, int n, int keep, DWORD now)
+{
+    int spare = -1, any = -1;
+    for (int i = 0; i < n; i++) {
+        if (i == keep)
+            continue;
+        any = Older(e, any, i);
+        if (e[i].req.src == SRC_OSM || now - e[i].useTick >= kTrafficKeepMs)
+            spare = Older(e, spare, i);
+    }
+    return spare >= 0 ? spare : any;
+}

@@ -1125,6 +1125,38 @@ static void FarRingChecks()
           "slot: a coarser tile shown - drawn on any change");
 }
 
+// The memory's cap (the user 2026-11-02: in 3D the traffic came again and again - the rings' tiles pushed it out)
+static void CacheVictimChecks()
+{
+    CacheEntry e[4];
+    memset(e, 0, sizeof(e));
+    e[0].req.src = SRC_YANDEX;
+    e[0].useTick = 1000;
+    e[1].req.src = SRC_OSM;
+    e[1].useTick = 5000;
+    e[2].req.src = SRC_OSM;
+    e[2].useTick = 4000;
+    Check(CacheVictim(e, 3, -1, 6000) == 2, "cache: a base tile goes before the traffic used lately (older as it is)");
+    Check(CacheVictim(e, 3, 2, 6000) == 1, "cache: never the one kept");
+    Check(CacheVictim(e, 3, -1, 31000) == 0 && CacheVictim(e, 3, -1, 30999) == 2,
+          "cache: the traffic not used for 30 s - by its age as any");
+    e[1].useTick = 4000;
+    Check(CacheVictim(e, 3, -1, 6000) == 1, "cache: used at the same time - the first");
+    e[1].useTick = 5000;
+    CacheEntry f[2];
+    memset(f, 0, sizeof(f));
+    f[0].req.src = SRC_OSM;
+    f[0].useTick = 5000;
+    f[1].req.src = SRC_2GIS;
+    f[1].useTick = 1000;
+    Check(CacheVictim(f, 2, -1, 6000) == 0, "cache: the first a base tile, an older traffic after it - the tile");
+    e[1].req.src = SRC_2GIS;
+    e[2].req.src = SRC_YANDEX;
+    Check(CacheVictim(e, 3, -1, 6000) == 0 && CacheVictim(e, 3, 0, 6000) == 2,
+          "cache: only the traffic used lately - the least recently used of it");
+    Check(CacheVictim(e, 1, 0, 6000) == -1 && CacheVictim(e, 0, -1, 6000) == -1, "cache: nothing but the kept - none");
+}
+
 static void TiltWarpChecks()
 {
     Check(Blend565(RGB565(0, 0, 0), RGB565(248, 252, 248), 0) == RGB565(0, 0, 0) &&
@@ -1536,6 +1568,7 @@ int main()
     YoChecks();
     TiltWarpChecks();
     FarRingChecks();
+    CacheVictimChecks();
     RECT whole = { 0, 0, 800, 480 };
     // the Russian name when the tile has one (name:ru), else the local one: a frame named so equals one whose tile
     // holds that text as its plain name

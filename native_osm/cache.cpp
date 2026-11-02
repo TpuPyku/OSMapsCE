@@ -177,15 +177,12 @@ static void FreeEntry(CacheEntry* e)
     e->ov = NULL;
 }
 
-// Drops the least recently used entries (never keep) while over the memory cap.
+// Drops entries (never keep; the traffic used lately last - ring.cpp CacheVictim) while over the memory cap.
 // The last entry moves into a freed slot; returns where keep is now.
 static CacheEntry* Trim(CacheEntry* keep)
 {
     while (s_bytes > CACHE_BYTES && s_count > 1) {
-        CacheEntry* e = NULL;
-        for (int i = 0; i < s_count; i++)
-            if (&s_mem[i] != keep && (!e || s_mem[i].useTick < e->useTick))
-                e = &s_mem[i];
+        CacheEntry* e = &s_mem[CacheVictim(s_mem, s_count, (int)(keep - s_mem), GetTickCount())];
         FreeEntry(e);
         CacheEntry* last = &s_mem[--s_count];
         if (e != last) {
