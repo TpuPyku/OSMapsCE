@@ -4581,8 +4581,8 @@ static void FavCardRect(int id, RECT* r)
 
 static bool FavBox(RECT* r)   // the mark's menu's card or the favourite's; false: none shown
 {
-    if (s_favMenu >= 0)
-        SetRect(r, 204, 188, 596, 242 + 3 * 58 + 4);
+    if (s_favMenu >= 0)   // (as the long press's card: design v3)
+        SetRect(r, 160, 300, 640, 466);
     else
         SetRect(r, 172, 130, 628, 456);
     return s_favMenu >= 0 || s_favEdit >= 0;
@@ -4591,11 +4591,11 @@ static bool FavBox(RECT* r)   // the mark's menu's card or the favourite's; fals
 // The mark's menu (three rows) and the favourite's card (E_BOX: the card itself - a tap between its controls).
 static bool FavRect(int id, RECT* r)
 {
-    bool menu = s_favMenu >= 0 && id >= F_GO && id <= F_CANCEL, card = s_favEdit >= 0 && id >= E_ICON && id < E_BOX;
+    bool menu = s_favMenu >= 0 && id >= F_GO && id <= F_EDIT, card = s_favEdit >= 0 && id >= E_ICON && id < E_BOX;
     if (id == E_BOX)
         return FavBox(r);
-    if (menu)
-        SetRect(r, 220, 242 + (id - F_GO) * 58, 580, 242 + (id - F_GO) * 58 + 50);
+    if (menu)   // "Маршрут сюда" in the accent, "Изменить" (no "Отмена": a tap beside)
+        SetRect(r, id == F_GO ? 180 : 412, 384, id == F_GO ? 400 : 620, 446);
     else if (card)
         FavCardRect(id, r);
     return menu || card;
@@ -4755,18 +4755,33 @@ static void OnOverMap(int id)
     InvalidateRect(s_wnd, NULL, FALSE);
 }
 
+// The main action of a card (design v3): the accent's fill, dark letters; pressed - the other way round.
+static void DrawMainCtl(HDC dc, const RECT& r, bool pressed, const wchar_t* caption)
+{
+    Tile(dc, r, pressed ? kPanel2 : kOrange, pressed ? kPanel2 : kOrange, 20);
+    Text(dc, s_fontLabel, pressed ? kOrange : kInk, r.left, r.top, r.right, r.bottom, DT_CENTER, caption);
+}
+
 static void DrawFavMenu(HDC dc)
 {
     RECT box, r;
     FavBox(&box);
     Card(dc, box, 20);
-    FavSign(dc, s_favs.f[s_favMenu].icon, 236, 216, 12, kOrange, kInk);
-    Text(dc, s_fontLabel, kText, 258, box.top + 4, box.right - 16, 242, DT_LEFT, s_favs.f[s_favMenu].name);
-    static const wchar_t* kMenu[3] = { L"МАРШРУТ СЮДА", L"ИЗМЕНИТЬ", L"ОТМЕНА" };
-    for (int id = F_GO; id <= F_CANCEL; id++) {
-        FavRect(id, &r);
-        DrawCtl(dc, r, s_planPressed == id, s_fontLabel, kMenu[id - F_GO]);
+    const VFav& f = s_favs.f[s_favMenu];
+    FavSign(dc, f.icon, box.left + 34, box.top + 30, 13, kOrange, kInk);
+    Text(dc, s_fontBig, kText, box.left + 60, box.top + 14, box.right - 20, box.top + 46, DT_LEFT, f.name);
+    wchar_t sub[64] = L"Избранное";
+    if (s_gps.valid) {
+        double dx = (f.lon - s_gps.lon) * 111320 * cos(f.lat * M_PI / 180), dy = (f.lat - s_gps.lat) * 110540;
+        wchar_t d[32];
+        FmtDist(d, 32, (int)sqrt(dx * dx + dy * dy));
+        _snwprintf(sub, 64, L"Избранное · %s от вас", d);
     }
+    Text(dc, s_fontSmall, kTextDim, box.left + 20, box.top + 48, box.right - 20, box.top + 72, DT_LEFT, sub);
+    FavRect(F_GO, &r);
+    DrawMainCtl(dc, r, s_planPressed == F_GO, L"Маршрут сюда");
+    FavRect(F_EDIT, &r);
+    DrawCtl(dc, r, s_planPressed == F_EDIT, s_fontLabel, L"Изменить");
 }
 
 static void DrawFavSigns(HDC dc)   // the card's row of signs: its own in the accent's frame
@@ -4794,23 +4809,16 @@ static void DrawFavCards(HDC dc)
     Text(dc, s_fontLabel, kText, box.left + 16, box.top + 6, box.right - 16, 186, DT_CENTER, s_favs.f[s_favEdit].name);
     DrawFavSigns(dc);
     FavRect(E_NAME, &r);
-    DrawCtl(dc, r, s_planPressed == E_NAME, s_fontLabel, L"ИМЯ");
+    DrawCtl(dc, r, s_planPressed == E_NAME, s_fontLabel, L"Имя");
     FavRect(E_DEL, &r);
     if (s_favSure) {
         Tile(dc, r, kTextErr, kTextErr, 20);
-        Text(dc, s_fontLabel, kInk, r.left, r.top, r.right, r.bottom, DT_CENTER, L"ТОЧНО?");
+        Text(dc, s_fontLabel, kInk, r.left, r.top, r.right, r.bottom, DT_CENTER, L"Точно?");
     } else {
-        DrawCtl(dc, r, s_planPressed == E_DEL, s_fontLabel, L"УДАЛИТЬ");
+        DrawCtl(dc, r, s_planPressed == E_DEL, s_fontLabel, L"Удалить");
     }
     FavRect(E_DONE, &r);
-    DrawCtl(dc, r, s_planPressed == E_DONE, s_fontLabel, L"ГОТОВО");
-}
-
-// The main action of a card (design v3): the accent's fill, dark letters; pressed - the other way round.
-static void DrawMainCtl(HDC dc, const RECT& r, bool pressed, const wchar_t* caption)
-{
-    Tile(dc, r, pressed ? kPanel2 : kOrange, pressed ? kPanel2 : kOrange, 20);
-    Text(dc, s_fontLabel, pressed ? kOrange : kInk, r.left, r.top, r.right, r.bottom, DT_CENTER, caption);
+    DrawMainCtl(dc, r, s_planPressed == E_DONE, L"Готово");
 }
 
 static void LpAddress(wchar_t* title, wchar_t* sub)   // the long press's point: its address (or "Точка на карте"), how far
