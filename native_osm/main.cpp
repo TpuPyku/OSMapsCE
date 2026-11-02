@@ -647,7 +647,7 @@ static void DiskSteps()   // from now on, till done
     SetTimer(s_wnd, TIMER_DISK, kDiskStepMs, NULL);
 }
 
-static int JunctionKeys(MapRequest* out, double* mx, double* my);
+static int JunctionKeys(MapRequest* out, double* mx, double* my, bool early);
 
 static void Ensure(int mode)
 {
@@ -667,7 +667,7 @@ static void Ensure(int mode)
     for (int i = 0; i < n; i++)
         Request(REQ_AUTO, keys[i], CacheFind(keys[i], false));
     double mx, my;   // the junction card's tiles: after the view's (one request at a time: theirs first)
-    n = JunctionKeys(keys, &mx, &my);
+    n = JunctionKeys(keys, &mx, &my, true);
     LoadFromDisk(keys, n, 2, false);
     for (int i = 0; i < n; i++)
         Request(REQ_AUTO, keys[i], CacheFind(keys[i], false));
@@ -1005,7 +1005,7 @@ static void AutoZoom()
     RouteGet(&ri);
     int user = s_autoFrom ? s_autoFrom : g_cfg.z;
     bool on = ri.state == ROUTE_ON && g_cfg.follow == FOLLOW_HEADING && ri.shape != s_autoSkip;
-    int want = JunctionZoom(user, on, ri.complex, ri.nextM, ri.off);
+    int want = JunctionZoom(user, on, ri.complex, ri.nextM, ri.off, JunctionReachM(s_gps.speedKmh));
     if (want == g_cfg.z)
         return;
     s_autoFrom = want > user ? user : 0;
@@ -3090,18 +3090,21 @@ static void DrawTurn(HDC dc, const RECT& r, int turn, COLORREF col = kText)
 // complex maneuver, the map at z17 round it turned so the way in points up, the route on it. Built only when what it
 // shows changes (the maneuver, its tiles coming, night) - through a 512 x 512 canvas freed right after - and copied
 // into each frame.
-enum { kJunZ = 17, kJunCanvas = 512, kJunW = 242, kJunH = 142, kJunTiles = 9 };
+// (z16 and the route's piece twice as long: HU 2026-10-31, the user - a smaller scale at speed)
+enum { kJunZ = 16, kJunCanvas = 512, kJunW = 242, kJunH = 142, kJunTiles = 9 };
 static unsigned short* s_junCard;   // kJunW x kJunH, rows top-down
 static DWORD s_junSig;
 
-// The card's tiles (z17 round the next maneuver) while it is shown, and the maneuver's world pixel; their count
-static int JunctionKeys(MapRequest* out, double* mx, double* my)
+// The card's tiles (kJunZ round the next maneuver) while it is shown (early: from 10 s before, loaded by then), and the
+// maneuver's world pixel; their count
+static int JunctionKeys(MapRequest* out, double* mx, double* my, bool early)
 {
     RouteInfo ri;
     RouteGet(&ri);
     const double* ll;
     int np = RoutePoints(&ll), n = 0, h = kJunCanvas / 2;
-    if (!JunctionShown(g_cfg.junction != 0, ri.complex, ri.nextM, ri.off) || ri.shape >= np)
+    int reach = JunctionReachM(s_gps.speedKmh) + (early ? (int)(s_gps.speedKmh / 3.6 * 10) : 0);
+    if (!JunctionShown(g_cfg.junction != 0, ri.complex, ri.nextM, ri.off, reach) || ri.shape >= np)
         return 0;
     GeoToWorld(ll[ri.shape * 2], ll[ri.shape * 2 + 1], kJunZ, mx, my);
     for (int ty = (int)floor((*my - h) / TILE); ty <= (int)floor((*my + h - 1) / TILE); ty++)
@@ -3134,7 +3137,7 @@ static double JunctionRoute(HDC cdc, double ox, double oy)
     const double* ll;
     int np = RoutePoints(&ll), at;
     double pts[2 * 64], course;
-    int n = JunctionSlice(ll, np, ri.shape, 110, 70, pts, 64, &at, &course);
+    int n = JunctionSlice(ll, np, ri.shape, 220, 140, pts, 64, &at, &course);
     POINT p[64];
     for (int i = 0; i < n; i++) {
         double wx, wy;
@@ -3215,7 +3218,7 @@ static void DrawJunction(HDC dc, int top)
 {
     MapRequest keys[kJunTiles];
     double mx, my;
-    int n = JunctionKeys(keys, &mx, &my);
+    int n = JunctionKeys(keys, &mx, &my, false);
     if (!n || !s_backBits) {
         JunctionFree();
         return;
@@ -4460,14 +4463,14 @@ static int VhReceive(const wchar_t* cmd)   // 2 = a button taken (VestaHome leav
         }
     }
     if (!wcsncmp(cmd, L"key", 3) && cmd[3] == L'\t') {
-        // The wheel's buttons (the user 2026-10-26): short presses stay VestaHome's (tracks, the phone); held - the
-        // zoom (WheelZoom), while the map is in front (VestaHome asks only then).
+        // The wheel's buttons (the user 2026-10-26, 2026-11-02): held - the zoom (WheelZoom), while the map is in front
+        // (VestaHome asks only then); short presses stay VestaHome's (the music, the phone).
         int code = VhField(cmd, L"code", v, 8) ? _wtoi(v) : 0;
         int st = VhField(cmd, L"st", v, 8) ? _wtoi(v) : 0;
         int kind = VhField(cmd, L"kind", v, 8) ? _wtoi(v) : 0;
         int dz = WheelZoom(code, kind);
         if (dz) {
-            if (st == 0) {
+            if (WheelNow(code, st)) {
                 Zoom(dz);
                 UserChanged();
                 InvalidateRect(s_wnd, NULL, FALSE);

@@ -956,12 +956,17 @@ static void YoChecks()   // a device's font without Ё (Shturmann NSL 500, 2026-
 
 static void WheelChecks()
 {
-    Check(WheelZoom(8, 2) == 1 && WheelZoom(9, 2) == -1 && WheelZoom(8, 3) == 1 && WheelZoom(9, 3) == -1,
+    // HU 2026-10-31: the wheel's up / down are 9 / 8 (up the next track - they were swapped); short - the music's
+    // (the user: leave them to it), held - the zoom
+    Check(WheelZoom(9, 2) == 1 && WheelZoom(8, 2) == -1 && WheelZoom(9, 3) == 1 && WheelZoom(8, 3) == -1,
           "wheel: up / down held - zoom in / out");
+    Check(!WheelZoom(9, 1) && !WheelZoom(8, 1), "wheel: up / down short - the music's");
     Check(WheelZoom(0x0A, 1) == 1 && WheelZoom(0x0B, 1) == -1, "wheel: the MCU's held up / down (0x0A / 0x0B)");
     Check(WheelZoom(0x12, 2) == 1 && WheelZoom(0x14, 2) == -1, "wheel: phone / hang up held - as before");
-    Check(!WheelZoom(8, 1) && !WheelZoom(9, 1) && !WheelZoom(0x12, 1) && !WheelZoom(0x14, 1) && !WheelZoom(7, 2),
-          "wheel: short presses and other keys - VestaHome's");
+    Check(!WheelZoom(0x12, 1) && !WheelZoom(0x14, 1) && !WheelZoom(7, 2), "wheel: phone keys short, other keys - VestaHome's");
+    Check(WheelNow(9, 1) && WheelNow(8, 1) && !WheelNow(9, 0) && !WheelNow(8, 0),
+          "wheel: up / down zoom when let go (the MCU sends only that)");
+    Check(WheelNow(0x0A, 0) && WheelNow(0x12, 0) && !WheelNow(0x0A, 1) && !WheelNow(0x14, 1), "wheel: the others when pressed");
 }
 
 static void JunctionChecks()
@@ -970,14 +975,18 @@ static void JunctionChecks()
           JunctionComplex("roundabout") && JunctionComplex("rotary") && JunctionComplex("exit roundabout") &&
           JunctionComplex("merge") && !JunctionComplex("turn") && !JunctionComplex("new name") &&
           !JunctionComplex("arrive") && !JunctionComplex("depart"), "junction: only the complex maneuvers");
-    Check(JunctionShown(true, true, 300, false) && !JunctionShown(true, true, 301, false) &&
-          !JunctionShown(false, true, 100, false) && !JunctionShown(true, false, 100, false) &&
-          !JunctionShown(true, true, 100, true), "junction: on in the settings, complex, within 300 m, on the route");
-    Check(JunctionZoom(15, true, true, 300, false) == 17 && JunctionZoom(16, true, true, 0, false) == 17,
-          "auto zoom: z17 within 300 m of a complex maneuver, heading-up");
-    Check(JunctionZoom(15, true, true, 301, false) == 15 && JunctionZoom(15, false, true, 100, false) == 15 &&
-          JunctionZoom(15, true, false, 100, false) == 15 && JunctionZoom(15, true, true, 100, true) == 15 &&
-          JunctionZoom(18, true, true, 100, false) == 18 && JunctionZoom(17, true, true, 100, false) == 17,
+    Check(JunctionShown(true, true, 300, false, 300) && !JunctionShown(true, true, 301, false, 300) &&
+          !JunctionShown(false, true, 100, false, 300) && !JunctionShown(true, false, 100, false, 300) &&
+          !JunctionShown(true, true, 100, true, 300), "junction: on in the settings, complex, within its reach, on the route");
+    // HU 2026-10-31: at 110 km/h the card came ~50 m before - its reach 15 s of the way, at least 300 m
+    Check(JunctionReachM(0) == 300 && JunctionReachM(72) == 300 && JunctionReachM(110) == 458 && JunctionReachM(130) == 541,
+          "junction: shown 15 s ahead at speed, 300 m at least");
+    Check(JunctionZoom(15, true, true, 300, false, 300) == 17 && JunctionZoom(16, true, true, 0, false, 300) == 17,
+          "auto zoom: z17 within the card's reach of a complex maneuver, heading-up");
+    Check(JunctionZoom(15, true, true, 301, false, 300) == 15 && JunctionZoom(15, false, true, 100, false, 300) == 15 &&
+          JunctionZoom(15, true, false, 100, false, 300) == 15 && JunctionZoom(15, true, true, 100, true, 300) == 15 &&
+          JunctionZoom(18, true, true, 100, false, 300) == 18 && JunctionZoom(17, true, true, 100, false, 300) == 17 &&
+          JunctionZoom(15, true, true, 450, false, 458) == 17,
           "auto zoom: else the user's (farther, north-up, a plain turn, off the route, closer already)");
     // a line north 300 m then east 300 m (at 53 N), the maneuver at the corner (point 3)
     const double la = 53.0, dla = 100 / 110540.0, dlo = 100 / (111320.0 * cos(la * M_PI / 180));

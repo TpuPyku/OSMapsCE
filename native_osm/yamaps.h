@@ -218,6 +218,8 @@ struct OffFile {
     bool        bad;                // a part not there
 };
 bool  OffOpen(OffFile* f, const wchar_t* path, void* head, DWORD bytes);   // the file and its header; false: closed
+bool  OffMapWanted(DWORD fileBytes, DWORD freeBytes);   // mapped: unless three times its size is free
+extern DWORD g_offFreeMem;   // (tests) the free memory as if, 0 - the system's
 void* OffPart(OffFile* f, DWORD off, DWORD bytes);   // a part read into memory, freed by OffClose; NULL: no memory
 bool  OffRead(HANDLE f, DWORD off, void* to, DWORD bytes);
 void  OffClose(OffFile* f);                          // the parts freed, the file closed, all zero
@@ -332,9 +334,11 @@ bool SlotRedraw(const SlotShown& s, int x, int y, DWORD sig, DWORD ctx, bool exa
 // junction.cpp: the junction card (the user 2026-10-28, on in the settings) - the route round a complex maneuver on the
 // map turned so the way in points up
 bool JunctionComplex(const char* osrmType);   // a fork, a ramp, a roundabout, a merge
-bool JunctionShown(bool on, bool complex, int nextM, bool off);
-int  JunctionZoom(int userZ, bool heading, bool complex, int nextM, bool off);   // z17 before a complex maneuver
-int  WheelZoom(int code, int kind);   // a wheel button from VestaHome: +1 / -1 the zoom (held up / down), 0 - not ours
+bool JunctionShown(bool on, bool complex, int nextM, bool off, int reachM);
+int  JunctionReachM(double kmh);   // the card shown this far before the maneuver: 15 s of the way, 300 m at least
+int  JunctionZoom(int userZ, bool heading, bool complex, int nextM, bool off, int reachM);   // z17 before it
+int  WheelZoom(int code, int kind);   // a wheel button from VestaHome: +1 / -1 the zoom (up / down), 0 - not ours
+bool WheelNow(int code, int st);      // its zoom done at this event (up / down: when let go - the MCU sends only that)
 int  JunctionSlice(const double* ll, int np, int at, double beforeM, double afterM, double* out, int cap, int* outAt,
                    double* course);   // lon, lat pairs; outAt: the maneuver's point in out; course: the way in's, degrees
 void JunctionTurn(const unsigned short* src, int sw, int sh, int sstride, double scx, double scy, unsigned short* dst,

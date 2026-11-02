@@ -291,6 +291,15 @@ static void OffFileChecks()
     PathInDir(path, L"..\\region.zip");
     OffFile f;
     char head[4];
+    // mapped when the memory is short (Shturmann), read into memory when it is plenty (the head unit: 350 MB free -
+    // HU 2026-10-31, a way across Moscow took 7.8 min paging the mapped 96 MB graph in from the card)
+    Check(OffMapWanted(96 << 20, 62 << 20) && !OffMapWanted(96 << 20, 350 << 20) && OffMapWanted(100, 299) &&
+          !OffMapWanted(100, 300), "file: mapped unless three times its size is free", NULL);
+    g_offFreeMem = 1 << 20;
+    bool read = OffOpen(&f, path, head, 4) && !f.view && OffPart(&f, 4, 8) && f.nparts == 1;
+    OffClose(&f);
+    Check(read, "file: memory plenty - not mapped, its parts read", NULL);
+    g_offFreeMem = 1;
     Check(OffOpen(&f, path, head, 4) && f.view && !memcmp(head, "PK\x03\x04", 4), "file: opened, mapped", NULL);
     const char* a = (const char*)OffPart(&f, 4, 8);
     Check(a == (const char*)f.view + 4 && f.nparts == 0, "file: an aligned part - the view itself", NULL);

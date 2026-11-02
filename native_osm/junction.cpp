@@ -7,7 +7,8 @@
 
 static const char* const kComplex[] = { "fork", "off ramp", "on ramp", "roundabout", "rotary", "roundabout turn",
                                         "exit roundabout", "exit rotary", "merge" };
-static const int kShownM = 300;   // the card from this far before the maneuver (as the big turn card)
+static const int kShownM = 300;   // the card from this far before the maneuver at least (as the big turn card)
+static const double kLeadS = 15;  // ... and this many seconds of the way (HU 2026-10-31: at 110 km/h it came ~50 m before)
 static const int kCloseZ = 17;    // the zoom before it
 
 bool JunctionComplex(const char* osrmType)
@@ -18,28 +19,39 @@ bool JunctionComplex(const char* osrmType)
     return false;
 }
 
-bool JunctionShown(bool on, bool complex, int nextM, bool off)
+int JunctionReachM(double kmh)
 {
-    return on && complex && !off && nextM <= kShownM;
+    int m = (int)(kmh / 3.6 * kLeadS);
+    return m > kShownM ? m : kShownM;
+}
+
+bool JunctionShown(bool on, bool complex, int nextM, bool off, int reachM)
+{
+    return on && complex && !off && nextM <= reachM;
 }
 
 // The zoom before a complex maneuver (the user 2026-10-28): z17 - the third person's view at its lowest camera -
-// within the card's 300 m, heading-up; else the user's own (closer already: kept)
-int JunctionZoom(int userZ, bool heading, bool complex, int nextM, bool off)
+// within the card's reach, heading-up; else the user's own (closer already: kept)
+int JunctionZoom(int userZ, bool heading, bool complex, int nextM, bool off, int reachM)
 {
-    return JunctionShown(heading, complex, nextM, off) && userZ < kCloseZ ? kCloseZ : userZ;
+    return JunctionShown(heading, complex, nextM, off, reachM) && userZ < kCloseZ ? kCloseZ : userZ;
 }
 
-// The wheel's buttons held, from VestaHome (kind: 1 short, 2 long, 3 repeat): up / down (8 / 9; the MCU's own held
-// codes 0x0A / 0x0B - HU 2026-10-29: up / down came as 8 / 9, the zoom waited for 0x12 / 0x14 only) and phone /
-// hang up (0x12 / 0x14) zoom in / out; short presses stay VestaHome's (tracks, the phone)
+// The wheel's buttons, from VestaHome while the map is in front (kind: 1 short, 2 long, 3 repeat): up / down - 9 / 8
+// (HU 2026-10-31: the tracks they stepped were swapped) and phone / hang up (0x12 / 0x14) held, the MCU's own held up /
+// down 0x0A / 0x0B - zoom in / out; short presses stay VestaHome's (the music, the phone - the user 2026-11-02)
 int WheelZoom(int code, int kind)
 {
     if (code == 0x0A || code == 0x0B)
         return code == 0x0A ? 1 : -1;
     if (kind < 2)
         return 0;
-    return code == 8 || code == 0x12 ? 1 : code == 9 || code == 0x14 ? -1 : 0;
+    return code == 9 || code == 0x12 ? 1 : code == 8 || code == 0x14 ? -1 : 0;
+}
+
+bool WheelNow(int code, int st)
+{
+    return code == 8 || code == 9 ? st == 1 : st == 0;
 }
 
 // Metres east and north from point a to b (a small piece: the plane at a's latitude)

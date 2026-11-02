@@ -11,9 +11,29 @@ bool OffRead(HANDLE f, DWORD off, void* to, DWORD bytes)
 
 // The file mapped read-only (the user 2026-10-29: on a Shturmann NSL 500 no route and no search in a region -
 // Moscow's oblast's graph is 99 MB, 77 MB of it were read into memory; mapped, its pages come as they are read and
-// go when memory is short). Not mapped: its parts are read into memory as before.
+// go when memory is short). Not mapped: its parts are read into memory as before - when the memory is plenty (HU
+// 2026-10-31: 350 MB free, yet a way across Moscow took 7.8 min paging the mapped graph in from the card).
+DWORD g_offFreeMem;
+
+bool OffMapWanted(DWORD fileBytes, DWORD freeBytes)
+{
+    return fileBytes > freeBytes / 3;
+}
+
+static DWORD FreeMem()
+{
+    if (g_offFreeMem)
+        return g_offFreeMem;
+    MEMORYSTATUS m;
+    m.dwLength = sizeof(m);
+    GlobalMemoryStatus(&m);
+    return m.dwAvailPhys;
+}
+
 static void Map(OffFile* f, const wchar_t* path)
 {
+    if (!OffMapWanted(GetFileSize(f->file, NULL), FreeMem()))
+        return;
 #ifdef UNDER_CE
     f->mfile = CreateFileForMapping(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
                                     NULL);
