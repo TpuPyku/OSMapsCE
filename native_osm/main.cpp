@@ -194,7 +194,7 @@ enum { kKbY = 66, kKbRowH = 81, kHitY = 62, kHitH = 58 };
 // Slots: 0 from, 1..3 the stops, 4 to.
 enum { P_BACK = 1, P_ROW = 10, P_DEL = 20, P_ADDVIA = 30, P_GO, P_CH_GPS = 40, P_CH_SEARCH, P_CH_MAP, P_CH_CANCEL,
        P_PICK_CANCEL = 50, M_VIA = 60, M_NEW, M_FAV, M_CANCEL, M_STOP_OUT, M_STOP_UP, M_STOP_CANCEL, P_TRIP_X = 80,
-       P_TRIP };
+       P_TRIP, F_GO = 90, F_EDIT, F_CANCEL, E_ICON = 100, E_NAME = E_ICON + VFAV_ICONS, E_DEL, E_DONE };
 static bool       s_plan;
 static int        s_planChoose = -1;   // the slot whose choices are open
 static int        s_planPressed = -1;
@@ -211,6 +211,14 @@ static VFavs      s_favs;
 static bool       s_favName;           // the keyboard names a new favourite (the point s_lpLon / s_lpLat)
 static bool       s_showFavs;          // the list shows the favourites (else the search's hits)
 static int        s_favDel = -1;       // the favourite asked "ТОЧНО?" before it goes
+// Their marks on the map (the user 2026-11-02): a tap on one - its menu (the route there, change, cancel); "change" -
+// its card: the sign, the name (the keyboard), deleted ("ТОЧНО?").
+static int        s_favMenu = -1;      // the mark tapped: its menu
+static int        s_favEdit = -1;      // the favourite changed: its card
+static int        s_favRename = -1;    // the keyboard renames this one (its card again after)
+static bool       s_favSure;           // the card's "delete" asked "ТОЧНО?"
+static POINT      s_favPt[VFAV_MAX];   // the marks where drawn last (a tap finds them there)
+static bool       s_favOn[VFAV_MAX];
 static double     s_toLon, s_toLat;    // a route asked for from outside (VestaHome's widget), till a fix or 15 s
 static wchar_t    s_toName[80];
 static DWORD      s_toTick;            // 0: none asked
@@ -2584,6 +2592,86 @@ static void DrawRoute(HDC dc, double cx, double cy, double vx, double vy, double
     }
 }
 
+// The favourites' signs (vfavs.h VFAV_*): a shape and a hole in it (the background's colour), in tenths of the radius.
+struct FavGlyph { signed char p[10][2]; int n; signed char h[4][2]; int nh; };
+static const FavGlyph kFavGlyph[VFAV_ICONS] = {
+    { { {0,-10}, {2,-3}, {10,-3}, {4,1}, {6,8}, {0,4}, {-6,8}, {-4,1}, {-10,-3}, {-2,-3} }, 10, { {0,0} }, 0 },  // star
+    { { {0,-10}, {10,-1}, {6,-1}, {6,9}, {-6,9}, {-6,-1}, {-10,-1} }, 7, { {-2,3}, {2,3}, {2,9}, {-2,9} }, 4 },   // home
+    { { {-10,-4}, {-5,-4}, {-5,-9}, {5,-9}, {5,-4}, {10,-4}, {10,8}, {-10,8} }, 8,                               // work
+      { {-3,-7}, {3,-7}, {3,-4}, {-3,-4} }, 4 },
+    { { {-7,10}, {-7,-10}, {9,-5}, {-4,0}, {-4,10} }, 5, { {0,0} }, 0 },                                        // flag
+    { { {0,9}, {-9,0}, {-10,-4}, {-8,-8}, {-4,-9}, {0,-6}, {4,-9}, {8,-8}, {10,-4}, {9,0} }, 10, { {0,0} }, 0 }, // heart
+    { { {-8,10}, {-8,-9}, {4,-9}, {4,-3}, {9,0}, {9,7}, {7,7}, {7,1}, {4,-1}, {4,10} }, 10,                     // fuel
+      { {-5,-6}, {1,-6}, {1,-2}, {-5,-2} }, 4 },
+};
+
+static void FavPoly(HDC dc, const signed char (*pt)[2], int n, int x, int y, int r, COLORREF c)
+{
+    POINT q[10];
+    for (int i = 0; i < n; i++) {
+        q[i].x = x + pt[i][0] * r / 10;
+        q[i].y = y + pt[i][1] * r / 10;
+    }
+    HBRUSH b = CreateSolidBrush(c);
+    HGDIOBJ ob = SelectObject(dc, b), op = SelectObject(dc, GetStockObject(NULL_PEN));
+    Polygon(dc, q, n);
+    SelectObject(dc, op);
+    SelectObject(dc, ob);
+    DeleteObject(b);
+}
+
+static void FavSign(HDC dc, int icon, int x, int y, int r, COLORREF fg, COLORREF bg)
+{
+    const FavGlyph& g = kFavGlyph[icon >= 0 && icon < VFAV_ICONS ? icon : VFAV_STAR];
+    FavPoly(dc, g.p, g.n, x, y, r, fg);
+    if (g.nh)
+        FavPoly(dc, g.h, g.nh, x, y, r, bg);
+}
+
+// The favourites' marks: a dark disc in a white ring, the sign in the accent, the name under it on a card.
+static void DrawFavMarks(HDC dc, double cx, double cy, double vx, double vy, double angle)
+{
+    for (int i = 0; i < s_favs.n; i++) {
+        double gx, gy, sx, sy;
+        GeoToWorld(s_favs.f[i].lon, s_favs.f[i].lat, g_cfg.z, &gx, &gy);
+        s_favOn[i] = ScreenOf(gx, gy, vx, vy, cx, cy, angle, &sx, &sy);
+        if (!s_favOn[i])
+            continue;
+        int x = Round(sx), y = Round(sy);
+        s_favPt[i].x = x;
+        s_favPt[i].y = y;
+        HPEN pen = CreatePen(PS_SOLID, 2, RGB(255, 255, 255));
+        HBRUSH br = CreateSolidBrush(kPanel2);
+        HGDIOBJ op = SelectObject(dc, pen), ob = SelectObject(dc, br);
+        Ellipse(dc, x - 16, y - 16, x + 17, y + 17);
+        SelectObject(dc, ob);
+        SelectObject(dc, op);
+        DeleteObject(br);
+        DeleteObject(pen);
+        FavSign(dc, s_favs.f[i].icon, x, y, 10, kOrange, kPanel2);
+        SIZE sz;
+        HGDIOBJ of = SelectObject(dc, s_fontSmall);
+        GetTextExtentPoint32(dc, s_favs.f[i].name, (int)wcslen(s_favs.f[i].name), &sz);
+        SelectObject(dc, of);
+        RECT t = { x - sz.cx / 2 - 8, y + 19, x + sz.cx / 2 + 8, y + 21 + sz.cy };
+        Card(dc, t, 8);
+        Text(dc, s_fontSmall, kText, t.left, t.top, t.right, t.bottom, DT_CENTER, s_favs.f[i].name);
+    }
+}
+
+static int FavAt(int x, int y)   // the mark under the finger (the nearest within 26 px), -1: none
+{
+    int best = -1, bd = 26 * 26;
+    for (int i = 0; i < s_favs.n; i++) {
+        int dx = s_favPt[i].x - x, dy = s_favPt[i].y - y;
+        if (s_favOn[i] && dx * dx + dy * dy < bd) {
+            bd = dx * dx + dy * dy;
+            best = i;
+        }
+    }
+    return best;
+}
+
 static void DrawMap(HDC dc)
 {
     RECT mr = { g_cfg.mapX, g_cfg.mapY, g_cfg.mapX + g_cfg.mapW, g_cfg.mapY + g_cfg.mapH };
@@ -2668,6 +2756,7 @@ static void DrawMap(HDC dc)
     }
     DrawAttribution(dc, mr);
     DrawRoute(dc, cx, cy, vx, vy, angle);
+    DrawFavMarks(dc, cx, cy, vx, vy, angle);
     DrawGpsMarker(dc, cx, cy, vx, vy, angle);
 
     SelectClipRgn(dc, NULL);
@@ -3475,6 +3564,17 @@ static int ListCount()   // the list's rows: the favourites (8 shown) or the sea
     return s_showFavs ? (s_favs.n < 8 ? s_favs.n : 8) : SearchCount();
 }
 
+static bool FavHit(int i, SearchHit* h)   // a favourite as a search's hit
+{
+    if (i < 0 || i >= s_favs.n)
+        return false;
+    wcscpy(h->name, s_favs.f[i].name);
+    wcscpy(h->sub, L"Избранное");
+    h->lon = s_favs.f[i].lon;
+    h->lat = s_favs.f[i].lat;
+    return true;
+}
+
 static bool ListHit(int i, SearchHit* h)   // a row of the list, as a search's hit
 {
     if (!s_showFavs) {
@@ -3483,13 +3583,7 @@ static bool ListHit(int i, SearchHit* h)   // a row of the list, as a search's h
             *h = *s;
         return s != NULL;
     }
-    if (i < 0 || i >= s_favs.n)
-        return false;
-    wcscpy(h->name, s_favs.f[i].name);
-    wcscpy(h->sub, L"Избранное");
-    h->lon = s_favs.f[i].lon;
-    h->lat = s_favs.f[i].lat;
-    return true;
+    return FavHit(i, h);
 }
 
 static void FavsSave()
@@ -3568,11 +3662,21 @@ static void RouteToHit(const SearchHit* h)
     }
 }
 
-static void FavNamed()   // the keyboard's name for the new favourite: kept
+static void FavNamed()   // the keyboard's name for the new favourite (or the card's one): kept
 {
-    if (s_kb.text[0] && VFavsAdd(&s_favs, s_kb.text, s_lpLat, s_lpLon) >= 0) {
+    char u[VFAV_NAME * 3];
+    WideCharToMultiByte(CP_UTF8, 0, s_kb.text, -1, u, sizeof(u), NULL, NULL);
+    if (s_favRename >= 0) {
+        int i = VFavsRename(&s_favs, s_favRename, s_kb.text);
+        s_favEdit = i >= 0 ? i : s_favRename;   // (its card again)
+        s_favRename = -1;
+        if (i >= 0) {
+            FavsSave();
+            Log("favs: renamed \"%s\"", u);
+        }
+    } else if (s_kb.text[0] && VFavsAdd(&s_favs, s_kb.text, s_lpLat, s_lpLon) >= 0) {
         FavsSave();
-        Log("favs: \"%S\" %.5f, %.5f", s_kb.text, s_lpLat, s_lpLon);
+        Log("favs: \"%s\" %.5f, %.5f", u, s_lpLat, s_lpLon);
     }
     s_favName = false;
     s_search = false;
@@ -3584,7 +3688,9 @@ static void OnSearchKey(int id)
     int n = (int)wcslen(s_kb.text), c = s_kb.cur < n ? s_kb.cur : n;
     if (id != K_FAVDEL + s_favDel)
         s_favDel = -1;
-    if (id == K_BACK && s_favName) {   // no name: no favourite
+    if (id == K_BACK && s_favName) {   // no name: no favourite (renaming: the name kept, its card again)
+        s_favEdit = s_favRename;
+        s_favRename = -1;
         s_favName = false;
         s_search = false;
         VKeysOpen(&s_kb, L"", kQueryCap);
@@ -4074,6 +4180,37 @@ static bool MenuRect(int id, RECT* r)
     return true;
 }
 
+// The favourite's card: the signs' row; the name, delete; done.
+static void FavCardRect(int id, RECT* r)
+{
+    if (id < E_NAME)
+        SetRect(r, 188 + (id - E_ICON) * 72, 196, 188 + (id - E_ICON) * 72 + 64, 252);
+    else if (id == E_DONE)
+        SetRect(r, 220, 330, 580, 380);
+    else
+        SetRect(r, id == E_NAME ? 220 : 405, 268, id == E_NAME ? 395 : 580, 318);
+}
+
+// The mark's menu (three rows) and the favourite's card.
+static bool FavRect(int id, RECT* r)
+{
+    bool menu = s_favMenu >= 0 && id >= F_GO && id <= F_CANCEL, card = s_favEdit >= 0 && id >= E_ICON && id <= E_DONE;
+    if (menu)
+        SetRect(r, 220, 242 + (id - F_GO) * 58, 580, 242 + (id - F_GO) * 58 + 50);
+    else if (card)
+        FavCardRect(id, r);
+    return menu || card;
+}
+
+static int HitIn(int lo, int hi, bool (*rect)(int, RECT*), int x, int y)   // the control lo..hi under the finger
+{
+    RECT r;
+    for (int id = lo; id <= hi; id++)
+        if (rect(id, &r) && x >= r.left && x < r.right && y >= r.top && y < r.bottom)
+            return id;
+    return -1;
+}
+
 static bool TripShown();
 
 static int HitOverMap(int x, int y)
@@ -4086,12 +4223,48 @@ static int HitOverMap(int x, int y)
             return 70 + k;
     if (PickRect(&r) && x >= r.left && x < r.right && y >= r.top && y < r.bottom)
         return P_PICK_CANCEL;
-    for (int id = M_VIA; id <= M_STOP_CANCEL; id++)
-        if (MenuRect(id, &r) && x >= r.left && x < r.right && y >= r.top && y < r.bottom)
-            return id;
+    int id = HitIn(M_VIA, M_STOP_CANCEL, MenuRect, x, y);
+    if (id < 0)
+        id = HitIn(F_GO, E_DONE, FavRect, x, y);
+    if (id >= 0)
+        return id;
     if (TripShown() && x >= 196 && x < 604 && y >= 400 && y < 466)   // the trip's card: the route's editor
         return P_TRIP;
     return -1;
+}
+
+static void OnFavMenu(int id)   // the mark's menu
+{
+    SearchHit h;
+    if (id == F_GO && FavHit(s_favMenu, &h))
+        RouteToHit(&h);
+    else if (id == F_EDIT)
+        s_favEdit = s_favMenu;
+    s_favMenu = -1;
+}
+
+static void OnFavCtl(int id)   // the mark's menu, the favourite's card
+{
+    if (id <= F_CANCEL)
+        OnFavMenu(id);
+    else if (id < E_NAME) {
+        s_favs.f[s_favEdit].icon = id - E_ICON;
+        FavsSave();
+    } else if (id == E_NAME) {   // the keyboard, its name in it
+        s_favRename = s_favEdit;
+        s_favEdit = -1;
+        s_favName = true;
+        s_showHits = s_showFavs = false;
+        VKeysOpen(&s_kb, s_favs.f[s_favRename].name, VFAV_NAME - 1);
+        s_search = true;
+    } else if (id == E_DEL && s_favSure) {
+        VFavsDel(&s_favs, s_favEdit);
+        FavsSave();
+        s_favEdit = -1;
+    } else if (id == E_DONE) {
+        s_favEdit = -1;
+    }
+    s_favSure = id == E_DEL && !s_favSure;
 }
 
 static void OnOverMap(int id)
@@ -4138,8 +4311,59 @@ static void OnOverMap(int id)
         s_plan = true;
         s_planChoose = -1;
         s_planMsg = NULL;
+    } else if (id >= F_GO) {
+        OnFavCtl(id);
     }
     InvalidateRect(s_wnd, NULL, FALSE);
+}
+
+static void DrawFavMenu(HDC dc)
+{
+    RECT box = { 204, 188, 596, 242 + 3 * 58 + 4 }, r;
+    Card(dc, box, 20);
+    FavSign(dc, s_favs.f[s_favMenu].icon, 236, 216, 12, kOrange, kInk);
+    Text(dc, s_fontLabel, kText, 258, box.top + 4, box.right - 16, 242, DT_LEFT, s_favs.f[s_favMenu].name);
+    static const wchar_t* kMenu[3] = { L"МАРШРУТ СЮДА", L"ИЗМЕНИТЬ", L"ОТМЕНА" };
+    for (int id = F_GO; id <= F_CANCEL; id++) {
+        FavRect(id, &r);
+        DrawCtl(dc, r, s_planPressed == id, s_fontLabel, kMenu[id - F_GO]);
+    }
+}
+
+static void DrawFavSigns(HDC dc)   // the card's row of signs: its own in the accent's frame
+{
+    RECT r;
+    for (int k = 0; k < VFAV_ICONS; k++) {
+        FavRect(E_ICON + k, &r);
+        bool on = s_favs.f[s_favEdit].icon == k, down = s_planPressed == E_ICON + k;
+        Tile(dc, r, down ? kOrange : kPanel2, on || down ? kOrange : kPanel2, 16);
+        FavSign(dc, k, (r.left + r.right) / 2, (r.top + r.bottom) / 2, 16, down ? kInk : on ? kOrange : kText,
+                down ? kOrange : kPanel2);
+    }
+}
+
+static void DrawFavCards(HDC dc)
+{
+    RECT r;
+    if (s_favMenu >= 0)
+        DrawFavMenu(dc);
+    if (s_favEdit < 0)
+        return;
+    RECT box = { 172, 130, 628, 396 };
+    Card(dc, box, 20);
+    Text(dc, s_fontLabel, kText, box.left + 16, box.top + 6, box.right - 16, 186, DT_CENTER, s_favs.f[s_favEdit].name);
+    DrawFavSigns(dc);
+    FavRect(E_NAME, &r);
+    DrawCtl(dc, r, s_planPressed == E_NAME, s_fontLabel, L"ИМЯ");
+    FavRect(E_DEL, &r);
+    if (s_favSure) {
+        Tile(dc, r, kTextErr, kTextErr, 20);
+        Text(dc, s_fontLabel, kInk, r.left, r.top, r.right, r.bottom, DT_CENTER, L"ТОЧНО?");
+    } else {
+        DrawCtl(dc, r, s_planPressed == E_DEL, s_fontLabel, L"УДАЛИТЬ");
+    }
+    FavRect(E_DONE, &r);
+    DrawCtl(dc, r, s_planPressed == E_DONE, s_fontLabel, L"ГОТОВО");
 }
 
 static void DrawOverMap(HDC dc)
@@ -4169,6 +4393,7 @@ static void DrawOverMap(HDC dc)
             if (MenuRect(id, &r))
                 DrawCtl(dc, r, s_planPressed == id, s_fontLabel, kStop[id - M_STOP_OUT]);
     }
+    DrawFavCards(dc);
     if (s_lpMenu) {
         RECT box = { 204, 230, 596, 242 + (s_lpRoute ? 4 : 3) * 58 + 4 };
         Card(dc, box, 20);
@@ -4896,9 +5121,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             s_planPressed = HitPlan(x, y);
         } else if ((s_planPressed = HitOverMap(x, y)) >= 0) {
             // the picker's "cancel", the long press menu
-        } else if (s_lpMenu || s_lpStop >= 0) {
+        } else if (s_lpMenu || s_lpStop >= 0 || s_favMenu >= 0 || s_favEdit >= 0) {
             s_lpMenu = false;   // a tap beside the menu closes it
             s_lpStop = -1;
+            s_favMenu = s_favEdit = -1;
+            s_favSure = false;
         } else if (InMap(x, y)) {
             SetTimer(hwnd, TIMER_LONG, kLongMs, NULL);
             s_longDone = false;
@@ -4996,6 +5223,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 PickAt(x, y);
             } else if (RouteAlts() >= 2) {
                 RouteAltsDone();
+            } else if ((s_favMenu = FavAt(x, y)) >= 0) {   // a favourite's mark: its menu
             } else {   // a tap on the map raises (and refreshes the traffic) / lowers the bottom bar
                 bool up = !DockUp();
                 DockShow(up);
