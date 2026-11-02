@@ -354,7 +354,7 @@ bool HierAllows(int tier, int nearM, int hier)
 {
     if (!hier || nearM < kHierNearM)
         return true;
-    return hier == 2 && nearM >= kHierMidM ? tier == 1 : tier <= 1;
+    return hier == 2 && nearM >= kHierMidM ? tier == 0 : tier <= 1;
 }
 
 static int NearM(DWORD n)   // metres to the nearer end
