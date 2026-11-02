@@ -2264,13 +2264,21 @@ static void EstimateLine(const double* ll, int np, double timeS, AltEst& e)
     e.seenPct = total > 0 ? (int)(seen * 100 / total) : 0;
 }
 
-static bool CardRect(int k, RECT* r)
+// The route's alternatives (design v3 preview, the user 2026-11-02): a panel at the left - from and to, a card for
+// each (the one on: the accent's border), "ПОЕХАЛИ" under them; the map fitted to the routes beside it.
+enum { kAltGo = 74, kAltPanel = 75 };   // (HitOverMap's ids: the cards 70 + k)
+
+static bool CardRect(int k, RECT* r)   // k: an alternative, kAltGo - "ПОЕХАЛИ", kAltPanel - the panel itself
 {
-    int n = RouteAlts();
-    if (n < 2 || k < 0 || k >= n)
+    int n = RouteAlts(), h = n > 2 ? 78 : 96;
+    if (n < 2 || k < 0 || (k >= n && k < kAltGo))
         return false;
-    int w = (s_cw - 32 - (n - 1) * 8) / n;
-    SetRect(r, 16 + k * (w + 8), 392, 16 + k * (w + 8) + w, s_ch - 8);
+    if (k == kAltPanel)
+        SetRect(r, 16, 56, 336, 466);
+    else if (k == kAltGo)
+        SetRect(r, 28, 392, 324, 454);
+    else
+        SetRect(r, 28, 154 + k * (h + 8), 324, 154 + k * (h + 8) + h);
     return true;
 }
 
@@ -2284,61 +2292,135 @@ static void FmtMin(wchar_t* s, int cap, int sec)
     s[cap - 1] = 0;
 }
 
+static void DrawEnds(HDC dc)   // the panel's top: from (А) and to (Б)
+{
+    const RoutePlan* p = RoutePlanGet();
+    const wchar_t* from = p->from.kind == PL_GPS ? L"Моё местоположение" : p->from.name;
+    RouteMarker(dc, 42, 86, RGB(40, 150, 70), L"А");
+    RouteMarker(dc, 42, 128, RGB(30, 50, 110), L"Б");
+    Text(dc, s_fontLabel, kText, 66, 70, 324, 102, DT_LEFT, from);
+    Text(dc, s_fontLabel, kText, 66, 112, 324, 144, DT_LEFT, p->to.name);
+    HBRUSH b = CreateSolidBrush(kTextDim);
+    RECT l = { 41, 100, 43, 114 };
+    FillRect(dc, &l, b);
+    DeleteObject(b);
+}
+
+static bool s_altFit;      // the map fitted to the alternatives (the follow back once chosen)
+static int  s_altFollow;
+
+static void AltFit()
+{
+    if (RouteAlts() < 2) {
+        if (s_altFit) {
+            g_cfg.follow = s_altFollow;
+            s_altFit = false;
+            UserChanged();
+        }
+        return;
+    }
+    if (s_altFit)
+        return;
+    double xy[64], cx, cy;
+    int n = 0;
+    for (int k = 0; k < RouteAlts(); k++) {
+        const double* ll;
+        int np;
+        double t, d;
+        RouteAltGet(k, &ll, &np, &t, &d);
+        for (int i = 0; i < 8 && np > 1; i++)   // (eight points of each: enough for the box)
+            GeoToWorld(ll[i * (np - 1) / 7 * 2], ll[i * (np - 1) / 7 * 2 + 1], 0, &xy[n * 2], &xy[n * 2 + 1]), n++;
+    }
+    int z = FitZoom(xy, n, 380, 330, 5, 17, &cx, &cy);
+    if (z < 0)
+        return;
+    s_altFollow = g_cfg.follow;
+    s_altFit = true;
+    double k = (double)(1 << z);   // (as the search's places: right of the panel)
+    g_cfg.z = z;
+    g_cfg.follow = FOLLOW_OFF;
+    WorldToGeo(cx * k - 168, cy * k - 21, z, &g_cfg.lon, &g_cfg.lat);
+    UserChanged();
+}
+
+static COLORREF AltRange(const AltEst& e, double timeS, wchar_t* line)   // the time by the traffic seen on it; its colour
+{
+    if (!g_cfg.traffic) {
+        wcscpy(line, L"пробки выключены");
+        return kTextDim;
+    }
+    if (!e.seenPct) {
+        wcscpy(line, L"пробок на пути не видно");
+        return kTextDim;
+    }
+    wchar_t a[24], b[24];
+    FmtMin(a, 24, e.minS);
+    FmtMin(b, 24, e.maxS);
+    if (e.maxS - e.minS < 120)
+        _snwprintf(line, 96, L"с пробками ~%s", a);
+    else if (e.maxS < 3600)
+        _snwprintf(line, 96, L"с пробками %d–%d мин", (e.minS + 59) / 60, (e.maxS + 59) / 60);
+    else
+        _snwprintf(line, 96, L"с пробками %s – %s", a, b);
+    line[95] = 0;
+    return e.jamM > 300 ? kTextErr : e.maxS > timeS * 1.3 ? kOrange : RGB(120, 220, 120);
+}
+
+static bool AltJam(const AltEst& e, wchar_t* line)   // the worst jam on it (none seen: false)
+{
+    if (!g_cfg.traffic || !e.seenPct)
+        return false;
+    wchar_t d[24];
+    FmtDist(d, 24, e.jamM);
+    if (e.jamM > 300)
+        _snwprintf(line, 96, e.seenPct < 90 ? L"пробка %s · видно %d%% пути" : L"пробка %s", d, e.seenPct);
+    else
+        _snwprintf(line, 96, e.seenPct < 90 ? L"без сильных пробок · видно %d%% пути" : L"без сильных пробок",
+                   e.seenPct);
+    line[95] = 0;
+    return true;
+}
+
+static void DrawAltCard(HDC dc, int k, RECT r, DWORD sig)   // an alternative: its time, length, the traffic on it
+{
+    Estimate(k, sig);
+    const AltEst& e = s_est[k];
+    const double* ll;
+    int np;
+    double timeS, distM;
+    RouteAltGet(k, &ll, &np, &timeS, &distM);
+    bool cur = k == RouteAltCur(), down = s_planPressed == 70 + k;
+    Tile(dc, r, down ? kOrange : kPanel2, cur || down ? kOrange : kPanel2, 16);
+    wchar_t t[48], d[24], line[96];
+    FmtMin(t, 48, (int)timeS);
+    FmtDist(d, 24, (int)distM);
+    int top = r.top + (r.bottom - r.top - 72) / 2;   // (three lines in the middle)
+    HGDIOBJ of = SelectObject(dc, s_fontSpeed);
+    SIZE sz;
+    GetTextExtentPoint32(dc, t, (int)wcslen(t), &sz);
+    SelectObject(dc, of);
+    Text(dc, s_fontSpeed, down ? kInk : kText, r.left + 14, top, r.right - 8, top + 32, DT_LEFT, t);
+    Text(dc, s_fontSmall, down ? kInk : kTextDim, r.left + 22 + sz.cx, top + 4, r.right - 8, top + 32, DT_LEFT, d);
+    COLORREF c = AltRange(e, timeS, line);
+    Text(dc, s_fontLabel, down ? kInk : c, r.left + 14, top + 34, r.right - 8, top + 56, DT_LEFT, line);
+    if (AltJam(e, line))
+        Text(dc, s_fontSmall, down ? kInk : kTextDim, r.left + 14, top + 56, r.right - 8, top + 74, DT_LEFT, line);
+}
+
 static void DrawCards(HDC dc)
 {
     DWORD sig = Mix(Mix(Mix(s_ringStamp, g_cfg.z), g_cfg.trafficSrc), g_cfg.traffic) | 1;
     RECT r;
-    for (int k = 0; CardRect(k, &r); k++) {
-        Estimate(k, sig);
-        const AltEst& e = s_est[k];
-        const double* ll;
-        int np;
-        double timeS, distM;
-        RouteAltGet(k, &ll, &np, &timeS, &distM);
-        bool cur = k == RouteAltCur(), down = s_planPressed == 70 + k;
-        Card(dc, r, 14);
-        if (cur)   // the chosen one: the accent's border
-            Outline(dc, r, kOrange, 14);
-        if (down)
-            Tile(dc, r, kOrange, kOrange, 28);
-        wchar_t t[48], d[24], line[96];
-        FmtMin(t, 48, (int)timeS);
-        FmtDist(d, 24, (int)distM);
-        _snwprintf(line, 96, L"%d · %s · %s", k + 1, t, d);
-        line[95] = 0;
-        Text(dc, s_fontLabel, down ? kInk : kText, r.left + 12, r.top + 4, r.right - 8, r.top + 28, DT_LEFT, line);
-        // the range by the traffic seen on it
-        COLORREF c = kTextDim;
-        if (!g_cfg.traffic) {
-            wcscpy(line, L"пробки выключены");
-        } else if (!e.seenPct) {
-            wcscpy(line, L"пробок на пути не видно");
-        } else {
-            wchar_t a[24], b[24];
-            FmtMin(a, 24, e.minS);
-            FmtMin(b, 24, e.maxS);
-            if (e.maxS - e.minS < 120)
-                _snwprintf(line, 96, L"с пробками ~%s", a);
-            else if (e.maxS < 3600)
-                _snwprintf(line, 96, L"с пробками %d–%d мин", (e.minS + 59) / 60, (e.maxS + 59) / 60);
-            else
-                _snwprintf(line, 96, L"с пробками %s – %s", a, b);
-            c = e.jamM > 300 ? kTextErr : e.maxS > timeS * 1.3 ? kOrange : RGB(120, 220, 120);
-        }
-        line[95] = 0;
-        Text(dc, s_fontSmall, down ? kInk : c, r.left + 12, r.top + 28, r.right - 8, r.top + 48, DT_LEFT, line);
-        if (g_cfg.traffic && e.seenPct) {
-            FmtDist(d, 24, e.jamM);
-            if (e.jamM > 300)
-                _snwprintf(line, 96, e.seenPct < 90 ? L"пробка %s · видно %d%% пути" : L"пробка %s", d, e.seenPct);
-            else
-                _snwprintf(line, 96, e.seenPct < 90 ? L"без сильных пробок · видно %d%% пути"
-                                                    : L"без сильных пробок", e.seenPct);
-            line[95] = 0;
-            Text(dc, s_fontSmall, down ? kInk : kTextDim, r.left + 12, r.top + 48, r.right - 8, r.bottom - 4,
-                 DT_LEFT, line);
-        }
-    }
+    if (!CardRect(kAltPanel, &r))
+        return;
+    Card(dc, r, 20);
+    DrawEnds(dc);
+    CardRect(kAltGo, &r);
+    bool down = s_planPressed == 70 + kAltGo;
+    Tile(dc, r, down ? kPanel2 : kOrange, down ? kPanel2 : kOrange, 24);
+    Text(dc, s_fontSpeed, down ? kOrange : kInk, r.left, r.top, r.right, r.bottom, DT_CENTER, L"ПОЕХАЛИ");
+    for (int k = 0; CardRect(k, &r); k++)
+        DrawAltCard(dc, k, r, sig);
 }
 
 // The alternatives' lines under the chosen one: grey, a number in the middle.
@@ -2665,13 +2747,16 @@ static void FavSign(HDC dc, int icon, int x, int y, int r, COLORREF fg, COLORREF
         FavPoly(dc, g.h[i], 4, x, y, r, bg);
 }
 
-// The favourites' marks: a dark disc in a white ring, the sign in the accent, the name under it on a card.
+// The favourites' marks: a dark disc in a white ring, the sign in the accent, the name under it on a card (from
+// kFavNamesZ: further out they pile up); none further out than kFavMarksZ.
+enum { kFavMarksZ = 12, kFavNamesZ = 14 };
+
 static void DrawFavMarks(HDC dc, double cx, double cy, double vx, double vy, double angle)
 {
     for (int i = 0; i < s_favs.n; i++) {
         double gx, gy, sx, sy;
         GeoToWorld(s_favs.f[i].lon, s_favs.f[i].lat, g_cfg.z, &gx, &gy);
-        s_favOn[i] = ScreenOf(gx, gy, vx, vy, cx, cy, angle, &sx, &sy) &&
+        s_favOn[i] = g_cfg.z >= kFavMarksZ && ScreenOf(gx, gy, vx, vy, cx, cy, angle, &sx, &sy) &&
                      (!s_dockShown || sy + 36 <= kDockY + s_dockOff);   // (not under the bottom bar)
         if (!s_favOn[i])
             continue;
@@ -2687,6 +2772,8 @@ static void DrawFavMarks(HDC dc, double cx, double cy, double vx, double vy, dou
         DeleteObject(br);
         DeleteObject(pen);
         FavSign(dc, s_favs.f[i].icon, x, y, 10, kOrange, kPanel2);
+        if (g_cfg.z < kFavNamesZ)
+            continue;
         SIZE sz;
         HGDIOBJ of = SelectObject(dc, s_fontSmall);
         GetTextExtentPoint32(dc, s_favs.f[i].name, (int)wcslen(s_favs.f[i].name), &sz);
@@ -4502,8 +4589,9 @@ static int HitOverMap(int x, int y)
     RECT r;
     if (TripShown() && x >= 548 && x < 596 && y >= 409 && y < 457)
         return P_TRIP_X;
-    for (int k = 0; CardRect(k, &r); k++)
-        if (x >= r.left && x < r.right && y >= r.top && y < r.bottom)
+    POINT pt = { x, y };
+    for (int k = 0; k <= kAltPanel; k++)
+        if (CardRect(k, &r) && PtInRect(&r, pt))
             return 70 + k;
     if (PickRect(&r) && x >= r.left && x < r.right && y >= r.top && y < r.bottom)
         return P_PICK_CANCEL;
@@ -4571,6 +4659,8 @@ static void OnOverMap(int id)
         Log("ui: route off");
     } else if (id >= 70 && id < 73) {   // an alternative card: that route on
         RouteAltChoose(id - 70);
+    } else if (id == 70 + kAltGo) {   // "ПОЕХАЛИ": the one on it is
+        RouteAltsDone();
     } else if (id == P_PICK_CANCEL) {
         s_pickSlot = -1;
         s_plan = true;
@@ -4990,8 +5080,9 @@ static void Paint(HDC hdc)
         DrawPlan(dc);
     } else {
         DrawStatus(dc);
-        if (s_pickSlot < 0)
+        if (s_pickSlot < 0 && RouteAlts() < 2)   // (not over the alternatives' panel)
             DrawGuide(dc);
+        AltFit();
         DrawTrip(dc);
         DrawButtons(dc);
         DrawOverMap(dc);
