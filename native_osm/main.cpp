@@ -1,5 +1,6 @@
 ﻿#include "yamaps.h"
 #include "vkeys.h"     // VestaCore: the keyboard's text and cursor (VestaHome's)
+#include "vfavs.h"     // VestaCore: the favourite places (VestaHome reads them too)
 #include "vversion.h"   // VestaCore: the version "major.minor.YYMMDD" (the date: this file's build)
 static const wchar_t* const kRelease = L"1.03";   // raise by hand: minor - significant changes, major - big releases
 
@@ -179,7 +180,7 @@ static bool       s_showHits;       // the places found instead of the keyboard
 static VKeys      s_kb;
 static int        s_kbPressed = -1;
 enum { kQueryCap = 120 };   // (SearchStart: 256 bytes of UTF-8 - 120 Russian letters fit)
-enum { K_SHIFT = 100, K_LANG, K_SPACE, K_BS, K_FIND, K_BACK, K_FIELD, K_HIT = 200 };
+enum { K_SHIFT = 100, K_LANG, K_SPACE, K_BS, K_FIND, K_BACK, K_FIELD, K_HIT = 200, K_FAVDEL = 300 };
 enum { kKbY = 66, kKbRowH = 81, kHitY = 62, kHitH = 58 };
 
 // The route editor (a long press on the map, the user's design 2026-10-26): "from" (the car by default, or an
@@ -188,15 +189,27 @@ enum { kKbY = 66, kKbRowH = 81, kHitY = 62, kHitH = 58 };
 // 2026-10-29: it set a new stop instead). The trip's card tapped: the editor with the route's points.
 // Slots: 0 from, 1..3 the stops, 4 to.
 enum { P_BACK = 1, P_ROW = 10, P_DEL = 20, P_ADDVIA = 30, P_GO, P_CH_GPS = 40, P_CH_SEARCH, P_CH_MAP, P_CH_CANCEL,
-       P_PICK_CANCEL = 50, M_VIA = 60, M_NEW, M_CANCEL, M_STOP_OUT, M_STOP_UP, M_STOP_CANCEL, P_TRIP_X = 80, P_TRIP };
+       P_PICK_CANCEL = 50, M_VIA = 60, M_NEW, M_FAV, M_CANCEL, M_STOP_OUT, M_STOP_UP, M_STOP_CANCEL, P_TRIP_X = 80,
+       P_TRIP };
 static bool       s_plan;
 static int        s_planChoose = -1;   // the slot whose choices are open
 static int        s_planPressed = -1;
 static int        s_pickSlot = -1;     // the map picks a point for this slot
 static int        s_searchSlot = -1;   // the search picks a place for this slot
-static bool       s_lpMenu;            // the long press menu (a route is on)
+static bool       s_lpMenu;            // the long press menu
+static bool       s_lpRoute;           // ... with a route on ("Заехать сюда" too)
 static double     s_lpLon, s_lpLat;
 static int        s_lpStop = -1;       // the stop whose sign was held (its menu), -1: none
+// The favourite places (the user 2026-10-31: short names - Дом, Работа; VestaHome shows the first two): VestaCore
+// vfavs, favorites.txt beside the exe. Added from the long press's menu (the keyboard names it), listed in the search
+// (its key with the query empty), a tap - the route there, "x" twice - deleted.
+static VFavs      s_favs;
+static bool       s_favName;           // the keyboard names a new favourite (the point s_lpLon / s_lpLat)
+static bool       s_showFavs;          // the list shows the favourites (else the search's hits)
+static int        s_favDel = -1;       // the favourite asked "ТОЧНО?" before it goes
+static double     s_toLon, s_toLat;    // a route asked for from outside (VestaHome's widget), till a fix or 15 s
+static wchar_t    s_toName[80];
+static DWORD      s_toTick;            // 0: none asked
 enum { kStopNearPx = 40 };             // a long press this near a stop's sign is on it
 static bool       s_longDone;          // the press became a long one: its release does nothing more
 static DWORD      s_downTick;          // when the finger went down on the map
@@ -3415,6 +3428,36 @@ static void DrawTrip(HDC dc)
 enum { kFieldX = 92, kFieldR = 800 - 24 };   // the query's text on the field (from its left: VKeysLayout's x)
 
 // Where control id of the search screen is; false if it is not there now.
+static int ListCount()   // the list's rows: the favourites (8 shown) or the search's hits
+{
+    return s_showFavs ? (s_favs.n < 8 ? s_favs.n : 8) : SearchCount();
+}
+
+static bool ListHit(int i, SearchHit* h)   // a row of the list, as a search's hit
+{
+    if (!s_showFavs) {
+        const SearchHit* s = SearchGet(i);
+        if (s)
+            *h = *s;
+        return s != NULL;
+    }
+    if (i < 0 || i >= s_favs.n)
+        return false;
+    wcscpy(h->name, s_favs.f[i].name);
+    wcscpy(h->sub, L"Избранное");
+    h->lon = s_favs.f[i].lon;
+    h->lat = s_favs.f[i].lat;
+    return true;
+}
+
+static void FavsSave()
+{
+    wchar_t path[MAX_PATH];
+    PathInDir(path, L"favorites.txt");
+    if (!VFavsSave(&s_favs, path))
+        Log("favs: not saved");
+}
+
 static bool SearchRect(int id, RECT* r)
 {
     if (id == K_BACK) {
@@ -3426,10 +3469,14 @@ static bool SearchRect(int id, RECT* r)
         return true;
     }
     if (s_showHits) {
-        int i = id - K_HIT;
-        if (i < 0 || i >= SearchCount())
+        int i = id - (id >= K_FAVDEL ? K_FAVDEL : K_HIT);
+        if (id < K_HIT || i < 0 || i >= ListCount() || (id >= K_FAVDEL && !s_showFavs))
             return false;
-        SetRect(r, 16, kHitY + i * kHitH, s_cw - 16, kHitY + (i + 1) * kHitH - 4);
+        int del = s_showFavs ? 136 : 0;   // the favourite's "x" at the right
+        if (id >= K_FAVDEL)
+            SetRect(r, s_cw - 16 - del + 8, kHitY + i * kHitH, s_cw - 16, kHitY + (i + 1) * kHitH - 4);
+        else
+            SetRect(r, 16, kHitY + i * kHitH, s_cw - 16 - del, kHitY + (i + 1) * kHitH - 4);
         return true;
     }
     int row, col;
@@ -3451,7 +3498,7 @@ static bool SearchRect(int id, RECT* r)
 static int HitSearch(int x, int y)
 {
     RECT r;
-    for (int id = 0; id < K_HIT + 8; id++)
+    for (int id = 0; id < K_FAVDEL + 8; id++)
         if (SearchRect(id, &r) && x >= r.left && x < r.right && y >= r.top && y < r.bottom)
             return id;
     return -1;
@@ -3464,12 +3511,44 @@ static void SearchFrom(double* lon, double* lat)
     *lat = s_gps.valid ? s_gps.lat : g_cfg.lat;
 }
 
+// The route to a place: from the car (or the map's centre without a fix: the map then shows where it goes)
+static void RouteToHit(const SearchHit* h)
+{
+    double lon, lat;
+    SearchFrom(&lon, &lat);
+    RouteTo(h, lon, lat, !s_gps.valid ? -2 : s_gps.speedKmh > 10 ? s_gps.course : -1);
+    s_search = false;
+    if (!s_gps.valid) {
+        g_cfg.follow = FOLLOW_OFF;
+        g_cfg.lon = h->lon;
+        g_cfg.lat = h->lat;
+        UserChanged();
+    }
+}
+
+static void FavNamed()   // the keyboard's name for the new favourite: kept
+{
+    if (s_kb.text[0] && VFavsAdd(&s_favs, s_kb.text, s_lpLat, s_lpLon) >= 0) {
+        FavsSave();
+        Log("favs: \"%S\" %.5f, %.5f", s_kb.text, s_lpLat, s_lpLon);
+    }
+    s_favName = false;
+    s_search = false;
+    VKeysOpen(&s_kb, L"", kQueryCap);
+}
+
 static void OnSearchKey(int id)
 {
     int n = (int)wcslen(s_kb.text), c = s_kb.cur < n ? s_kb.cur : n;
-    if (id == K_BACK) {
+    if (id != K_FAVDEL + s_favDel)
+        s_favDel = -1;
+    if (id == K_BACK && s_favName) {   // no name: no favourite
+        s_favName = false;
+        s_search = false;
+        VKeysOpen(&s_kb, L"", kQueryCap);
+    } else if (id == K_BACK) {
         if (s_showHits)
-            s_showHits = false;
+            s_showHits = s_showFavs = false;
         else {
             s_search = false;
             if (s_searchSlot >= 0) {   // back to the route editor
@@ -3478,7 +3557,7 @@ static void OnSearchKey(int id)
             }
         }
     } else if (id == K_FIELD) {
-        s_showHits = false;
+        s_showHits = s_showFavs = false;
     } else if (id == K_SHIFT) {
         s_kb.shift = !s_kb.shift;
     } else if (id == K_LANG) {
@@ -3488,15 +3567,26 @@ static void OnSearchKey(int id)
             VKeysType(&s_kb, L' ');
     } else if (id == K_BS) {
         VKeysBack(&s_kb);
+    } else if (id == K_FIND && s_favName) {
+        FavNamed();
     } else if (id == K_FIND) {
         double lon, lat;
         SearchFrom(&lon, &lat);
-        if (n) {
-            SearchStart(s_kb.text, lon, lat);
-            s_showHits = true;   // (the query is in the log as the request's URL)
+        s_showFavs = !n;   // the query empty: the favourites
+        s_showHits = true;
+        if (n)
+            SearchStart(s_kb.text, lon, lat);   // (the query is in the log as the request's URL)
+    } else if (id >= K_FAVDEL) {   // a favourite's "x": "ТОЧНО?", then gone
+        if (s_favDel == id - K_FAVDEL) {
+            VFavsDel(&s_favs, s_favDel);
+            FavsSave();
+            s_favDel = -1;
+        } else {
+            s_favDel = id - K_FAVDEL;
         }
     } else if (id >= K_HIT) {
-        const SearchHit* h = SearchGet(id - K_HIT);
+        SearchHit hit;
+        const SearchHit* h = ListHit(id - K_HIT, &hit) ? &hit : NULL;
         if (h && s_searchSlot >= 0) {   // a place for the route editor
             RoutePlace* p = PlanSlot(s_searchSlot);
             p->kind = PL_PLACE;
@@ -3507,16 +3597,7 @@ static void OnSearchKey(int id)
             s_search = false;
             s_plan = true;
         } else if (h) {
-            double lon, lat;
-            SearchFrom(&lon, &lat);
-            RouteTo(h, lon, lat, !s_gps.valid ? -2 : s_gps.speedKmh > 10 ? s_gps.course : -1);
-            s_search = false;
-            if (!s_gps.valid) {   // no car to follow: show where the route goes
-                g_cfg.follow = FOLLOW_OFF;
-                g_cfg.lon = h->lon;
-                g_cfg.lat = h->lat;
-                UserChanged();
-            }
+            RouteToHit(h);
         }
     } else if (id / 16 < 4) {
         VKeysType(&s_kb, VKeysChar(&s_kb, id / 16, id % 16));
@@ -3535,7 +3616,7 @@ static void DrawQuery(HDC dc, const RECT& r)
 {
     if (!s_kb.text[0]) {
         Text(dc, s_fontBig, kTextDim, kFieldX, r.top, kFieldR, r.bottom, DT_LEFT,
-             s_showHits ? L"" : L"Адрес или место");
+             s_showHits ? L"" : s_favName ? L"Короткое имя: Дом, Работа…" : L"Адрес или место");
         if (!s_showHits)
             Bar(dc, kFieldX, r.top + 10, 2, r.bottom - r.top - 20, kOrange);
         return;
@@ -3574,8 +3655,9 @@ static void DrawSearch(HDC dc)
     DrawQuery(dc, r);
 
     if (s_showHits) {
-        int st = SearchState(), n = SearchCount();
-        const wchar_t* msg = st == SEARCH_BUSY ? L"Поиск…" : st == SEARCH_FAIL ? L"Нет связи с сервером поиска"
+        int st = SearchState(), n = ListCount();
+        const wchar_t* msg = s_showFavs ? (n ? NULL : L"Избранного нет: долгое нажатие на карте → В ИЗБРАННОЕ")
+                           : st == SEARCH_BUSY ? L"Поиск…" : st == SEARCH_FAIL ? L"Нет связи с сервером поиска"
                            : !n ? L"Ничего не найдено" : NULL;
         if (msg) {
             Text(dc, s_fontLabel, st == SEARCH_FAIL ? kTextErr : kTextDim, 0, 120, s_cw, 200, DT_CENTER, msg);
@@ -3584,7 +3666,16 @@ static void DrawSearch(HDC dc)
         double lon, lat;
         SearchFrom(&lon, &lat);
         for (int i = 0; i < n; i++) {
-            const SearchHit* h = SearchGet(i);
+            SearchHit hit;
+            if (!ListHit(i, &hit))
+                continue;
+            const SearchHit* h = &hit;
+            if (SearchRect(K_FAVDEL + i, &r)) {
+                bool sure = s_favDel == i;
+                Tile(dc, r, sure ? kTextErr : kPanel2, sure ? kTextErr : kPanel2, 16);
+                Text(dc, s_fontLabel, sure ? kInk : kText, r.left, r.top, r.right, r.bottom, DT_CENTER,
+                     sure ? L"ТОЧНО?" : L"✕");
+            }
             SearchRect(K_HIT + i, &r);
             Tile(dc, r, s_kbPressed == K_HIT + i ? kOrange : kPanel, s_kbPressed == K_HIT + i ? kOrange : kPanel, 16);
             COLORREF c = s_kbPressed == K_HIT + i ? kInk : kText;
@@ -3599,15 +3690,17 @@ static void DrawSearch(HDC dc)
         return;
     }
     static const wchar_t* kBottom[5] = { L"Aa", NULL, L"ПРОБЕЛ", L"СТЕРЕТЬ", L"НАЙТИ" };
+    const wchar_t* find = s_favName ? L"СОХРАНИТЬ" : s_kb.text[0] ? L"НАЙТИ" : L"ИЗБРАННОЕ";
     for (int id = 0; id <= K_FIND; id++) {
         if (!SearchRect(id, &r))
             continue;
-        bool lit = s_kbPressed == id || (id == K_FIND && s_kb.text[0]) || (id == K_SHIFT && s_kb.shift);
+        bool lit = s_kbPressed == id || (id == K_FIND && (s_kb.text[0] || (!s_favName && s_favs.n))) ||
+                   (id == K_SHIFT && s_kb.shift);
         wchar_t cap[8] = { 0 };
         if (id < K_SHIFT)
             cap[0] = VKeysChar(&s_kb, id / 16, id % 16);
         else
-            wcscpy(cap, id == K_LANG ? (s_kb.en ? L"РУС" : L"ENG") : kBottom[id - K_SHIFT]);
+            wcsncpy(cap, id == K_LANG ? (s_kb.en ? L"РУС" : L"ENG") : id == K_FIND ? find : kBottom[id - K_SHIFT], 15);
         COLORREF kc = lit ? kOrange : kPanel2;
         Tile(dc, r, kc, kc, 16);
         Text(dc, id < K_SHIFT ? s_fontBig : s_fontLabel, lit ? kInk : kText, r.left, r.top, r.right, r.bottom,
@@ -3757,12 +3850,11 @@ static void OnLongPress(int x, int y)
     s_dockShown = false;
     bool on = ri.state == ROUTE_ON || ri.state == ROUTE_BUSY;
     s_lpStop = on ? StopAt(lon, lat) : -1;   // on a stop's sign: its menu
-    if (s_lpStop < 0 && on) {
+    if (s_lpStop < 0) {   // (no route: the route there or a favourite - the user 2026-11-02)
         s_lpMenu = true;
+        s_lpRoute = on;
         s_lpLon = lon;
         s_lpLat = lat;
-    } else if (s_lpStop < 0) {
-        PlanNew(lon, lat);
     }
     InvalidateRect(s_wnd, NULL, FALSE);
 }
@@ -3931,10 +4023,12 @@ static bool MenuRect(int id, RECT* r)
     bool stop = s_lpStop >= 0 && id >= M_STOP_OUT && id <= M_STOP_CANCEL;
     if (!stop && (!s_lpMenu || id < M_VIA || id > M_CANCEL))
         return false;
-    if ((id == M_VIA && RoutePlanGet()->nvia >= kMaxVia) || (id == M_STOP_UP && s_lpStop == 0))
+    if ((id == M_VIA && (!s_lpRoute || RoutePlanGet()->nvia >= kMaxVia)) || (id == M_STOP_UP && s_lpStop == 0))
         return false;
-    int i = stop ? id - M_STOP_OUT - (id > M_STOP_UP && s_lpStop == 0) : id - M_VIA;   // (no "earlier": closed up)
-    SetRect(r, 220, 300 + i * 58, 580, 300 + i * 58 + 50);
+    int i = stop ? id - M_STOP_OUT - (id > M_STOP_UP && s_lpStop == 0)   // (no "earlier": closed up)
+                 : id - (s_lpRoute ? M_VIA : M_NEW);
+    int y0 = stop ? 300 : 242;   // (the long press's four rows: higher)
+    SetRect(r, 220, y0 + i * 58, 580, y0 + i * 58 + 50);
     return true;
 }
 
@@ -3977,6 +4071,12 @@ static void OnOverMap(int id)
     } else if (id == M_NEW) {
         s_lpMenu = false;
         PlanNew(s_lpLon, s_lpLat);
+    } else if (id == M_FAV) {   // the keyboard names the point
+        s_lpMenu = false;
+        s_favName = true;
+        s_showHits = s_showFavs = false;
+        VKeysOpen(&s_kb, L"", VFAV_NAME - 1);
+        s_search = true;
     } else if (id == M_CANCEL) {
         s_lpMenu = false;
     } else if (id == M_STOP_OUT || id == M_STOP_UP) {   // the stop out / one earlier, the route again
@@ -4028,14 +4128,14 @@ static void DrawOverMap(HDC dc)
                 DrawCtl(dc, r, s_planPressed == id, s_fontLabel, kStop[id - M_STOP_OUT]);
     }
     if (s_lpMenu) {
-        RECT box = { 204, 288, 596, 300 + 3 * 58 + 4 };
+        RECT box = { 204, 230, 596, 242 + (s_lpRoute ? 4 : 3) * 58 + 4 };
         Card(dc, box, 20);
-        static const wchar_t* kMenu[3] = { L"ЗАЕХАТЬ СЮДА", L"МАРШРУТ СЮДА", L"ОТМЕНА" };
+        static const wchar_t* kMenu[4] = { L"ЗАЕХАТЬ СЮДА", L"МАРШРУТ СЮДА", L"В ИЗБРАННОЕ", L"ОТМЕНА" };
         for (int id = M_VIA; id <= M_CANCEL; id++) {
             if (MenuRect(id, &r))
                 DrawCtl(dc, r, s_planPressed == id, s_fontLabel, kMenu[id - M_VIA]);
-            else if (id == M_VIA) {
-                SetRect(&r, 220, 300, 580, 350);
+            else if (id == M_VIA && s_lpRoute) {
+                SetRect(&r, 220, 242, 580, 292);
                 Text(dc, s_fontSmall, kTextDim, r.left, r.top, r.right, r.bottom, DT_CENTER, L"уже три точки «Заехать»");
             }
         }
@@ -4324,9 +4424,29 @@ static void LogStat()
     s_statGpsBad = s_gps.badLines;
 }
 
+// A route asked for from outside: once the car has a fix (or after 15 s - then from the map's centre)
+static void RouteAsked()
+{
+    if (!s_toTick || (!s_gps.valid && GetTickCount() - s_toTick < 15000))
+        return;
+    SearchHit h;
+    wcscpy(h.name, s_toName);
+    h.sub[0] = 0;
+    h.lon = s_toLon;
+    h.lat = s_toLat;
+    s_toTick = 0;
+    RouteToHit(&h);
+    InvalidateRect(s_wnd, NULL, FALSE);
+}
+
 static void OnCreate(HWND hwnd)
 {
     VKeysOpen(&s_kb, L"", kQueryCap);
+    {
+        wchar_t path[MAX_PATH];
+        PathInDir(path, L"favorites.txt");
+        VFavsLoad(&s_favs, path);
+    }
     s_wnd = hwnd;
     RECT rc;
     GetClientRect(hwnd, &rc);
@@ -4468,6 +4588,15 @@ static int VhReceive(const wchar_t* cmd)   // 2 = a button taken (VestaHome leav
             unsigned long c = wcstoul(v, NULL, 16);
             AccentSet(RGB(c >> 16 & 0xFF, c >> 8 & 0xFF, c & 0xFF));
         }
+    }
+    if (!wcsncmp(cmd, L"route\t", 6)) {   // VestaHome's widget (a favourite): the route there, from the car
+        s_toLat = VhField(cmd, L"lat", v, 32) ? wcstod(v, NULL) : 0;
+        s_toLon = VhField(cmd, L"lon", v, 32) ? wcstod(v, NULL) : 0;
+        if (!VhField(cmd, L"name", s_toName, 80))
+            wcscpy(s_toName, L"Избранное");
+        s_toTick = s_toLat || s_toLon ? GetTickCount() | 1 : 0;
+        Log("vh: route to %.5f, %.5f", s_toLat, s_toLon);
+        return 1;
     }
     if (!wcsncmp(cmd, L"key", 3) && cmd[3] == L'\t') {
         // The wheel's buttons (the user 2026-10-26, 2026-11-02): held - the zoom (WheelZoom), while the map is in front
@@ -4623,6 +4752,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             if (s_settings && s_maps)
                 InvalidateRect(hwnd, NULL, FALSE);   // the download's progress
             VhTick();   // VestaHome's map widget
+            RouteAsked();
             int sharedNight = NightShared();   // switched in VestaHome: follow it
             if (sharedNight >= 0 && (sharedNight != 0) != (g_cfg.night != 0))
                 NightSet(sharedNight != 0);
@@ -4881,11 +5011,20 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 }
 
 #ifdef UNDER_CE
-int WINAPI WinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int)
+int WINAPI WinMain(HINSTANCE inst, HINSTANCE, LPWSTR cmdLine, int)
 #else
-int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int)
+int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR cmdLine, int)
 #endif
 {
+    // "route<TAB>lat=..<TAB>lon=..<TAB>name=.." (VestaHome's map widget, a favourite): VhReceive's command - to the
+    // copy running, or taken once the window is up
+    if (cmdLine && cmdLine[0] == L'"') {   // (quoted: the PC's argument with its tabs)
+        cmdLine++;
+        wchar_t* q = wcsrchr(cmdLine, L'"');
+        if (q)
+            *q = 0;
+    }
+    bool routeArg = cmdLine && !wcsncmp(cmdLine, L"route\t", 6);
     GetModuleFileName(NULL, g_dir, MAX_PATH);
     wchar_t* slash = wcsrchr(g_dir, L'\\');
     if (slash)
@@ -4893,6 +5032,13 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int)
 
     // single instance: bring the running copy to front
     HWND prev = FindWindow(APP_CLASS, NULL);
+    if (prev && routeArg) {
+        COPYDATASTRUCT c;
+        c.dwData = VHAP_MAGIC;
+        c.cbData = (DWORD)(wcslen(cmdLine) * sizeof(wchar_t));
+        c.lpData = cmdLine;
+        SendMessage(prev, WM_COPYDATA, 0, (LPARAM)&c);
+    }
     if (prev) {   // it may be behind another window or at the bottom (OSMapsCE's "home"): to the top
         ShowWindow(prev, SW_SHOW);
         SetWindowPos(prev, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
@@ -4937,6 +5083,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int)
     ShowWindow(hwnd, SW_SHOW);
     UpdateWindow(hwnd);
     SetForegroundWindow(hwnd);
+    if (routeArg)
+        VhReceive(cmdLine);
 
     MSG msg;
     while (GetMessage(&msg, NULL, 0, 0)) {
