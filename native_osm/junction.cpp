@@ -54,31 +54,28 @@ bool WheelNow(int code, int st)
     return code == 8 || code == 9 ? st == 1 : st == 0;
 }
 
-// Between the GPS's fixes (the user 2026-10-31: the map jerked, a frame a second): the car carried on ms by its speed and
-// course - 1.5 s at most (a fix late: the car not run off the road); the view's turn eased in over the second
-void GlideAhead(double lon, double lat, double kmh, double course, DWORD ms, double* outLon, double* outLat)
-{
-    double d = kmh / 3.6 * (ms < 1500 ? ms : 1500) / 1000, a = course * M_PI / 180;
-    *outLat = lat + d * cos(a) / 110540.0;
-    *outLon = lon + d * sin(a) / (111320.0 * cos(lat * M_PI / 180));
-}
-
+// The view's turn eased in over the second (the user 2026-10-31: the map jerked, a frame a second)
 double GlideCourse(double from, double to, DWORD ms)
 {
     double delta = fmod(to - from + 540, 360) - 180, c = from + delta * (ms < 1000 ? ms : 1000) / 1000;
     return c < 0 ? c + 360 : c >= 360 ? c - 360 : c;
 }
 
-// The mark shown pulled frac of the way to the fix's place (the user 2026-11-02: no jumps - it drives on by the
-// prediction, the fixes only steer it); more than 50 m apart (a jump, a new start): put there, false
-bool GlidePull(double* lon, double* lat, double tLon, double tLat, double frac)
+// The mark a fix late (the user 2026-11-02: the prediction slowed towards the second's end and jumped at the next
+// fix - the point a second ahead is known, no guess needed): at an even speed to the fix's point in the fixes' period
+bool GlideAim(double lon, double lat, double tLon, double tLat, DWORD periodMs, double* ve, double* vn)
 {
-    double e = (tLon - *lon) * 111320.0 * cos(*lat * M_PI / 180), n = (tLat - *lat) * 110540.0;
-    bool close = e * e + n * n <= 50.0 * 50.0;
-    double f = close ? frac : 1;
-    *lon += (tLon - *lon) * f;
-    *lat += (tLat - *lat) * f;
-    return close;
+    double e = (tLon - lon) * 111320.0 * cos(lat * M_PI / 180), n = (tLat - lat) * 110540.0;
+    bool on = periodMs > 0 && e * e + n * n <= 50.0 * 50.0;
+    *ve = on ? e / periodMs : 0;
+    *vn = on ? n / periodMs : 0;
+    return on;
+}
+
+void GlideMove(double* lon, double* lat, double ve, double vn, DWORD ms)
+{
+    *lon += ve * ms / (111320.0 * cos(*lat * M_PI / 180));
+    *lat += vn * ms / 110540.0;
 }
 
 // Metres east and north from point a to b (a small piece: the plane at a's latitude)

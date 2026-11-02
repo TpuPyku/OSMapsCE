@@ -973,28 +973,26 @@ static void WheelChecks()
 // course, the turn of the view eased in over the second
 static void GlideChecks()
 {
-    double lon, lat;
-    GlideAhead(37.0, 55.0, 72, 0, 500, &lon, &lat);   // north at 20 m/s, half a second: 10 m
-    Check(fabs((lon - 37.0) * 63850) < 0.001 && fabs((lat - 55.0) * 110540 - 10) < 0.001, "glide: 10 m north in 0.5 s at 72 km/h");
-    GlideAhead(37.0, 55.0, 72, 90, 500, &lon, &lat);
-    Check(fabs((lat - 55.0) * 110540) < 0.001 && fabs((lon - 37.0) * 111320 * cos(55 * M_PI / 180) - 10) < 0.001,
-          "glide: east by the course");
-    GlideAhead(37.0, 55.0, 72, 180, 3000, &lon, &lat);
-    Check(fabs((55.0 - lat) * 110540 - 30) < 0.001, "glide: south; at most 1.5 s on (the fix late - the car not run off)");
     Check(Near(GlideCourse(350, 10, 0), 350) && Near(GlideCourse(350, 10, 500), 0) && Near(GlideCourse(350, 10, 1000), 10) &&
           Near(GlideCourse(10, 350, 500), 0) && Near(GlideCourse(90, 270, 2000), 270),
           "glide: the turn eased in over a second, the short way round");
-    // the user 2026-11-02: no jumps at all - the mark drives on by the prediction, pulled towards the fix softly
-    double sl = 37.0, sb = 55.0;
-    Check(GlidePull(&sl, &sb, 37.0, 55.0 + 8 / 110540.0, 0.25) && fabs((sb - 55.0) * 110540 - 2) < 0.001 && sl == 37.0,
-          "glide: pulled a quarter of the way to where the fix says");
+    double sl, sb;
+    // the user 2026-11-02: a second late, no prediction - from where it is shown to the fix's known point in the time
+    // between the fixes
+    double ve = 1, vn = 1, kx55 = 111320 * cos(55 * M_PI / 180);
+    Check(GlideAim(37.0, 55.0, 37.0, 55.0 + 10 / 110540.0, 1000, &ve, &vn) && fabs(vn - 0.01) < 1e-9 && fabs(ve) < 1e-9,
+          "glide aim: 10 m north in a second - 0.01 m a ms north");
+    Check(GlideAim(37.0, 55.0, 37.0 + 10 / kx55, 55.0, 500, &ve, &vn) && fabs(ve - 0.02) < 1e-9 && fabs(vn) < 1e-9,
+          "glide aim: 10 m east in half a second");
+    Check(!GlideAim(37.0, 55.0, 37.0, 55.0 + 50.1 / 110540.0, 1000, &ve, &vn) && ve == 0 && vn == 0 &&
+          GlideAim(37.0, 55.0, 37.0, 55.0 + 49.9 / 110540.0, 1000, &ve, &vn),
+          "glide aim: more than 50 m off (a jump) - none, put there");
+    Check(!GlideAim(37.0, 55.0, 37.0, 55.0, 0, &ve, &vn) && ve == 0 && vn == 0, "glide aim: no time - none");
+    Check(GlideAim(37.0, 55.0, 37.0, 55.0 + 1 / 110540.0, 1, &ve, &vn) && fabs(vn - 1) < 1e-9, "glide aim: in 1 ms");
     sl = 37.0, sb = 55.0;
-    bool jumped = !GlidePull(&sl, &sb, 37.0, 55.0 + 60 / 110540.0, 0.25) && fabs((sb - 55.0) * 110540 - 60) < 0.001;
-    double kx = 111320 * cos(sb * M_PI / 180);
-    bool in = GlidePull(&sl, &sb, 37.0 + 49.9 / kx, sb, 0.5) && fabs((sl - 37.0) * kx - 24.95) < 0.001;
-    sl = 37.0;
-    Check(jumped && in && !GlidePull(&sl, &sb, 37.0 + 50.1 / kx, sb, 0.5),
-          "glide: more than 50 m apart (a jump, a new start) - there at once");
+    GlideMove(&sl, &sb, 0.02, 0.01, 1000);
+    Check(fabs((sb - 55.0) * 110540 - 10) < 0.001 && fabs((sl - 37.0) * kx55 - 20) < 0.01,
+          "glide move: 1000 ms at 0.02 east, 0.01 north - 20 m east, 10 m north");
 }
 
 static void JunctionChecks()
@@ -1126,6 +1124,17 @@ static void FarRingChecks()
 }
 
 // The search's places fitted into the map beside its panel (design v3, the user 2026-11-02): the world's px at z0
+// The names in the third person's view (the user 2026-11-02: the house numbers blinked like a garland): none of them
+static void LabelPassChecks()
+{
+    int house = VLabelPasses() - 1, street = house - 1;
+    Check(VLabelPassOn(house, 16, 0, false) && !VLabelPassOn(house, 15, 0, false) && !VLabelPassOn(house, 17, 2, false),
+          "names: the house numbers from z16, not in the fast detail");
+    Check(!VLabelPassOn(house, 17, 0, true) && VLabelPassOn(street, 17, 0, true) && VLabelPassOn(0, 10, 0, true),
+          "names: tilted - no house numbers, the streets and places as they are");
+    Check(!VLabelPassOn(street, 14, 0, false) && VLabelPassOn(street, 15, 0, false), "names: the small streets from z15");
+}
+
 static void FitZoomChecks()
 {
     double one[2] = { 100, 50 }, cx, cy;
@@ -1593,6 +1602,7 @@ int main()
     FarRingChecks();
     CacheVictimChecks();
     FitZoomChecks();
+    LabelPassChecks();
     RECT whole = { 0, 0, 800, 480 };
     // the Russian name when the tile has one (name:ru), else the local one: a frame named so equals one whose tile
     // holds that text as its plain name

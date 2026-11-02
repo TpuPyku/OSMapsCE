@@ -319,11 +319,27 @@ static void GpsTake()
     s_gps = s_fix;
 }
 
-// The car between the fixes (the user 2026-10-31: the map jerked, a frame a second; 2026-11-02: as if the map were
-// dragged by a finger - no jumps): the mark drives on by its speed and course every frame, the fixes only steer it -
-// pulled a quarter of the way a frame to where the fix says it is now (junction.cpp GlideAhead / GlidePull), the turn
-// eased in over a third of a second; standing or slow - the fix as it is
+// The car between the fixes (the user 2026-10-31: the map jerked, a frame a second; 2026-11-02: the prediction slowed
+// towards the second's end and jumped at the next fix - shown a fix late instead, the point ahead known): a new fix -
+// from where the mark is to the fix's point at an even speed in the fixes' period (junction.cpp GlideAim / GlideMove),
+// there it waits for the next one; the turn eased to the fix's course; standing or slow - the fix as it is
 enum { kGlideMs = 50 };   // (a frame at most every 50 ms; fewer when drawing takes longer: TIMER_GLIDE)
+static double s_aimVe, s_aimVn;   // the mark's speed to the last fix, m a ms east / north
+static DWORD  s_aimFix, s_aimTick, s_period = 1000;   // that fix's tick, when it was aimed at, the fixes' period (ms)
+
+static void GlideAimFix(DWORD now)   // a new fix: the period measured, the mark on its way to it
+{
+    DWORD p = s_fix.fixTick - s_aimFix;
+    if (p > 300 && p < 3000)
+        s_period = (s_period * 3 + p) / 4;
+    s_aimFix = s_fix.fixTick;
+    s_aimTick = now;
+    if (!GlideAim(s_showLon, s_showLat, s_fix.lon, s_fix.lat, s_period, &s_aimVe, &s_aimVn)) {
+        s_showLon = s_fix.lon;   // (a jump: there at once)
+        s_showLat = s_fix.lat;
+    }
+}
+
 static bool GlideApply()
 {
     if (!s_fix.valid || s_fix.speedKmh <= kHeadingMinSpeed) {
@@ -331,17 +347,20 @@ static bool GlideApply()
         return false;
     }
     DWORD now = GetTickCount();
-    double tLon, tLat;
-    GlideAhead(s_fix.lon, s_fix.lat, s_fix.speedKmh, s_fix.course, now - s_fix.fixTick, &tLon, &tLat);
     if (!s_showTick) {
-        s_showLon = tLon;
-        s_showLat = tLat;
+        s_showLon = s_fix.lon;
+        s_showLat = s_fix.lat;
         s_showCourse = s_fix.course;
+        s_aimFix = s_fix.fixTick;
+        s_aimTick = now;
+        s_aimVe = s_aimVn = 0;
     } else {
-        DWORD step = now - s_showTick;
-        GlideAhead(s_showLon, s_showLat, s_fix.speedKmh, s_showCourse, step, &s_showLon, &s_showLat);
-        GlidePull(&s_showLon, &s_showLat, tLon, tLat, 0.25);
-        s_showCourse = GlideCourse(s_showCourse, s_fix.course, step * 3);
+        if (s_fix.fixTick != s_aimFix)
+            GlideAimFix(now);
+        DWORD step = now - s_showTick, end = s_aimTick + s_period;
+        DWORD left = (long)(end - s_showTick) > 0 ? end - s_showTick : 0;
+        GlideMove(&s_showLon, &s_showLat, s_aimVe, s_aimVn, step < left ? step : left);
+        s_showCourse = GlideCourse(s_showCourse, s_fix.course, step * 2);
     }
     s_showTick = now;
     s_gps.lon = s_showLon;
@@ -5514,8 +5533,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     }
 
     case WM_TIMER:
-        if (wp == TIMER_GLIDE) {   // a frame between the fixes: the map on screen, following, the CPU not taken over
-            if (g_cfg.follow != FOLLOW_OFF && !s_dragging && !s_settings && !s_search && !s_plan &&
+        if (wp == TIMER_GLIDE) {   // a frame between the fixes: the map on screen (following or not - the car moves on
+            // it then), the CPU not taken over
+            if (!s_dragging && !s_settings && !s_search && !s_plan &&
                 GetForegroundWindow() == hwnd && GetTickCount() - s_lastPaintTick >= s_paintMs && GlideApply()) {
                 FollowGps();
                 if (FrameSig() != s_paintSig)

@@ -305,6 +305,8 @@ void       VTileNoteMs(DWORD ms, int z);   // a tile's time (auto: z10 and up, t
 void       VTileAutoReset();        // (tests) auto timed anew
 void       VLabelsDraw(HDC dc, const RECT& mr, double cx, double cy, double vx, double vy, double angle, int z,
                        const RECT* avoid, int navoid);   // avoid: the controls over the map, no names under them
+int        VLabelPasses();          // the names' passes: places, signs, streets; the last one the house numbers
+bool       VLabelPassOn(int i, int z, int detail, bool tilted);   // pass i drawn (tilted: no house numbers)
 const wchar_t* MapFace();
 extern bool g_noYo;          // the font has no yo (not our Golos Text): drawn as ye (vtile.cpp NoYo)
 void NoYo(wchar_t* s);   // main.cpp: the text's face (Golos Text, else Tahoma)
@@ -348,10 +350,12 @@ int  FitZoom(const double* xy, int n, double w, double h, int zMin, int zMax, do
 int  JunctionReachM(double kmh);   // the card shown this far before the maneuver: 15 s of the way, 300 m at least
 int  JunctionZoom(int userZ, bool heading, bool complex, int nextM, bool off, int reachM);   // z17 before it
 int  WheelZoom(int code, int kind);   // a wheel button from VestaHome: +1 / -1 the zoom (up / down), 0 - not ours
-bool WheelNow(int code, int st);
-void GlideAhead(double lon, double lat, double kmh, double course, DWORD ms, double* outLon, double* outLat);   // ms on
-double GlideCourse(double from, double to, DWORD ms);
-bool GlidePull(double* lon, double* lat, double tLon, double tLat, double frac);   // false: > 50 m - put there   // the turn from -> to after ms of its second (0..360)      // its zoom done at this event (up / down: when let go - the MCU sends only that)
+bool WheelNow(int code, int st);   // its zoom done at this event (up / down: when let go - the MCU sends only that)
+double GlideCourse(double from, double to, DWORD ms);   // the turn from -> to after ms of its second (0..360)
+// The mark a fix late (the user 2026-11-02): its speed from where it is shown to the fix in periodMs, metres a ms east
+// and north; false: more than 50 m off or no time - none (put there)
+bool GlideAim(double lon, double lat, double tLon, double tLat, DWORD periodMs, double* ve, double* vn);
+void GlideMove(double* lon, double* lat, double ve, double vn, DWORD ms);
 int  JunctionSlice(const double* ll, int np, int at, double beforeM, double afterM, double* out, int cap, int* outAt,
                    double* course);   // lon, lat pairs; outAt: the maneuver's point in out; course: the way in's, degrees
 void JunctionTurn(const unsigned short* src, int sw, int sh, int sstride, double scx, double scy, unsigned short* dst,

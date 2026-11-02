@@ -1313,6 +1313,19 @@ static const LabelPass kPasses[] = {
     { K_HOUSENUM, 2, 16 },   // (the user 2026-10-29: from z16)
 };
 
+int VLabelPasses()
+{
+    return (int)(sizeof(kPasses) / sizeof(kPasses[0]));
+}
+
+// Pass i at zoom z in the detail; tilted (the third person's view, the user 2026-11-02): no house numbers - they
+// blinked like a garland as the view moved
+bool VLabelPassOn(int i, int z, int detail, bool tilted)
+{
+    const LabelPass& p = kPasses[i];
+    return z >= p.minZoom && z >= MinZoom(p.kind, detail) && !(tilted && p.kind == K_HOUSENUM);
+}
+
 static HFONT Cached(HFONT& f, int height, int weight, int tenths)   // created when first needed
 {
     if (!f)
@@ -1592,8 +1605,8 @@ void VLabelsDraw(HDC dc, const RECT& mr, double cx, double cy, double vx, double
     v.cap = v.np + (z >= 16 ? 400 : 160);   // (close up: the house numbers too)
     SetBkMode(dc, TRANSPARENT);
     EnterCriticalSection(&s_cs);
-    for (int i = 0; i < (int)(sizeof(kPasses) / sizeof(kPasses[0])); i++)
-        if (z >= kPasses[i].minZoom && z >= MinZoom(kPasses[i].kind, VTileDetail())) {   // (fast: no signs, no house numbers)
+    for (int i = 0; i < VLabelPasses(); i++)
+        if (VLabelPassOn(i, z, VTileDetail(), g_tilt != NULL)) {   // (fast: no signs, no house numbers)
             if (z >= VEC_PACKZ)
                 DrawPass(v, kPasses[i], VEC_PACKZ);   // a pack's z15 tiles first (Deeper: their quarters theirs)
             DrawPass(v, kPasses[i], zd);
