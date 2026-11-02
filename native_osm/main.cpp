@@ -194,7 +194,7 @@ enum { kKbY = 66, kKbRowH = 81, kHitY = 62, kHitH = 58 };
 // Slots: 0 from, 1..3 the stops, 4 to.
 enum { P_BACK = 1, P_ROW = 10, P_DEL = 20, P_ADDVIA = 30, P_GO, P_CH_GPS = 40, P_CH_SEARCH, P_CH_MAP, P_CH_CANCEL,
        P_PICK_CANCEL = 50, M_VIA = 60, M_NEW, M_FAV, M_CARD, M_STOP_OUT, M_STOP_UP, M_STOP_CANCEL, P_TRIP_X = 80,
-       P_TRIP, F_GO = 90, F_EDIT, F_CANCEL, E_ICON = 100, E_NAME = E_ICON + VFAV_ICONS, E_DEL, E_DONE, E_BOX };
+       P_TRIP, F_GO = 90, F_EDIT, F_CANCEL, E_ICON = 100, E_NAME = E_ICON + VFAV_ICONS, E_DEL, E_DONE, E_BOX, W_FIELD = 120, W_FAV, W_BOX = W_FAV + 3 };
 static bool       s_plan;
 static int        s_planChoose = -1;   // the slot whose choices are open
 static int        s_planPressed = -1;
@@ -1544,12 +1544,12 @@ static void Hairline(HDC dc, const RECT& r, int radius)
     DeleteObject(pen);
 }
 
-// A card over the map (design v3): the map under it at an eighth of its brightness - see-through (the user
-// 2026-10-28: back as the design had it, solid since 2026-10-26 by a misunderstanding), round corners, no border; at
-// night the 1 px edge.
+// A card over the map (design v3): the map under it at a quarter of its brightness - see-through (the user
+// 2026-10-28: back as the design had it, solid since 2026-10-26 by a misunderstanding; 2026-11-02: every card and round
+// button lighter than the bottom bar, all alike), round corners, no border; at night the 1 px edge.
 static void Card(HDC dc, const RECT& r, int radius)
 {
-    Darken(dc, r, radius, 3);
+    Darken(dc, r, radius, 2);
     Hairline(dc, r, radius);
 }
 
@@ -2671,7 +2671,8 @@ static void DrawFavMarks(HDC dc, double cx, double cy, double vx, double vy, dou
     for (int i = 0; i < s_favs.n; i++) {
         double gx, gy, sx, sy;
         GeoToWorld(s_favs.f[i].lon, s_favs.f[i].lat, g_cfg.z, &gx, &gy);
-        s_favOn[i] = ScreenOf(gx, gy, vx, vy, cx, cy, angle, &sx, &sy);
+        s_favOn[i] = ScreenOf(gx, gy, vx, vy, cx, cy, angle, &sx, &sy) &&
+                     (!s_dockShown || sy + 36 <= kDockY + s_dockOff);   // (not under the bottom bar)
         if (!s_favOn[i])
             continue;
         int x = Round(sx), y = Round(sy);
@@ -4280,6 +4281,29 @@ static int HitIn(int lo, int hi, bool (*rect)(int, RECT*), int x, int y)   // th
     return -1;
 }
 
+// "Куда едем?" (design v3, the map with the bottom bar up and no route): the search's field, the first three
+// favourites under it (a tap - the route there).
+static bool WhereShown()
+{
+    RouteInfo ri;
+    RouteGet(&ri);
+    return DockUp() && ri.state == ROUTE_NONE && !s_lpMenu && s_lpStop < 0 && s_favMenu < 0 && s_favEdit < 0 &&
+           s_pickSlot < 0;
+}
+
+static bool WhereRect(int id, RECT* r)
+{
+    if (!WhereShown() || (id > W_FAV && id < W_BOX && id - W_FAV >= s_favs.n))
+        return false;
+    if (id == W_BOX)
+        SetRect(r, 16, 56, 380, s_favs.n ? 190 : 124);
+    else if (id == W_FIELD)
+        SetRect(r, 28, 68, 368, 112);
+    else
+        SetRect(r, 28 + (id - W_FAV) * 116, 122, 28 + (id - W_FAV) * 116 + 108, 178);
+    return true;
+}
+
 static bool TripShown();
 
 static int HitOverMap(int x, int y)
@@ -4295,6 +4319,8 @@ static int HitOverMap(int x, int y)
     int id = HitIn(M_VIA, M_STOP_CANCEL, MenuRect, x, y);
     if (id < 0)
         id = HitIn(F_GO, E_BOX, FavRect, x, y);
+    if (id < 0)
+        id = HitIn(W_FIELD, W_BOX, WhereRect, x, y);
     if (id >= 0)
         return id;
     if (TripShown() && x >= 196 && x < 604 && y >= 400 && y < 466)   // the trip's card: the route's editor
@@ -4334,6 +4360,17 @@ static void OnFavCtl(int id)   // the mark's menu, the favourite's card
         s_favEdit = -1;
     }
     s_favSure = id == E_DEL && !s_favSure;
+}
+
+static void OnWhere(int id)   // "Куда едем?": the field - the search; a favourite - the route there
+{
+    SearchHit h;
+    if (id == W_FIELD) {
+        OnButton(B_SEARCH);
+    } else if (id < W_BOX && FavHit(id - W_FAV, &h)) {
+        RouteToHit(&h);
+        DockShow(false);
+    }
 }
 
 static void OnOverMap(int id)
@@ -4378,6 +4415,8 @@ static void OnOverMap(int id)
         s_plan = true;
         s_planChoose = -1;
         s_planMsg = NULL;
+    } else if (id >= W_FIELD) {
+        OnWhere(id);
     } else if (id >= F_GO) {
         OnFavCtl(id);
     }
@@ -4461,6 +4500,42 @@ static void LpAddress(wchar_t* title, wchar_t* sub)   // the long press's point:
     sub[139] = 0;
 }
 
+static void Magnifier(HDC dc, int x, int y, COLORREF c)   // the search's sign, centred on x, y
+{
+    HPEN pen = CreatePen(PS_SOLID, 3, c);
+    HGDIOBJ op = SelectObject(dc, pen), ob = SelectObject(dc, GetStockObject(NULL_BRUSH));
+    Ellipse(dc, x - 9, y - 9, x + 6, y + 6);
+    MoveToEx(dc, x + 4, y + 4, NULL);
+    LineTo(dc, x + 10, y + 10);
+    SelectObject(dc, ob);
+    SelectObject(dc, op);
+    DeleteObject(pen);
+}
+
+static void DrawWhere(HDC dc)
+{
+    RECT box, r;
+    if (!WhereRect(W_BOX, &box))
+        return;
+    Card(dc, box, 20);
+    WhereRect(W_FIELD, &r);
+    Tile(dc, r, kPanel2, s_planPressed == W_FIELD ? kOrange : kPanel2, 22);
+    Magnifier(dc, r.left + 26, (r.top + r.bottom) / 2, kTextDim);
+    Text(dc, s_fontBig, kTextDim, r.left + 48, r.top, r.right - 12, r.bottom, DT_LEFT, L"Куда едем?");
+    double lon, lat;
+    SearchFrom(&lon, &lat);
+    for (int id = W_FAV; id < W_BOX && WhereRect(id, &r); id++) {
+        const VFav& f = s_favs.f[id - W_FAV];
+        bool down = s_planPressed == id;
+        Tile(dc, r, down ? kOrange : kPanel2, down ? kOrange : kPanel2, 16);
+        Text(dc, s_fontLabel, down ? kInk : kText, r.left + 12, r.top + 4, r.right - 6, r.top + 30, DT_LEFT, f.name);
+        double dx = (f.lon - lon) * 111320 * cos(lat * M_PI / 180), dy = (f.lat - lat) * 110540;
+        wchar_t d[32];
+        FmtDist(d, 32, (int)sqrt(dx * dx + dy * dy));
+        Text(dc, s_fontSmall, down ? kInk : kTextDim, r.left + 12, r.top + 30, r.right - 6, r.bottom - 4, DT_LEFT, d);
+    }
+}
+
 static void DrawLpCard(HDC dc)
 {
     RECT box, r;
@@ -4516,6 +4591,7 @@ static void DrawOverMap(HDC dc)
     DrawFavCards(dc);
     if (s_lpMenu)
         DrawLpCard(dc);
+    DrawWhere(dc);
 }
 
 // The top (design v3): no bar - the map darkens softly towards the edge; on it the chips (GPS; the traffic or the
@@ -4655,11 +4731,11 @@ static void DrawButtons(HDC dc)
     if (s_dockShown && !s_settings && !s_search) {
         int y = kDockY + s_dockOff;   // sliding in / out
         RECT bar = { 0, y, s_cw, s_ch }, line = { 0, y, s_cw, y + 2 };
-        // see-through again (the user 2026-10-28, as the design had it); the orange part of the line shrinks to the
-        // moment the bar goes down
+        // see-through again (the user 2026-10-28, as the design had it; 2026-11-02: darker than the cards - an eighth
+        // of the map's brightness); the orange part of the line shrinks to the moment the bar goes down
         DWORD el = GetTickCount() - s_dockTick;
         RECT left = { 0, y, el >= (DWORD)kDockMs ? 0 : (int)(s_cw * (kDockMs - el) / kDockMs), y + 2 };
-        Darken(dc, bar, 0);
+        Darken(dc, bar, 0, 3);
         HBRUSH l = CreateSolidBrush(kLine), o = CreateSolidBrush(kOrange);
         FillRect(dc, &line, l);
         FillRect(dc, &left, o);
