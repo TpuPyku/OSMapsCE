@@ -105,9 +105,11 @@ void Log(const char* fmt, ...)
     int n = _snprintf(line, sizeof(line) - 2, "[%02d:%02d:%02d] ", t.wHour, t.wMinute, t.wSecond);
     va_list ap;
     va_start(ap, fmt);
-    int m = _vsnprintf(line + n, sizeof(line) - 2 - n, fmt, ap);
+    memset(line + n, 0, sizeof(line) - n);
+    int m = _vsnprintf(line + n, sizeof(line) - 3 - n, fmt, ap);
     va_end(ap);
-    n = (m < 0) ? (int)sizeof(line) - 2 : n + m;
+    // (-1: cut, or a %S the code page cannot write - CE stops there, 2026-11-02: the whole buffer went into the log)
+    n = (m < 0) ? (int)strlen(line) : n + m;
     line[n++] = '\r';
     line[n++] = '\n';
 
