@@ -194,7 +194,7 @@ enum { kKbY = 66, kKbRowH = 81, kHitY = 62, kHitH = 58 };
 // Slots: 0 from, 1..3 the stops, 4 to.
 enum { P_BACK = 1, P_ROW = 10, P_DEL = 20, P_ADDVIA = 30, P_GO, P_CH_GPS = 40, P_CH_SEARCH, P_CH_MAP, P_CH_CANCEL,
        P_PICK_CANCEL = 50, M_VIA = 60, M_NEW, M_FAV, M_CANCEL, M_STOP_OUT, M_STOP_UP, M_STOP_CANCEL, P_TRIP_X = 80,
-       P_TRIP, F_GO = 90, F_EDIT, F_CANCEL, E_ICON = 100, E_NAME = E_ICON + VFAV_ICONS, E_DEL, E_DONE };
+       P_TRIP, F_GO = 90, F_EDIT, F_CANCEL, E_ICON = 100, E_NAME = E_ICON + VFAV_ICONS, E_DEL, E_DONE, E_BOX };
 static bool       s_plan;
 static int        s_planChoose = -1;   // the slot whose choices are open
 static int        s_planPressed = -1;
@@ -2592,22 +2592,35 @@ static void DrawRoute(HDC dc, double cx, double cy, double vx, double vy, double
     }
 }
 
-// The favourites' signs (vfavs.h VFAV_*): a shape and a hole in it (the background's colour), in tenths of the radius.
-struct FavGlyph { signed char p[10][2]; int n; signed char h[4][2]; int nh; };
+// The favourites' signs (vfavs.h VFAV_*): a shape and up to four holes in it (the background's colour), in tenths
+// of the radius.
+struct FavGlyph { signed char p[12][2]; int n; signed char h[4][4][2]; int nh; };
 static const FavGlyph kFavGlyph[VFAV_ICONS] = {
-    { { {0,-10}, {2,-3}, {10,-3}, {4,1}, {6,8}, {0,4}, {-6,8}, {-4,1}, {-10,-3}, {-2,-3} }, 10, { {0,0} }, 0 },  // star
-    { { {0,-10}, {10,-1}, {6,-1}, {6,9}, {-6,9}, {-6,-1}, {-10,-1} }, 7, { {-2,3}, {2,3}, {2,9}, {-2,9} }, 4 },   // home
+    { { {0,-10}, {2,-3}, {10,-3}, {4,1}, {6,8}, {0,4}, {-6,8}, {-4,1}, {-10,-3}, {-2,-3} }, 10, {}, 0 },        // star
+    { { {0,-10}, {10,-1}, {6,-1}, {6,9}, {-6,9}, {-6,-1}, {-10,-1} }, 7, { { {-2,3}, {2,3}, {2,9}, {-2,9} } }, 1 }, // home
     { { {-10,-4}, {-5,-4}, {-5,-9}, {5,-9}, {5,-4}, {10,-4}, {10,8}, {-10,8} }, 8,                               // work
-      { {-3,-7}, {3,-7}, {3,-4}, {-3,-4} }, 4 },
-    { { {-7,10}, {-7,-10}, {9,-5}, {-4,0}, {-4,10} }, 5, { {0,0} }, 0 },                                        // flag
-    { { {0,9}, {-9,0}, {-10,-4}, {-8,-8}, {-4,-9}, {0,-6}, {4,-9}, {8,-8}, {10,-4}, {9,0} }, 10, { {0,0} }, 0 }, // heart
+      { { {-3,-7}, {3,-7}, {3,-4}, {-3,-4} } }, 1 },
+    { { {-7,10}, {-7,-10}, {9,-5}, {-4,0}, {-4,10} }, 5, {}, 0 },                                              // flag
+    { { {0,9}, {-9,0}, {-10,-4}, {-8,-8}, {-4,-9}, {0,-6}, {4,-9}, {8,-8}, {10,-4}, {9,0} }, 10, {}, 0 },       // heart
     { { {-8,10}, {-8,-9}, {4,-9}, {4,-3}, {9,0}, {9,7}, {7,7}, {7,1}, {4,-1}, {4,10} }, 10,                     // fuel
-      { {-5,-6}, {1,-6}, {1,-2}, {-5,-2} }, 4 },
+      { { {-5,-6}, {1,-6}, {1,-2}, {-5,-2} } }, 1 },
+    { { {0,-9}, {4,-5}, {4,-8}, {6,-8}, {6,-3}, {9,0}, {6,0}, {6,9}, {-6,9}, {-6,0}, {-9,0} }, 11,             // cottage
+      { { {-2,2}, {2,2}, {2,6}, {-2,6} } }, 1 },
+    { { {-7,-10}, {7,-10}, {7,10}, {-7,10} }, 4,                                                               // flats
+      { { {-4,-7}, {-1,-7}, {-1,-4}, {-4,-4} }, { {1,-7}, {4,-7}, {4,-4}, {1,-4} },
+        { {-4,-1}, {-1,-1}, {-1,2}, {-4,2} }, { {1,-1}, {4,-1}, {4,2}, {1,2} } }, 4 },
+    { { {-8,-3}, {-5,-3}, {-5,-6}, {-3,-9}, {3,-9}, {5,-6}, {5,-3}, {8,-3}, {9,10}, {-9,10} }, 10,             // shop
+      { { {-3,-6}, {3,-6}, {3,-3}, {-3,-3} } }, 1 },
+    { { {-3,-9}, {3,-9}, {3,-3}, {9,-3}, {9,3}, {3,3}, {3,9}, {-3,9}, {-3,3}, {-9,3}, {-9,-3}, {-3,-3} }, 12,  // hospital
+      {}, 0 },
+    { { {-9,-7}, {0,-5}, {9,-7}, {9,8}, {0,10}, {-9,8} }, 6, { { {-1,-5}, {1,-5}, {1,10}, {-1,10} } }, 1 },    // school
+    { { {-7,-10}, {3,-10}, {7,-7}, {7,-1}, {3,2}, {-2,2}, {-2,10}, {-7,10} }, 8,                               // parking
+      { { {-2,-6}, {2,-6}, {2,-2}, {-2,-2} } }, 1 },
 };
 
 static void FavPoly(HDC dc, const signed char (*pt)[2], int n, int x, int y, int r, COLORREF c)
 {
-    POINT q[10];
+    POINT q[12];
     for (int i = 0; i < n; i++) {
         q[i].x = x + pt[i][0] * r / 10;
         q[i].y = y + pt[i][1] * r / 10;
@@ -2624,8 +2637,8 @@ static void FavSign(HDC dc, int icon, int x, int y, int r, COLORREF fg, COLORREF
 {
     const FavGlyph& g = kFavGlyph[icon >= 0 && icon < VFAV_ICONS ? icon : VFAV_STAR];
     FavPoly(dc, g.p, g.n, x, y, r, fg);
-    if (g.nh)
-        FavPoly(dc, g.h, g.nh, x, y, r, bg);
+    for (int i = 0; i < g.nh; i++)
+        FavPoly(dc, g.h[i], 4, x, y, r, bg);
 }
 
 // The favourites' marks: a dark disc in a white ring, the sign in the accent, the name under it on a card.
@@ -4180,21 +4193,33 @@ static bool MenuRect(int id, RECT* r)
     return true;
 }
 
-// The favourite's card: the signs' row; the name, delete; done.
+// The favourite's card: the signs' two rows of six; the name, delete; done.
 static void FavCardRect(int id, RECT* r)
 {
+    int x = 188 + (id - E_ICON) % 6 * 72, y = 196 + (id - E_ICON) / 6 * 62;
     if (id < E_NAME)
-        SetRect(r, 188 + (id - E_ICON) * 72, 196, 188 + (id - E_ICON) * 72 + 64, 252);
+        SetRect(r, x, y, x + 64, y + 56);
     else if (id == E_DONE)
-        SetRect(r, 220, 330, 580, 380);
+        SetRect(r, 220, 392, 580, 442);
     else
-        SetRect(r, id == E_NAME ? 220 : 405, 268, id == E_NAME ? 395 : 580, 318);
+        SetRect(r, id == E_NAME ? 220 : 405, 330, id == E_NAME ? 395 : 580, 380);
 }
 
-// The mark's menu (three rows) and the favourite's card.
+static bool FavBox(RECT* r)   // the mark's menu's card or the favourite's; false: none shown
+{
+    if (s_favMenu >= 0)
+        SetRect(r, 204, 188, 596, 242 + 3 * 58 + 4);
+    else
+        SetRect(r, 172, 130, 628, 456);
+    return s_favMenu >= 0 || s_favEdit >= 0;
+}
+
+// The mark's menu (three rows) and the favourite's card (E_BOX: the card itself - a tap between its controls).
 static bool FavRect(int id, RECT* r)
 {
-    bool menu = s_favMenu >= 0 && id >= F_GO && id <= F_CANCEL, card = s_favEdit >= 0 && id >= E_ICON && id <= E_DONE;
+    bool menu = s_favMenu >= 0 && id >= F_GO && id <= F_CANCEL, card = s_favEdit >= 0 && id >= E_ICON && id < E_BOX;
+    if (id == E_BOX)
+        return FavBox(r);
     if (menu)
         SetRect(r, 220, 242 + (id - F_GO) * 58, 580, 242 + (id - F_GO) * 58 + 50);
     else if (card)
@@ -4225,7 +4250,7 @@ static int HitOverMap(int x, int y)
         return P_PICK_CANCEL;
     int id = HitIn(M_VIA, M_STOP_CANCEL, MenuRect, x, y);
     if (id < 0)
-        id = HitIn(F_GO, E_DONE, FavRect, x, y);
+        id = HitIn(F_GO, E_BOX, FavRect, x, y);
     if (id >= 0)
         return id;
     if (TripShown() && x >= 196 && x < 604 && y >= 400 && y < 466)   // the trip's card: the route's editor
@@ -4319,7 +4344,8 @@ static void OnOverMap(int id)
 
 static void DrawFavMenu(HDC dc)
 {
-    RECT box = { 204, 188, 596, 242 + 3 * 58 + 4 }, r;
+    RECT box, r;
+    FavBox(&box);
     Card(dc, box, 20);
     FavSign(dc, s_favs.f[s_favMenu].icon, 236, 216, 12, kOrange, kInk);
     Text(dc, s_fontLabel, kText, 258, box.top + 4, box.right - 16, 242, DT_LEFT, s_favs.f[s_favMenu].name);
@@ -4349,7 +4375,8 @@ static void DrawFavCards(HDC dc)
         DrawFavMenu(dc);
     if (s_favEdit < 0)
         return;
-    RECT box = { 172, 130, 628, 396 };
+    RECT box;
+    FavBox(&box);
     Card(dc, box, 20);
     Text(dc, s_fontLabel, kText, box.left + 16, box.top + 6, box.right - 16, 186, DT_CENTER, s_favs.f[s_favEdit].name);
     DrawFavSigns(dc);
