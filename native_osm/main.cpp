@@ -55,6 +55,13 @@ static const COLORREF kText    = RGB(0xf5, 0xf3, 0xee);   // VestaHome's palette
 static const COLORREF kTextDim = RGB(0xaa, 0xb0, 0xb8);
 static const COLORREF kTextErr = RGB(255, 120, 120);
 static const COLORREF kMapBg   = RGB(228, 226, 222);
+
+// The map's ground where no tile is yet: the vector map's night palette has its own (not turned by NightLut) - by
+// night a light square stood out (the user 2026-11-02: white squares)
+static COLORREF MapBg()
+{
+    return g_cfg.night && g_cfg.vector ? RGB(17, 19, 23) : kMapBg;
+}
 static const COLORREF kInk     = RGB(0x0e, 0x10, 0x13);   // the background, the bottom bar
 static const COLORREF kPanel   = RGB(0x1a, 0x1d, 0x22);   // big panels (settings)
 static const COLORREF kPanel2  = RGB(0x23, 0x27, 0x2e);   // cards, round buttons, controls: VestaHome's tiles
@@ -1776,7 +1783,7 @@ static void DrawSlot(Ring& r, HDC rdc, HDC src, int tx, int ty, bool inWorld, co
 {
     int ox = Mod(tx, r.n) * TILE, oy = Mod(ty, r.n) * TILE, px = r.n * TILE;
     RECT rc = { ox, oy, ox + TILE, oy + TILE };
-    HBRUSH bg = CreateSolidBrush(kMapBg);
+    HBRUSH bg = CreateSolidBrush(MapBg());
     FillRect(rdc, &rc, bg);
     DeleteObject(bg);
     if (inWorld && nb) {
@@ -3182,7 +3189,7 @@ static void JunctionBuild(HDC dc, const MapRequest* keys, int n, double mx, doub
     HDC cdc = CreateCompatibleDC(dc), tdc = CreateCompatibleDC(dc);
     HGDIOBJ oc = SelectObject(cdc, canvas.bmp);
     RECT all = { 0, 0, kJunCanvas, kJunCanvas };
-    HBRUSH bg = CreateSolidBrush(kMapBg);
+    HBRUSH bg = CreateSolidBrush(MapBg());
     FillRect(cdc, &all, bg);
     DeleteObject(bg);
     double ox = mx - kJunCanvas / 2, oy = my - kJunCanvas / 2;

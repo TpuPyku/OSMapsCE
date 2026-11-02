@@ -194,6 +194,8 @@ int  MapsBusyRegion();            // the catalog's region being downloaded, -1 n
 void MapsCancel();                // the download stopped (its part kept: goes on from there next time)
 
 // offline.cpp - routes from a region's road graph (OSMapsData\<region>\route.grf), answered as OSRM's JSON
+int   RoadTier(int cls);   // a road class's level: 0 main (motorway..primary, links), 1 secondary / tertiary, 2 minor
+bool  HierAllows(int tier, int nearM, int hier);   // its edge searched nearM from the nearer end (hier: 2, 1, 0 none)
 bool  OfflineRoute(const char* osrmPath, char** body, int* len);   // false: no region / no way - ask OSRM
 bool  OfflineTrunkRoute(const char* osrmPath, char** body, int* len);   // over the trunk roads (4b): after OSRM failed
 bool  OfflineHasTrunk();   // the trunk roads' graph is on a card

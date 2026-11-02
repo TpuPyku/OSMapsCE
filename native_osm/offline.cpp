@@ -324,12 +324,43 @@ static DWORD* s_heapN;
 static DWORD  s_heapCap, s_heapN0;
 static int    s_tLat, s_tLon, s_kxInt;   // the target, metres per 1000 microdegrees of longitude
 
+static int OctM(DWORD n, int lat, int lon)   // metres from node n to a point: the octagon's, at most 8 % over
+{
+    int dy = abs(s_g.nodes[n * 2] - lat) / 9, dx = (int)((__int64)abs(s_g.nodes[n * 2 + 1] - lon) * s_kxInt / 1000);
+    int a = dx > dy ? dx : dy, b = dx > dy ? dy : dx;
+    return a + b * 41 / 100;
+}
+
 static DWORD Est(DWORD n)   // tenths of a second to the target at kMaxV, never more than the truth
 {
-    int dy = abs(s_g.nodes[n * 2] - s_tLat) / 9, dx = (int)((__int64)abs(s_g.nodes[n * 2 + 1] - s_tLon) * s_kxInt / 1000);
-    int a = dx > dy ? dx : dy, b = dx > dy ? dy : dx;
-    int m = a + b * 41 / 100;      // the octagon's metres: at most 8 % over
-    return (DWORD)((__int64)m * 92 / 100 * 36 / kMaxV);
+    return (DWORD)((__int64)OctM(n, s_tLat, s_tLon) * 92 / 100 * 36 / kMaxV);
+}
+
+// The roads' levels (the user 2026-11-02: a way across Moscow's oblast never ended, 951 649 nodes - the navigators
+// take seconds, searching the minor roads only near the ends): near the start and the target every road, from
+// kHierNearM the secondary / tertiary and up, past kHierMidM the main roads only. A search finding nothing asks
+// again with fewer limits (hier 1: the secondary and up past kHierNearM; 0: every road).
+enum { kHierNearM = 5000, kHierMidM = 20000 };
+static int s_sLat, s_sLon, s_hier;   // the start; the levels' limits now
+
+int RoadTier(int cls)
+{
+    if (cls <= C_PRIMARY || (cls >= 9 && cls <= 11))
+        return 0;
+    return cls <= 4 || cls == 12 || cls == 13 ? 1 : 2;
+}
+
+bool HierAllows(int tier, int nearM, int hier)
+{
+    if (!hier || nearM < kHierNearM)
+        return true;
+    return hier == 2 && nearM >= kHierMidM ? tier == 1 : tier <= 1;
+}
+
+static int NearM(DWORD n)   // metres to the nearer end
+{
+    int a = OctM(n, s_sLat, s_sLon), b = OctM(n, s_tLat, s_tLon);
+    return a < b ? a : b;
 }
 
 static bool Push(DWORD key, DWORD n)
@@ -469,9 +500,10 @@ static void ReachEnds(Fastest& f, DWORD n, DWORD d, Way* w)   // node n settled 
 
 static bool Relax(DWORD n, DWORD d)   // node n's edges; false = no memory
 {
+    int nearM = s_hier ? NearM(n) : 0;
     for (DWORD e = s_g.first[n]; e < s_g.first[n + 1]; e++) {
         const GEdge& g = s_g.edges[e];
-        if (s_noToll && (g.flags & 8))
+        if ((s_noToll && (g.flags & 8)) || !HierAllows(RoadTier(g.cls), nearM, s_hier))
             continue;
         DWORD c = d + g.timeDs;
         if (c < s_dist[g.to]) {
@@ -530,20 +562,34 @@ static bool Reconstruct(const Fastest& f, Way* w)   // back from the end's node 
     return true;
 }
 
-// The fastest way between two snaps; anyStart: the start's other road side allowed too.
-static bool Search(const Snap& sa, const Snap& sb, bool anyStart, Way* w)
+// The fastest way between two snaps at the levels' limits hier (none found: f.bestEnd -1); false = no memory
+static bool SearchAt(const Snap& sb, Fastest& f, Way* w, int hier)
 {
-    Fastest f;
-    f.ns = Sides(sa, anyStart, f.starts);
-    f.ne = Sides(sb, true, f.ends);
     if (!Prepare(sb))
         return false;
+    s_hier = hier;
     f.best = 0xFFFFFFFF;
     f.bestEnd = -1;
     memset(w, 0, sizeof(*w));
     for (int i = 0; i < f.ns; i++)
         Seed(f, i, w);
-    if (!Settle(f, w) || f.bestEnd == -1)
+    return Settle(f, w);
+}
+
+// The fastest way between two snaps; anyStart: the start's other road side allowed too. The roads' levels first,
+// fewer limits while none is found.
+static bool Search(const Snap& sa, const Snap& sb, bool anyStart, Way* w)
+{
+    Fastest f;
+    f.ns = Sides(sa, anyStart, f.starts);
+    f.ne = Sides(sb, true, f.ends);
+    s_sLat = sa.lat;
+    s_sLon = sa.lon;
+    for (int hier = 2; hier >= 0 && (hier == 2 || f.bestEnd == -1); hier--)
+        if (!SearchAt(sb, f, w, hier))
+            return false;
+    s_hier = 0;
+    if (f.bestEnd == -1)
         return false;
     w->timeDs = f.best;
     return f.bestEnd == -2 || Reconstruct(f, w);

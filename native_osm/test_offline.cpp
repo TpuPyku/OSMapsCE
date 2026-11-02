@@ -496,6 +496,23 @@ static void DownloadChecks()
 }
 
 // json.cpp (shared now: the catalog read with it): escapes, nesting, a string cut short
+// The roads' levels (the user 2026-11-02: a way across Moscow never ended - other navigators take seconds): near the
+// ends every road, farther from 5 km the tertiary and up, past 20 km the main roads only; a search with none found
+// asks again with fewer limits (level 1: the tertiary and up past 5 km; 0: every road)
+static void LevelChecks()
+{
+    Check(RoadTier(0) == 0 && RoadTier(1) == 0 && RoadTier(2) == 0 && RoadTier(9) == 0 && RoadTier(11) == 0,
+          "levels: motorway, trunk, primary and their links - the main roads", NULL);
+    Check(RoadTier(3) == 1 && RoadTier(4) == 1 && RoadTier(12) == 1 && RoadTier(13) == 1,
+          "levels: secondary, tertiary and their links", NULL);
+    Check(RoadTier(5) == 2 && RoadTier(6) == 2 && RoadTier(8) == 2 && RoadTier(14) == 2 && RoadTier(15) == 2,
+          "levels: unclassified, residential, service, road, track - the minor", NULL);
+    Check(HierAllows(2, 4999, 2) && !HierAllows(2, 5000, 2) && HierAllows(1, 19999, 2) && !HierAllows(1, 20000, 2) &&
+          HierAllows(0, 1000000, 2), "levels: every road near the ends, the tertiary to 20 km, then the main", NULL);
+    Check(HierAllows(1, 50000, 1) && !HierAllows(2, 5000, 1) && HierAllows(2, 4999, 1) && HierAllows(2, 1000000, 0),
+          "levels: asked again - the tertiary and up, at last every road", NULL);
+}
+
 static void JsonChecks()
 {
     char s[64];
@@ -606,6 +623,7 @@ int main()
 
     OffVolumes(false);   // (this PC's own disks' maps - a card in its reader - left out)
     OffFileChecks();
+    LevelChecks();
     JsonChecks();
     MapsChecks();
     DownloadChecks();
