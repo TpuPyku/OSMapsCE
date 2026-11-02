@@ -1125,6 +1125,29 @@ static void FarRingChecks()
           "slot: a coarser tile shown - drawn on any change");
 }
 
+// The search's places fitted into the map beside its panel (design v3, the user 2026-11-02): the world's px at z0
+static void FitZoomChecks()
+{
+    double one[2] = { 100, 50 }, cx, cy;
+    Check(FitZoom(one, 1, 400, 300, 5, 16, &cx, &cy) == 16 && Near(cx, 100) && Near(cy, 50),
+          "fit: one place - the closest zoom, centred on it");
+    double two[4] = { 100, 50, 100 + 400.0 / 32768, 50 + 100.0 / 32768 };   // 400 x 100 px at z15
+    Check(FitZoom(two, 2, 400, 300, 5, 18, &cx, &cy) == 15 && Near(cx, 100 + 200.0 / 32768) &&
+          Near(cy, 50 + 50.0 / 32768), "fit: as wide as the area at z15 - z15, the box's centre");
+    Check(FitZoom(two, 2, 399, 300, 5, 18, &cx, &cy) == 14, "fit: a px wider than the area - one out");
+    double tall[4] = { 100, 50 + 301.0 / 32768, 100, 50 };
+    Check(FitZoom(tall, 2, 400, 300, 5, 18, &cx, &cy) == 14 && Near(cy, 50 + 150.5 / 32768),
+          "fit: too tall at z15 - one out (the top one second)");
+    double whole[4] = { 0, 0, 256, 256 };
+    Check(FitZoom(whole, 2, 400, 300, 5, 18, &cx, &cy) == 5, "fit: never further out than zMin");
+    Check(FitZoom(whole, 0, 400, 300, 5, 18, &cx, &cy) == -1, "fit: no places - none");
+    double three[6] = { 100, 50, 100 - 200.0 / 32768, 50 + 300.0 / 32768, 100 + 200.0 / 32768, 50 - 2.0 / 32768 };
+    Check(FitZoom(three, 3, 400, 302, 5, 18, &cx, &cy) == 15 && Near(cx, 100) && Near(cy, 50 + 149.0 / 32768),
+          "fit: three, the edges not the first - their box (just fits at z15)");
+    Check(FitZoom(three, 3, 400, 301, 5, 18, &cx, &cy) == 14, "fit: the box a px taller than the area - one out");
+    Check(FitZoom(three, 3, 400, 302, 16, 18, &cx, &cy) == 16, "fit: zMin above what fits - zMin");
+}
+
 // The memory's cap (the user 2026-11-02: in 3D the traffic came again and again - the rings' tiles pushed it out)
 static void CacheVictimChecks()
 {
@@ -1569,6 +1592,7 @@ int main()
     TiltWarpChecks();
     FarRingChecks();
     CacheVictimChecks();
+    FitZoomChecks();
     RECT whole = { 0, 0, 800, 480 };
     // the Russian name when the tile has one (name:ru), else the local one: a frame named so equals one whose tile
     // holds that text as its plain name

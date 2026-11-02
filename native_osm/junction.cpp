@@ -151,6 +151,30 @@ int JunctionSlice(const double* ll, int np, int at, double beforeM, double after
     return n;
 }
 
+// The search's places beside its panel (design v3): their box, the closest zoom it fits at
+static void Grow(double v, double* lo, double* hi)
+{
+    *lo = v < *lo ? v : *lo;
+    *hi = v > *hi ? v : *hi;
+}
+
+int FitZoom(const double* xy, int n, double w, double h, int zMin, int zMax, double* cx, double* cy)
+{
+    if (n < 1)
+        return -1;
+    double x0 = xy[0], y0 = xy[1], x1 = x0, y1 = y0;
+    for (int i = 1; i < n; i++) {
+        Grow(xy[i * 2], &x0, &x1);
+        Grow(xy[i * 2 + 1], &y0, &y1);
+    }
+    *cx = (x0 + x1) / 2;
+    *cy = (y0 + y1) / 2;
+    int z = zMax;
+    while (z > zMin && ((x1 - x0) * (1 << z) > w || (y1 - y0) * (1 << z) > h))
+        z--;
+    return z;
+}
+
 // A rounded rectangle's (rows top..bottom - 1) row y: how far in from each side it starts (the circle's, by the pixel
 // centres); also main.cpp's Darken
 int CornerInset(int radius, int y, int top, int bottom)

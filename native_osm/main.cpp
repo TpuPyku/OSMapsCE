@@ -184,8 +184,8 @@ static bool       s_showHits;       // the places found instead of the keyboard
 static VKeys      s_kb;
 static int        s_kbPressed = -1;
 enum { kQueryCap = 120 };   // (SearchStart: 256 bytes of UTF-8 - 120 Russian letters fit)
-enum { K_SHIFT = 100, K_LANG, K_SPACE, K_BS, K_FIND, K_BACK, K_FIELD, K_HIT = 200, K_FAVDEL = 300 };
-enum { kKbY = 66, kKbRowH = 81, kHitY = 62, kHitH = 58 };
+enum { K_SHIFT = 100, K_LANG, K_SPACE, K_BS, K_FIND, K_BACK, K_FIELD, K_PANEL, K_HIT = 200, K_FAVDEL = 300 };
+enum { kKbY = 66, kKbRowH = 81 };
 
 // The route editor (a long press on the map, the user's design 2026-10-26): "from" (the car by default, or an
 // address, or a point on the map), up to three stops, "to"; a field tapped opens its choices. With a route on, a
@@ -3597,9 +3597,12 @@ static void DrawTrip(HDC dc)
 enum { kFieldX = 92, kFieldR = 800 - 24 };   // the query's text on the field (from its left: VKeysLayout's x)
 
 // Where control id of the search screen is; false if it is not there now.
-static int ListCount()   // the list's rows: the favourites (8 shown) or the search's hits
+enum { kHitRows = 5 };   // (the panel beside the map: design v3)
+
+static int ListCount()   // the list's rows: the favourites or the search's hits, kHitRows at most
 {
-    return s_showFavs ? (s_favs.n < 8 ? s_favs.n : 8) : SearchCount();
+    int n = s_showFavs ? s_favs.n : SearchCount();
+    return n < kHitRows ? n : kHitRows;
 }
 
 static bool FavHit(int i, SearchHit* h)   // a favourite as a search's hit
@@ -3632,25 +3635,42 @@ static void FavsSave()
         Log("favs: not saved");
 }
 
+// The found places' panel over the map (design v3, the user 2026-11-02): the query's field (a tap - the keyboard
+// again), the rows (a favourite's "x" at its right), the panel itself (a tap beside it closes the search)
+static bool HitRowRect(int id, RECT* r)   // a row (K_HIT + i) or a favourite's "x" (K_FAVDEL + i)
+{
+    bool del = id >= K_FAVDEL;
+    int i = id - (del ? K_FAVDEL : K_HIT), y = 124 + i * 66;
+    if (i >= ListCount() || (del && !s_showFavs))
+        return false;
+    if (del)
+        SetRect(r, 278, y + 10, 320, y + 52);
+    else
+        SetRect(r, 28, y, s_showFavs ? 272 : 324, y + 62);
+    return true;
+}
+
+static bool HitsRect(int id, RECT* r)
+{
+    if (id == K_PANEL)
+        SetRect(r, 16, 56, 336, 466);
+    else if (id == K_FIELD)
+        SetRect(r, 28, 68, 324, 112);
+    else
+        return id >= K_HIT && HitRowRect(id, r);
+    return true;
+}
+
 static bool SearchRect(int id, RECT* r)
 {
+    if (s_showHits)
+        return HitsRect(id, r);
     if (id == K_BACK) {
         SetRect(r, 8, 8, 64, 48);
         return true;
     }
     if (id == K_FIELD) {
         SetRect(r, 76, 6, s_cw - 12, 50);
-        return true;
-    }
-    if (s_showHits) {
-        int i = id - (id >= K_FAVDEL ? K_FAVDEL : K_HIT);
-        if (id < K_HIT || i < 0 || i >= ListCount() || (id >= K_FAVDEL && !s_showFavs))
-            return false;
-        int del = s_showFavs ? 136 : 0;   // the favourite's "x" at the right
-        if (id >= K_FAVDEL)
-            SetRect(r, s_cw - 16 - del + 8, kHitY + i * kHitH, s_cw - 16, kHitY + (i + 1) * kHitH - 4);
-        else
-            SetRect(r, 16, kHitY + i * kHitH, s_cw - 16 - del, kHitY + (i + 1) * kHitH - 4);
         return true;
     }
     int row, col;
@@ -3669,13 +3689,70 @@ static bool SearchRect(int id, RECT* r)
     return true;
 }
 
-static int HitSearch(int x, int y)
+static int HitSearch(int x, int y)   // (the panel last: under its rows)
 {
     RECT r;
-    for (int id = 0; id < K_FAVDEL + 8; id++)
-        if (SearchRect(id, &r) && x >= r.left && x < r.right && y >= r.top && y < r.bottom)
+    POINT pt = { x, y };
+    for (int id = 0; id < K_FAVDEL + kHitRows; id++)
+        if (id != K_PANEL && SearchRect(id, &r) && PtInRect(&r, pt))
             return id;
-    return -1;
+    return SearchRect(K_PANEL, &r) && PtInRect(&r, pt) ? K_PANEL : -1;
+}
+
+// The map fitted to the found places beside the panel (junction.cpp FitZoom), the view before it kept: back when the
+// search closes with no place chosen
+static bool   s_fitDone, s_fitSaved;
+static double s_fitLon, s_fitLat;
+static int    s_fitZ, s_fitFollow;
+
+static void FitHits()
+{
+    int n = ListCount();
+    if (s_fitDone || !n || (!s_showFavs && SearchState() != SEARCH_DONE))
+        return;
+    double xy[kHitRows * 2], cx, cy;
+    for (int i = 0; i < n; i++) {
+        SearchHit h;
+        ListHit(i, &h);
+        GeoToWorld(h.lon, h.lat, 0, &xy[i * 2], &xy[i * 2 + 1]);
+    }
+    int z = FitZoom(xy, n, 380, 330, 5, 17, &cx, &cy);
+    if (!s_fitSaved) {
+        s_fitLon = g_cfg.lon;
+        s_fitLat = g_cfg.lat;
+        s_fitZ = g_cfg.z;
+        s_fitFollow = g_cfg.follow;
+        s_fitSaved = true;
+    }
+    double k = (double)(1 << z);   // the box's centre at the free part's (568, 261): the view's 168 px left, 21 up
+    g_cfg.z = z;
+    g_cfg.follow = FOLLOW_OFF;
+    WorldToGeo(cx * k - 168, cy * k - 21, z, &g_cfg.lon, &g_cfg.lat);
+    s_fitDone = true;
+    UserChanged();
+}
+
+static void FitBack(bool restore)   // the search closed: the view as it was (restore), or as the place chosen left it
+{
+    if (restore && s_fitSaved) {
+        g_cfg.lon = s_fitLon;
+        g_cfg.lat = s_fitLat;
+        g_cfg.z = s_fitZ;
+        g_cfg.follow = s_fitFollow;
+        UserChanged();
+    }
+    s_fitSaved = s_fitDone = false;
+}
+
+static void SearchClose()   // a tap beside the found places' panel
+{
+    s_search = false;
+    s_showHits = s_showFavs = false;
+    if (s_searchSlot >= 0) {   // back to the route editor
+        s_searchSlot = -1;
+        s_plan = true;
+    }
+    FitBack(true);
 }
 
 // The point the search is near and the route starts at: the car, or the map's center without a fix.
@@ -3686,9 +3763,12 @@ static void SearchFrom(double* lon, double* lat)
 }
 
 // The route to a place: from the car (or the map's centre without a fix: the map then shows where it goes)
+static void FitBack(bool restore);
+
 static void RouteToHit(const SearchHit* h)
 {
     double lon, lat;
+    FitBack(false);
     SearchFrom(&lon, &lat);
     RouteTo(h, lon, lat, !s_gps.valid ? -2 : s_gps.speedKmh > 10 ? s_gps.course : -1);
     s_search = false;
@@ -3744,6 +3824,7 @@ static void OnSearchKey(int id)
         }
     } else if (id == K_FIELD) {
         s_showHits = s_showFavs = false;
+        s_fitDone = false;
     } else if (id == K_SHIFT) {
         s_kb.shift = !s_kb.shift;
     } else if (id == K_LANG) {
@@ -3760,6 +3841,7 @@ static void OnSearchKey(int id)
         SearchFrom(&lon, &lat);
         s_showFavs = !n;   // the query empty: the favourites
         s_showHits = true;
+        s_fitDone = false;
         if (n)
             SearchStart(s_kb.text, lon, lat);   // (the query is in the log as the request's URL)
     } else if (id >= K_FAVDEL) {   // a favourite's "x": "ТОЧНО?", then gone
@@ -3822,8 +3904,112 @@ static void DrawQuery(HDC dc, const RECT& r)
         Bar(dc, cx - 1, r.top + 8, 3, r.bottom - r.top - 16, kOrange);
 }
 
+static bool GeoScreen(double lon, double lat, int* x, int* y)   // a place on the screen now; false: out of the view
+{
+    double vx, vy, gx, gy, sx, sy;
+    ViewWorld(&vx, &vy);
+    GeoToWorld(lon, lat, g_cfg.z, &gx, &gy);
+    bool on = ScreenOf(gx, gy, vx, vy, g_cfg.mapX + g_cfg.mapW / 2.0, g_cfg.mapY + g_cfg.mapH / 2.0, ViewAngle(), &sx,
+                       &sy);
+    *x = Round(sx);
+    *y = Round(sy);
+    return on;
+}
+
+static bool HitsMessage(HDC dc)   // nothing to list: why, in the panel; true: shown
+{
+    int st = SearchState(), n = ListCount();
+    const wchar_t* msg = s_showFavs ? (n ? NULL : L"Избранного нет") : st == SEARCH_BUSY ? L"Поиск…"
+                       : st == SEARCH_FAIL ? L"Нет связи с сервером поиска" : !n ? L"Ничего не найдено" : NULL;
+    if (!msg)
+        return false;
+    Text(dc, s_fontLabel, st == SEARCH_FAIL ? kTextErr : kTextDim, 28, 130, 324, 160, DT_CENTER, msg);
+    if (s_showFavs)
+        Text(dc, s_fontSmall, kTextDim, 28, 160, 324, 186, DT_CENTER, L"долгое нажатие на карте → «В избранное»");
+    return true;
+}
+
+static void HitSign(HDC dc, int i, int x, int y)   // a row's number (its mark on the map's) or a favourite's sign
+{
+    wchar_t num[4];
+    _snwprintf(num, 4, L"%d", i + 1);
+    if (s_showFavs)
+        FavSign(dc, s_favs.f[i].icon, x, y, 11, kOrange, kInk);
+    else
+        RouteMarker(dc, x, y, i == 0 || s_kbPressed == K_HIT + i ? kOrange : kInk, num);
+}
+
+static void HitDel(HDC dc, int i, bool sure)   // a favourite's "x" ("ТОЧНО?" - red)
+{
+    RECT r;
+    if (!HitsRect(K_FAVDEL + i, &r))
+        return;
+    Tile(dc, r, sure ? kTextErr : kPanel2, sure ? kTextErr : kPanel2, 16);
+    Text(dc, s_fontLabel, sure ? kInk : kText, r.left, r.top, r.right, r.bottom, DT_CENTER, L"✕");
+}
+
+static void DrawHitRow(HDC dc, int i, const SearchHit& h, double lon, double lat)
+{
+    RECT r;
+    HitsRect(K_HIT + i, &r);
+    bool sure = s_showFavs && s_favDel == i;
+    if (s_kbPressed == K_HIT + i)
+        Tile(dc, r, kPanel2, kPanel2, 16);
+    HitSign(dc, i, r.left + 20, (r.top + r.bottom) / 2);
+    double dx = (h.lon - lon) * 111320 * cos(lat * M_PI / 180), dy = (h.lat - lat) * 110540;
+    wchar_t d[32], name[100];
+    FmtDist(d, 32, (int)sqrt(dx * dx + dy * dy));
+    _snwprintf(name, 100, sure ? L"Удалить «%s»?" : L"%s", h.name);
+    name[99] = 0;
+    int right = sure ? r.right - 4 : r.right - 64;   // (asked "delete?": the whole row, no distance)
+    Text(dc, s_fontLabel, sure ? kTextErr : kText, r.left + 44, r.top + 6, right, r.top + 34, DT_LEFT, name);
+    Text(dc, s_fontSmall, kTextDim, r.left + 44, r.top + 34, right, r.bottom - 6, DT_LEFT,
+         sure ? L"ещё раз ✕ — удалить" : h.sub);
+    if (!sure)
+        Text(dc, s_fontSmall, kTextDim, r.right - 70, r.top, r.right - 8, r.bottom, DT_RIGHT, d);
+    HitDel(dc, i, sure);
+}
+
+static void DrawStatus(HDC dc);
+
+static void DrawHitMarks(HDC dc, int left)   // the found places' numbers on the map right of left (the first on top;
+{                                            // the favourites have their marks)
+    for (int i = ListCount() - 1; i >= 0 && !s_showFavs; i--) {
+        SearchHit h;
+        int x, y;
+        if (ListHit(i, &h) && GeoScreen(h.lon, h.lat, &x, &y) && x > left + 14)
+            HitSign(dc, i, x, y);
+    }
+}
+
+static void DrawHits(HDC dc)   // the found places beside the map (design v3), numbered on it too
+{
+    FitHits();
+    DrawStatus(dc);
+    RECT box, r;
+    HitsRect(K_PANEL, &box);
+    Card(dc, box, 20);
+    HitsRect(K_FIELD, &r);
+    Tile(dc, r, kPanel2, kOrange, 22);
+    Text(dc, s_fontBig, kText, r.left + 16, r.top, r.right - 12, r.bottom, DT_LEFT, s_showFavs ? L"Избранное" : s_kb.text);
+    if (HitsMessage(dc))
+        return;
+    double lon, lat;
+    SearchFrom(&lon, &lat);
+    DrawHitMarks(dc, box.right);
+    for (int i = 0; i < ListCount(); i++) {
+        SearchHit h;
+        if (ListHit(i, &h))
+            DrawHitRow(dc, i, h, lon, lat);
+    }
+}
+
 static void DrawSearch(HDC dc)
 {
+    if (s_showHits) {
+        DrawHits(dc);
+        return;
+    }
     RECT all = { 0, 0, s_cw, s_ch };
     HBRUSH ink = CreateSolidBrush(kInk);
     FillRect(dc, &all, ink);
@@ -4227,15 +4413,20 @@ static bool LpRect(int id, RECT* r)
     return true;
 }
 
-static bool MenuRect(int id, RECT* r)
+static bool StopRect(int id, RECT* r)   // a stop's menu: out, earlier (not the first), cancel
 {
-    if (s_lpMenu && id >= M_VIA && id <= M_CARD)
-        return LpRect(id, r);
-    if (s_lpStop < 0 || id < M_STOP_OUT || id > M_STOP_CANCEL || (id == M_STOP_UP && s_lpStop == 0))
+    if (s_lpStop < 0 || (id == M_STOP_UP && s_lpStop == 0))
         return false;
     int i = id - M_STOP_OUT - (id > M_STOP_UP && s_lpStop == 0);   // (no "earlier": closed up)
     SetRect(r, 220, 300 + i * 58, 580, 300 + i * 58 + 50);
     return true;
+}
+
+static bool MenuRect(int id, RECT* r)
+{
+    if (id >= M_VIA && id <= M_CARD)
+        return s_lpMenu && LpRect(id, r);
+    return id >= M_STOP_OUT && id <= M_STOP_CANCEL && StopRect(id, r);
 }
 
 // The favourite's card: the signs' two rows of six; the name, delete; done.
@@ -5302,6 +5493,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             s_kbPressed = HitSearch(x, y);
             if (s_kbPressed == K_FIELD && !s_showHits)   // the cursor to the finger
                 VKeysCursorAt(&s_kb, x - kFieldX, kFieldR - kFieldX);
+            if (s_kbPressed < 0 && s_showHits)   // beside the found places' panel: the search closed
+                SearchClose();
         } else if (s_plan) {
             s_planPressed = HitPlan(x, y);
         } else if ((s_planPressed = HitOverMap(x, y)) >= 0) {

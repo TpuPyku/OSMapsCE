@@ -342,6 +342,9 @@ int  CacheVictim(const CacheEntry* e, int n, int keep, DWORD now);
 // map turned so the way in points up
 bool JunctionComplex(const char* osrmType);   // a fork, a ramp, a roundabout, a merge
 bool JunctionShown(bool on, bool complex, int nextM, bool off, int reachM);
+// The places (x, y pairs in the world's px at z0) in a w x h area: the closest zoom zMin..zMax showing them all, the
+// centre of their box; -1: no places
+int  FitZoom(const double* xy, int n, double w, double h, int zMin, int zMax, double* cx, double* cy);
 int  JunctionReachM(double kmh);   // the card shown this far before the maneuver: 15 s of the way, 300 m at least
 int  JunctionZoom(int userZ, bool heading, bool complex, int nextM, bool off, int reachM);   // z17 before it
 int  WheelZoom(int code, int kind);   // a wheel button from VestaHome: +1 / -1 the zoom (up / down), 0 - not ours
