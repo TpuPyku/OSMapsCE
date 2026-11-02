@@ -64,6 +64,42 @@ class YaDisk(unittest.TestCase):
         self.assertIn('507', str(e.exception))
         self.assertIn('InsufficientStorageError', str(e.exception))
 
+    def test_upload_again(self):
+        """The connection reset on the way up (the maps workflow 2026-11-02: Krasnoyarsk's zip lost, its whole build
+        with it) or the server's 5xx: asked again, a new link each time, after a wait; the third failure told."""
+        def flaky(fails):
+            fake = FakeDisk({('PUT', '/v1/disk/resources'): (201, {}),
+                             ('GET', '/v1/disk/resources/upload'): (200, {'href': 'https://up.example/put/1'}),
+                             ('PUT', '/put/1'): (201, b'')})
+            left = [fails]
+
+            def send(method, url, headers, body=None):
+                if '/put/' in url and left[0]:
+                    left[0] -= 1
+                    if left[0] % 2:
+                        raise ConnectionResetError(104, 'Connection reset by peer')
+                    return 500, b'busy'
+                return fake(method, url, headers, body)
+            return fake, send
+        with tempfile.NamedTemporaryFile(delete=False) as f:
+            f.write(b'ZIP')
+        try:
+            fake, send = flaky(2)
+            waits = []
+            yadisk.Disk('tok', send, waits.append).upload('app:/maps/a.zip', f.name)
+            self.assertEqual(len([c for c in fake.calls if c[1].endswith('/resources/upload')]), 3)
+            self.assertEqual(fake.calls[-1][4], b'ZIP')   # (the file whole the last time too)
+            self.assertEqual(waits, [30, 60])
+            fake, send = flaky(3)   # (500, reset, 500)
+            with self.assertRaises(yadisk.DiskError) as e:
+                yadisk.Disk('tok', send, waits.append).upload('app:/maps/a.zip', f.name)
+            self.assertIn('500', str(e.exception))
+            fake, send = flaky(4)   # (reset, 500, reset; the fourth never asked)
+            with self.assertRaises(OSError):
+                yadisk.Disk('tok', send, waits.append).upload('app:/maps/a.zip', f.name)
+        finally:
+            os.remove(f.name)
+
     def test_publish(self):
         """The folder public: published, its public link read back."""
         fake = FakeDisk({('PUT', '/v1/disk/resources/publish'): (200, {'href': 'x'}),

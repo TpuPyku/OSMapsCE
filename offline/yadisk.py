@@ -10,6 +10,7 @@ The token: an OAuth token of the disk's owner with cloud_api:disk.app_folder - i
 user 2026-10-30: no access to the rest of the disk); the workflow's secret YANDEX_DISK_TOKEN.
 """
 import json
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -31,10 +32,18 @@ def urllib_send(method, url, headers, body=None):
         return e.code, e.read()
 
 
+class ServerBusy(OSError):   # the server's 5xx on the way up: asked again
+    pass
+
+
+def answer_text(status, data, what):
+    return '%s: HTTP %d %s' % (what, status, data[:300].decode('utf-8', 'replace'))
+
+
 def answer(status, data, what, ok=(200, 201, 202)):
     """The JSON answer of a call that went well; else DiskError with the server's words."""
     if status not in ok:
-        raise DiskError('%s: HTTP %d %s' % (what, status, data[:300].decode('utf-8', 'replace')))
+        raise DiskError(answer_text(status, data, what))
     return json.loads(data) if data else {}
 
 
@@ -43,22 +52,42 @@ def call(send, method, what, params, headers, ok=(200, 201, 202)):
     return answer(status, data, what, ok)
 
 
+WAITS = (30, 60)   # the upload asked again after these seconds (a connection reset, the server's 5xx)
+
+
 class Disk:
-    def __init__(self, token, send=urllib_send):
-        self.send, self.auth = send, {'Authorization': 'OAuth ' + token, 'Accept': 'application/json'}
+    def __init__(self, token, send=urllib_send, sleep=time.sleep):
+        self.send, self.sleep = send, sleep
+        self.auth = {'Authorization': 'OAuth ' + token, 'Accept': 'application/json'}
 
     def folder(self, path):   # made (there already: 409 - fine)
         call(self.send, 'PUT', 'resources', {'path': path}, self.auth, ok=(201, 409))
 
-    def upload(self, path, file):
-        """The file into path (overwritten), the folders on the way made."""
-        parts = path.split('/')
-        for i in range(2, len(parts)):   # ('app:', 'maps', 'a.zip': app:/maps)
-            self.folder('/'.join(parts[:i]))
+    def put_once(self, path, file):
+        """One try: a new link, the file whole to it; the server's 5xx - an OSError (asked again)."""
         href = call(self.send, 'GET', 'resources/upload', {'path': path, 'overwrite': 'true'}, self.auth)['href']
         with open(file, 'rb') as f:
             status, data = self.send('PUT', href, {'Content-Type': 'application/octet-stream'}, f)
+        if status >= 500:
+            raise ServerBusy(answer_text(status, data, 'upload ' + path))
         answer(status, data, 'upload ' + path, ok=(200, 201, 202))
+
+    def upload(self, path, file):
+        """The file into path (overwritten), the folders on the way made; a failure on the way up asked again
+        (the maps workflow 2026-11-02: a connection reset lost a region's whole build) - the last one told."""
+        parts = path.split('/')
+        for i in range(2, len(parts)):   # ('app:', 'maps', 'a.zip': app:/maps)
+            self.folder('/'.join(parts[:i]))
+        for wait in WAITS + (None,):
+            try:
+                return self.put_once(path, file)
+            except ServerBusy as e:
+                if wait is None:
+                    raise DiskError(str(e))
+            except OSError:
+                if wait is None:
+                    raise
+            self.sleep(wait)
 
     def publish(self, path):
         """The folder (or file) public; its public link."""
