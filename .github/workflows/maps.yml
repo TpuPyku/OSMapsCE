@@ -19,6 +19,9 @@ on:
 permissions:
   contents: write
 
+env:
+  PYTHONUNBUFFERED: '1'   # (2026-11-02: Kazakhstan cut at 6 h with nothing in its log - the timings were buffered)
+
 jobs:
   list:
     if: ${{ inputs.only == '' || inputs.only == 'all' }}
