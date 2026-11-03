@@ -38,9 +38,71 @@ def tile_range(bbox, z):
         return min(n - 1, max(0, int((lon + 180) / 360 * n)))
 
     def ty(lat):
-        la = math.radians(max(-85.05, min(85.05, lat)))
-        return min(n - 1, max(0, int((1 - math.log(math.tan(la) + 1 / math.cos(la)) / math.pi) / 2 * n)))
+        return min(n - 1, max(0, int(tile_y(lat, n))))
     return range(tx(bbox[0]), tx(bbox[2]) + 1), range(ty(bbox[3]), ty(bbox[1]) + 1)
+
+
+def tile_y(lat, n):
+    """The latitude's tile row (a fraction: where in it) of a zoom n tiles a side."""
+    la = math.radians(max(-85.05, min(85.05, lat)))
+    return (1 - math.log(math.tan(la) + 1 / math.cos(la)) / math.pi) / 2 * n
+
+
+def joined(ranges):
+    """(a, b) ranges sorted, the touching and the overlapping ones as one."""
+    out = []
+    for a, b in sorted(ranges):
+        if out and a <= out[-1][1] + 1:
+            out[-1] = (out[-1][0], max(out[-1][1], b))
+        else:
+            out.append((a, b))
+    return out
+
+
+def ring_rows(ring, n):
+    """{row: [(x0, x1)]} of the zoom's (n tiles a side) rows a ring covers, scanned at each row's top, middle and
+    bottom (an edge half-open: a vertex on the scan counted once)."""
+    pts = [((lon + 180) / 360 * n, tile_y(lat, n)) for lon, lat in ring]
+    cross = {}
+    for (x1, y1), (x2, y2) in zip(pts, pts[1:] + pts[:1]):
+        k = math.ceil(min(y1, y2) * 2)   # the scans at the halves: s = k / 2
+        while y1 != y2 and k / 2 < max(y1, y2):
+            cross.setdefault(k, []).append(x1 + (x2 - x1) * (k / 2 - y1) / (y2 - y1))
+            k += 1
+    rows = {}
+    for k, xs in cross.items():
+        xs.sort()
+        for row in ((k // 2, k // 2 - 1) if k % 2 == 0 else (k // 2,)):   # (a row's top is the one above's bottom)
+            rows.setdefault(row, []).extend((int(a), int(b)) for a, b in zip(xs[::2], xs[1::2]))
+    return rows
+
+
+def poly_ranges(rings, z):
+    """{y: [(x0, x1)]} of zoom z's tiles a region's outline (rings of (lon, lat)) touches, a tile round them (the
+    maps workflow 2026-11-03: Kazakhstan's box - twice the country - never cut in GitHub's 6 h)."""
+    n = 1 << z
+    out = {}
+    for ring in rings:
+        for y, rs in ring_rows(ring, n).items():
+            for yy in (y - 1, y, y + 1):
+                if 0 <= yy < n:
+                    out.setdefault(yy, []).extend((max(0, a - 1), min(n - 1, b + 1)) for a, b in rs)
+    return {y: joined(v) for y, v in out.items()}
+
+
+def wanted(bbox, maxzoom, rings):
+    """(z, x, y) of a region's tiles: its outline's (rings), else its box's."""
+    for z in range(0, maxzoom + 1):
+        if rings:
+            for y, rs in poly_ranges(rings, z).items():
+                for a, b in rs:
+                    for x in range(a, b + 1):
+                        yield z, x, y
+        else:
+            xs, ys = tile_range(bbox, z)
+            for x in xs:
+                for y in ys:
+                    yield z, x, y
 
 
 class Archive:
@@ -125,15 +187,14 @@ def processed(items, total, tell):
             tell(kDataEnd + (1 - kDataEnd) * i / total, 'обработка: %d из %d плиток' % (i, total))
 
 
-def extract(get_bytes, bbox, maxzoom, out, progress=None, keep=lambda tile: tile):
-    """The region's tiles into the pack out; keep: what of a tile is kept (slim); progress(part 0..1, text) from the
-    start: the archive's directories first, then the data."""
+def extract(get_bytes, bbox, maxzoom, out, progress=None, keep=lambda tile: tile, rings=None):
+    """The region's tiles into the pack out - its box's, or its outline's (rings of (lon, lat)); keep: what of a tile
+    is kept (slim); progress(part 0..1, text) from the start: the archive's directories first, then the data."""
     tell = progress or (lambda part, text: None)
     tell(0, 'каталог архива…')
     with ThreadPoolExecutor(kThreads) as pool:
         archive = Archive(get_bytes)
-        keys = {zxy_to_tileid(z, x, y): (z, x, y) for z in range(0, maxzoom + 1)
-                for xs, ys in [tile_range(bbox, z)] for x in xs for y in ys}
+        keys = {zxy_to_tileid(z, x, y): (z, x, y) for z, x, y in wanted(bbox, maxzoom, rings)}
         located = {keys[t]: span for t, span in archive.locate_all(keys, pool, tell).items()}
         tell(kDirsPart, 'каталог: %d плиток' % len(located))
         data = fetch(archive, located, pool, tell)

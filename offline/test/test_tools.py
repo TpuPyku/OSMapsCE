@@ -405,6 +405,76 @@ class Tools(unittest.TestCase):
         self.assertTrue(work[-1][1].endswith('из %d плиток' % len(tiles)), work[-1])
         self.assertTrue(all(l <= 4000 + 200 for o, l in asked[1:] if l > 600), asked[:5])   # the data's pieces
 
+    def test_poly_ranges(self):
+        """The tiles a region's outline touches (2026-11-03: Kazakhstan's box - twice the country, Russia's, China's,
+        Uzbekistan's tiles in it - never cut in GitHub's 6 h): each row's x ranges, a tile round them."""
+        z, n = 5, 32
+        lon = lambda x: x / n * 360 - 180                           # noqa: E731
+        lat = lambda y: math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * y / n))))   # noqa: E731
+        tri = [(lon(x), lat(y)) for x, y in ((10.5, 10.5), (20.5, 10.5), (10.5, 20.5), (10.5, 10.5))]
+        r = pmextract.poly_ranges([tri], z)
+        self.assertEqual(r[15], [(9, 18)])          # its rows 14..16 (x 10..17 on 14's top), a tile round
+        self.assertEqual(r[9], [(9, 21)])           # the row over it: its neighbour's
+        self.assertEqual(r[20], [(9, 13)])
+        self.assertEqual(r[21], [(9, 12)])
+        self.assertEqual(sorted(r), list(range(9, 22)))
+        island = [(lon(x), lat(y)) for x, y in ((27.5, 14.5), (29.5, 14.5), (29.5, 15.5), (27.5, 15.5))]
+        r = pmextract.poly_ranges([tri, island], z)
+        self.assertEqual(r[15], [(9, 18), (26, 30)])  # two rings apart: two ranges
+        near = [(lon(x), lat(y)) for x, y in ((18.5, 14.5), (19.5, 14.5), (19.5, 15.5), (18.5, 15.5))]
+        self.assertEqual(pmextract.poly_ranges([tri, near], z)[15], [(9, 20)])   # close ones: one
+        edge = [(lon(x), lat(y)) for x, y in ((0.2, 0.2), (31.8, 0.2), (31.8, 1.8), (0.2, 1.8))]
+        self.assertEqual(pmextract.poly_ranges([edge], z)[0], [(0, 31)])   # never past the world's edge
+        self.assertNotIn(-1, pmextract.poly_ranges([edge], z))
+        bottom = [(lon(x), lat(y)) for x, y in ((3.5, 30.2), (5.5, 30.2), (5.5, 31.8), (3.5, 31.8))]
+        self.assertEqual(sorted(pmextract.poly_ranges([bottom], z)), [29, 30, 31])   # (no row 32)
+        u = [(x, y) for x, y in ((10.5, 10.5), (16.5, 10.5), (16.5, 16.5), (14.5, 16.5), (14.5, 12.5), (12.5, 12.5),
+                                 (12.5, 16.5), (10.5, 16.5))]
+        rows = pmextract.ring_rows([(lon(x), lat(y)) for x, y in u], n)
+        self.assertEqual(pmextract.joined(rows[14]), [(10, 12), (14, 16)])   # a U: its two legs
+        self.assertEqual(pmextract.joined(rows[11]), [(10, 16)])
+        self.assertEqual(pmextract.joined([(5, 6), (1, 2), (3, 4)]), [(1, 6)])   # touching: one
+        self.assertEqual(pmextract.joined([(1, 2), (4, 5), (3, 3)]), [(1, 5)])
+        self.assertEqual(pmextract.joined([(1, 2), (4, 5)]), [(1, 2), (4, 5)])  # a tile between: two
+
+    def test_pmtiles_extract_by_outline(self):
+        """With the region's outline: only the tiles it touches (and their parents'), not its box's."""
+        src = os.path.join(self.tmp, 'planet.pmtiles')
+        n = 1 << 12
+        tiles = {(12, x, y): b'%d,%d' % (x, y) for x in range(100, 140) for y in range(100, 140)}
+        tiles[(11, 50, 50)] = b'parent'
+        tiles[(11, 69, 69)] = b'far parent'
+        make_pmtiles(src, tiles)
+        data = read(src)
+        lon = lambda x: x / n * 360 - 180                           # noqa: E731
+        lat = lambda y: math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * y / n))))   # noqa: E731
+        sq = [(lon(x), lat(y)) for x, y in ((100.5, 100.5), (104.5, 100.5), (104.5, 104.5), (100.5, 104.5))]
+        out = os.path.join(self.tmp, 'tiles.vtp')
+        pmextract.extract(lambda o, l: data[o:o + l], (lon(100.5), lat(139.5), lon(139.5), lat(100.5)), 12, out,
+                          rings=[sq])
+        _, _, got = pack_tiles(out)
+        self.assertEqual({k for k in got if k[0] == 12}, {(12, x, y) for x in range(99, 106) for y in range(99, 106)
+                                                          if (12, x, y) in tiles})
+        self.assertIn((11, 50, 50), got)
+        self.assertNotIn((11, 69, 69), got)
+
+    def test_region_rings(self):
+        """A region's outline from its extracts' .poly (openstreetmap.fr's polygons/ tree); across 180 degrees
+        (Chukotka) or none to be had: None - its box then."""
+        polys = {'http://download.openstreetmap.fr/polygons/russia/a.poly': 'a\n1\n 40 50\n 42 50\n 42 52\nEND\nEND\n',
+                 'http://download.openstreetmap.fr/polygons/russia/b.poly': 'b\n1\n 44 50\n 45 50\n 45 51\nEND\nEND\n',
+                 'http://download.openstreetmap.fr/polygons/russia/c.poly': 'c\n1\n 170 60\n -170 60\n -170 62\nEND\nEND\n'}
+        url = lambda n: 'http://download.openstreetmap.fr/extracts/russia/%s-latest.osm.pbf' % n   # noqa: E731
+
+        def get(u):
+            if u not in polys:
+                raise OSError('404')
+            return polys[u]
+        self.assertEqual(release_regions.region_rings(url('a'), get), [[(40, 50), (42, 50), (42, 52)]])
+        self.assertEqual(len(release_regions.region_rings([url('a'), url('b')], get)), 2)
+        self.assertIsNone(release_regions.region_rings(url('c'), get))
+        self.assertIsNone(release_regions.region_rings(url('x'), get))
+
     def test_pmtiles_extract_through_leaf_directories(self):
         """A big region: the root directory points to leaves (Protomaps' build: always), read a level at a time,
         each once."""
