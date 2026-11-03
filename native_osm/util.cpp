@@ -147,7 +147,7 @@ void ConfigDefaults()
     g_cfg.cacheKb = -1;
     g_cfg.cacheDays = 7;
     g_cfg.gpsEnabled = 1;
-    wcscpy(g_cfg.gpsPort, L"COM6:");       // GPS receiver of Lada Vesta MMC
+    wcscpy(g_cfg.gpsPort, L"COM4:");       // GPS receiver of Lada Vesta MMC (the user 2026-11-03: COM4 115200 there)
     g_cfg.gpsBaud = 115200;
     wcscpy(g_cfg.killProcess, L"CityGuideCE.exe");
     g_cfg.hideTaskbar = 1;
@@ -172,8 +172,71 @@ static int Clamp(int v, int lo, int hi)
     return v < lo ? lo : (v > hi ? hi : v);
 }
 
+// The GPS port by the device (the user 2026-11-03: one card in the unit and in Shturmann - the unit took Shturmann's
+// COM1 38400): "gps_port@<device>", "gps_baud@<device>"; the other devices' kept as they were. The device: its OEM
+// string (letters and digits). An older file's plain gps_port / gps_baud: not taken (each device its default once).
+struct GpsDev { char dev[40]; char port[16]; int baud; };
+enum { kGpsDevs = 4 };
+static GpsDev s_gpsOther[kGpsDevs];
+static int    s_gpsOthers;
+
+static const char* DeviceName()
+{
+    static char dev[40];
+    if (dev[0])
+        return dev;
+    wchar_t w[40] = L"";
+#ifdef UNDER_CE
+    SystemParametersInfo(SPI_GETOEMINFO, sizeof(w), w, 0);
+#endif
+    int n = 0;
+    for (int i = 0; w[i] && n < 39; i++)
+        if ((w[i] >= L'A' && w[i] <= L'Z') || (w[i] >= L'a' && w[i] <= L'z') || (w[i] >= L'0' && w[i] <= L'9'))
+            dev[n++] = (char)w[i];
+    strcpy(dev, n ? dev : "PC");
+    return dev;
+}
+
+static GpsDev* OtherDev(const char* dev)   // the table's entry of another device (made when new; NULL: full)
+{
+    for (int i = 0; i < s_gpsOthers; i++)
+        if (!strcmp(s_gpsOther[i].dev, dev))
+            return &s_gpsOther[i];
+    if (s_gpsOthers >= kGpsDevs)
+        return NULL;
+    GpsDev* d = &s_gpsOther[s_gpsOthers++];
+    memset(d, 0, sizeof(*d));
+    strncpy(d->dev, dev, 39);
+    return d;
+}
+
+static bool GpsDevSet(const char* key, const char* val)   // "gps_port@dev" / "gps_baud@dev"; false: not one
+{
+    const char* at = strchr(key, '@');
+    bool port = at && at - key == 8 && !strncmp(key, "gps_port", 8), baud = at && at - key == 8 && !strncmp(key, "gps_baud", 8);
+    if (!port && !baud)
+        return false;
+    if (!strcmp(at + 1, DeviceName())) {
+        if (port) {
+            MultiByteToWideChar(CP_ACP, 0, val, -1, g_cfg.gpsPort, 15);
+            g_cfg.gpsPort[15] = 0;
+        } else {
+            g_cfg.gpsBaud = atoi(val);
+        }
+        return true;
+    }
+    GpsDev* d = OtherDev(at + 1);
+    if (d && port)
+        strncpy(d->port, val, 15);
+    else if (d)
+        d->baud = atoi(val);
+    return true;
+}
+
 static void ConfigSet(const char* key, const char* val)
 {
+    if (GpsDevSet(key, val))
+        return;
     if (!strcmp(key, "lon"))               g_cfg.lon = atof(val);
     else if (!strcmp(key, "lat"))          g_cfg.lat = atof(val);
     else if (!strcmp(key, "zoom"))         g_cfg.z = Clamp(atoi(val), 2, 19);
@@ -193,7 +256,6 @@ static void ConfigSet(const char* key, const char* val)
     else if (!strcmp(key, "api_limit"))    g_cfg.apiLimit = Clamp(atoi(val), 0, 100000);
     else if (!strcmp(key, "api_count"))    g_cfg.apiCount = atoi(val);
     else if (!strcmp(key, "gps"))          g_cfg.gpsEnabled = atoi(val) != 0;
-    else if (!strcmp(key, "gps_baud"))     g_cfg.gpsBaud = atoi(val);
     else if (!strcmp(key, "hide_taskbar")) g_cfg.hideTaskbar = atoi(val) != 0;
     else if (!strcmp(key, "night"))        g_cfg.night = atoi(val) != 0;
     else if (!strcmp(key, "vector"))       g_cfg.vector = atoi(val) != 0;
@@ -206,10 +268,6 @@ static void ConfigSet(const char* key, const char* val)
     else if (!strcmp(key, "map_y"))        g_cfg.mapY = atoi(val);
     else if (!strcmp(key, "map_w"))        g_cfg.mapW = Clamp(atoi(val), 100, 650);
     else if (!strcmp(key, "map_h"))        g_cfg.mapH = Clamp(atoi(val), 100, 450);
-    else if (!strcmp(key, "gps_port")) {
-        MultiByteToWideChar(CP_ACP, 0, val, -1, g_cfg.gpsPort, 15);
-        g_cfg.gpsPort[15] = 0;
-    }
     else if (!strcmp(key, "kill")) {
         MultiByteToWideChar(CP_ACP, 0, val, -1, g_cfg.killProcess, 31);
         g_cfg.killProcess[31] = 0;
@@ -224,6 +282,7 @@ static void ConfigSet(const char* key, const char* val)
 bool ConfigLoad()
 {
     ConfigDefaults();
+    s_gpsOthers = 0;
     wchar_t path[MAX_PATH];
     PathInDir(path, kConfigName);
     unsigned char* data;
@@ -255,7 +314,7 @@ void ConfigSave()
     char port[16], kill[32];
     WideCharToMultiByte(CP_ACP, 0, g_cfg.gpsPort, -1, port, sizeof(port), NULL, NULL);
     WideCharToMultiByte(CP_ACP, 0, g_cfg.killProcess, -1, kill, sizeof(kill), NULL, NULL);
-    char buf[2048];
+    char buf[3072];
     int n = _snprintf(buf, sizeof(buf),
         "; OSMapsCE settings. The file is rewritten by the program.\r\n"
         "lon=%.6f\r\n"
@@ -300,8 +359,9 @@ void ConfigSave()
         "api_limit=%d\r\n"
         "api_count=%d\r\n"
         "gps=%d\r\n"
-        "gps_port=%s\r\n"
-        "gps_baud=%d\r\n"
+        "; the GPS port and its speed (0 = as it is) by the device (one card in several)\r\n"
+        "gps_port@%s=%s\r\n"
+        "gps_baud@%s=%d\r\n"
         "; program to close when it holds the GPS port (empty = never)\r\n"
         "kill=%s\r\n"
         "hide_taskbar=%d\r\n"
@@ -315,8 +375,13 @@ void ConfigSave()
         g_cfg.follow, g_cfg.night, g_cfg.vector, g_cfg.junction, g_cfg.noToll, g_cfg.detail, g_cfg.tilt, g_cfg.trafficTtlMin, g_cfg.yandexLimit, g_cfg.twogisLimit,
         g_cfg.autoReserve, g_cfg.cacheMb, g_cfg.cacheKb, g_cfg.cacheDays, g_cfg.reqDay,
         g_cfg.yandexCount, g_cfg.twogisCount, g_cfg.osmCount, g_cfg.apiLimit, g_cfg.apiCount,
-        g_cfg.gpsEnabled, port, g_cfg.gpsBaud, kill, g_cfg.hideTaskbar, g_cfg.log,
+        g_cfg.gpsEnabled, DeviceName(), port, DeviceName(), g_cfg.gpsBaud, kill, g_cfg.hideTaskbar, g_cfg.log,
         g_cfg.mapX, g_cfg.mapY, g_cfg.mapW, g_cfg.mapH);
+    for (int i = 0; i < s_gpsOthers && n > 0; i++) {
+        const GpsDev& d = s_gpsOther[i];
+        int m = _snprintf(buf + n, sizeof(buf) - n, "gps_port@%s=%s\r\ngps_baud@%s=%d\r\n", d.dev, d.port, d.dev, d.baud);
+        n = m < 0 ? -1 : n + m;
+    }
     if (n < 0)
         return;
 
