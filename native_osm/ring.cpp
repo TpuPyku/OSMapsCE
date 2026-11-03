@@ -90,6 +90,13 @@ bool SlotRedraw(const SlotShown& s, int x, int y, DWORD sig, DWORD ctx, bool exa
 // base tile comes back from the disk, the traffic only from the network and its budget - it stays while used lately.
 enum { kTrafficKeepMs = 30000 };
 
+// The images' cap (the user 2026-11-03: black squares in 3D at night - the two rings' 61 tiles never fit 6 MB): the
+// unit (275 MB free) twice that, a small device (Shturmann) as before
+int CacheCapFor(DWORD freeKb)
+{
+    return (freeKb >= 96 * 1024 ? 12 : 6) * 1024 * 1024;
+}
+
 static int Older(const CacheEntry* e, int best, int i)   // i, when used less recently than best (-1: none yet)
 {
     return best < 0 || e[i].useTick < e[best].useTick ? i : best;

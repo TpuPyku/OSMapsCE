@@ -164,6 +164,19 @@ void CacheInit()
 
 static int s_bytes;   // decoded images in s_mem, held under CACHE_BYTES
 
+int CacheCap()   // by the memory free at the first call
+{
+    static int cap;
+    if (!cap) {
+        MEMORYSTATUS m;
+        m.dwLength = sizeof(m);
+        GlobalMemoryStatus(&m);
+        cap = CacheCapFor((DWORD)(m.dwAvailPhys / 1024));
+        Log("cache: images up to %d MB (%lu MB free)", cap >> 20, (unsigned long)(m.dwAvailPhys >> 20));
+    }
+    return cap;
+}
+
 static int EntryBytes(const CacheEntry* e)
 {
     return e->img.w * e->img.h * 2 + (e->ov ? e->ov->bytes : 0);

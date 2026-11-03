@@ -1182,6 +1182,16 @@ static void RouteCutChecks()
           "route cut: to past the end - the last segment still looked at");
 }
 
+// The images' cap by the device's memory (the user 2026-11-03: black squares in 3D at night - the near and the far
+// ring's 61 tiles never fit 6 MB, the tiles pushed each other out; the unit has 275 MB free, Shturmann little)
+static void CacheCapChecks()
+{
+    Check(CacheCapFor(96 * 1024) == 12 * 1024 * 1024 && CacheCapFor(275000) == 12 * 1024 * 1024,
+          "cache cap: 96 MB free and more - 12 MB (the 3D view's rings and the traffic fit)");
+    Check(CacheCapFor(96 * 1024 - 1) == 6 * 1024 * 1024 && CacheCapFor(0) == 6 * 1024 * 1024,
+          "cache cap: less - 6 MB as before");
+}
+
 // The memory's cap (the user 2026-11-02: in 3D the traffic came again and again - the rings' tiles pushed it out)
 static void CacheVictimChecks()
 {
@@ -1626,6 +1636,7 @@ int main()
     TiltWarpChecks();
     FarRingChecks();
     CacheVictimChecks();
+    CacheCapChecks();
     FitZoomChecks();
     LabelPassChecks();
     RouteCutChecks();

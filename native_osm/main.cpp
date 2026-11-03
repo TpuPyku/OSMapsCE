@@ -668,6 +668,15 @@ static void LoadParent(const MapRequest& k)
     RingAdd(s_noParentKeys, k);
 }
 
+static void MissForget()   // once a minute: the tiles once not found tried again (the user 2026-11-03: a black
+{                          // square in 3D stayed - one failed load, never tried again)
+    static DWORD s_last;
+    if (GetTickCount() - s_last < 60000)
+        return;
+    s_last = GetTickCount();
+    s_missKeys.n = 0;
+}
+
 // Brings the map tiles of the view into memory (disk or download), then the traffic
 // overlay. Disk decodes are limited per call: each costs some 20-50 ms on the unit.
 // Up to maxLoads of the keys not in memory from the disk (draft: the vector ones in the fast style); the loads left,
@@ -710,6 +719,7 @@ static int Unshown(MapRequest* keys, int n);
 // show them at once). *view: the view's got some; returns true: more to do.
 static bool DiskStep(bool* view)
 {
+    MissForget();
     MapRequest keys[kMaxKeys];
     int n = Unshown(keys, NeededKeys(SRC_OSM, keys, kMaxKeys));
     int left = LoadFromDisk(keys, n, kDiskLoads, true);

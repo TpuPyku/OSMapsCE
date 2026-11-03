@@ -339,6 +339,7 @@ struct CacheEntry;
 // The entry the memory's cap drops (cache.cpp's Trim): the least recently used of the base tiles and the traffic not
 // used for 30 s, none of them - of all; never keep; -1: none
 int  CacheVictim(const CacheEntry* e, int n, int keep, DWORD now);
+int  CacheCapFor(DWORD freeKb);   // the images' memory cap, bytes, by the memory free at the start
 
 // junction.cpp: the junction card (the user 2026-10-28, on in the settings) - the route round a complex maneuver on the
 // map turned so the way in points up
@@ -377,10 +378,11 @@ struct CacheEntry {
     DWORD          useTick;
     bool           draft;       // drawn in the fast style first (CacheRefine: in the chosen detail when idle)
 };
-enum { CACHE_MEM = 64 };        // a rotated view needs ~16 base tiles + overlays + coarser levels
+enum { CACHE_MEM = 96 };       // (3D: the two rings' 61 tiles and the traffic)        // a rotated view needs ~16 base tiles + overlays + coarser levels
 // Memory cap for the decoded images: a view needs ~2 MB of tiles (128 KB each)
 // + up to ~2 MB of overlays (~360 KB each); the least recently used are dropped above it.
-#define CACHE_BYTES (6 * 1024 * 1024)
+#define CACHE_BYTES CacheCap()   // (ring.cpp CacheCapFor: 12 MB with 96 MB free, else 6)
+int CacheCap();
 void        CacheInit();
 void        CachePrune();                 // scan the disk, delete over g_cfg.cacheMb
 void        CacheCountSaved(int newBytes, int oldBytes);
