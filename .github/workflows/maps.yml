@@ -29,8 +29,8 @@ jobs:
     outputs:
       regions: ${{ steps.list.outputs.regions }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
       - run: pip install osmium pmtiles   # (release_regions imports the builders)
@@ -47,8 +47,8 @@ jobs:
       matrix:
         region: ${{ fromJSON(needs.list.outputs.regions) }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
       - run: pip install osmium pmtiles
@@ -57,7 +57,7 @@ jobs:
       - run: python offline/release_regions.py build ${{ matrix.region }} dist
         env:
           YANDEX_DISK_TOKEN: ${{ secrets.YANDEX_DISK_TOKEN }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.region }}
           path: dist/
@@ -71,11 +71,11 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       YANDEX_DISK_TOKEN: ${{ secrets.YANDEX_DISK_TOKEN }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           path: dist
           merge-multiple: true
@@ -109,8 +109,8 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
       - run: pip install pyinstaller pmtiles osmium pillow
@@ -131,8 +131,8 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
       - run: sudo apt-get install -y osmium-tool && pip install osmium pmtiles
@@ -158,7 +158,7 @@ jobs:
           printf 'name=trunk\ndate=%s\n' "$(date -u +%Y-%m-%d)" > dist/region.txt
           (cd dist && zip -9 trunk.zip trunk.grf region.txt)
           ls -l dist
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: trunk
           path: dist/trunk.zip
