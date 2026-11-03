@@ -29,6 +29,7 @@ import time
 import zipfile
 
 import make_graph
+import make_outlines
 import make_region
 import pmextract
 import yadisk
@@ -150,11 +151,31 @@ def upload_zip(disk, name, path):
     return size
 
 
-def build_full(entry, folder, dist, get_bytes, day, disk):
-    """The region whole up (its tiles cut now), its entry told: full = {zip, size, tiles}."""
+def one_side(rings):
+    """Rings there, all on one side of 180 degrees (Chukotka's are not: -170 and 170)."""
+    lons = [lon for r in rings for lon, _ in r]
+    return bool(lons) and max(lons) - min(lons) < 180
+
+
+def region_rings(urls, get=None):
+    """The region's outline - its extracts' .poly's outer rings of (lon, lat) (the maps workflow 2026-11-03: its
+    tiles cut by it, not by its box); None: none to be had, or across 180 degrees (Chukotka) - its box then."""
+    get = get or make_region.get
+    try:
+        rings = [r for u in (urls if isinstance(urls, list) else [urls])
+                 for r in make_outlines.parse_poly(get(make_outlines.poly_url(u)))]
+    except OSError as e:
+        print('outline: none (%s) - the box' % e)
+        return None
+    return rings if one_side(rings) else None
+
+
+def build_full(entry, folder, dist, get_bytes, day, disk, rings=None):
+    """The region whole up (its tiles cut now: its outline's, rings - else its box's), its entry told: full = {zip,
+    size, tiles}."""
     tiles = os.path.join(folder, 'tiles.vtp')
     t0 = time.time()
-    pmextract.extract(get_bytes, entry['bbox'], TILES_Z, tiles + '.part', None, pmextract.slim)
+    pmextract.extract(get_bytes, entry['bbox'], TILES_Z, tiles + '.part', None, pmextract.slim, rings)
     os.replace(tiles + '.part', tiles)
     print('%s: tiles %.0f MB in %.0f s' % (entry['name'], os.path.getsize(tiles) / 1e6, time.time() - t0))   # (the
     t0 = time.time()                                               # workflow's log: which part takes the time)
@@ -244,7 +265,8 @@ def main(argv):
         if os.environ.get('YANDEX_DISK_TOKEN'):
             build = pmextract.latest_build()
             entry = build_full(entry, os.path.join(make_region.WORK, 'data', argv[1]), argv[2],
-                               pmextract.http_bytes(build), build_day(build), yadisk.Disk(os.environ['YANDEX_DISK_TOKEN']))
+                               pmextract.http_bytes(build), build_day(build), yadisk.Disk(os.environ['YANDEX_DISK_TOKEN']),
+                               region_rings(make_region.regions()[argv[1]]))
         print(entry)
     elif argv[0] == 'trunk':
         trunk_into(argv[1], argv[2])
