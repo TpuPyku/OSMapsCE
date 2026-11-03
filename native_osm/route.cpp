@@ -15,6 +15,8 @@ static const double kOffM         = 50;     // farther from the line than this .
 static const int    kOffFixes     = 4;      // ... this many fixes in a row: off the route
 static const DWORD  kRerouteMs    = 15000;  // a new route not more often
 static const double kArriveM      = 30;     // the destination this close: arrived
+static const DWORD  kArrivedMs    = 10000;  // "Вы приехали" this long, then the route gone (the user 2026-11-03)
+static DWORD        s_arriveTick;
 
 
 // ---------------------------------------------------------------- requests
@@ -720,6 +722,7 @@ void RouteGps(double lon, double lat, double kmh, double course)
     if (sqrt(dx * dx + dy * dy) < kArriveM || (s_cum[s_np - 1] - s_along < kArriveM && best < kOffM)) {
         FreeRoute();
         s_state = ROUTE_ARRIVED;
+        s_arriveTick = GetTickCount();
         Log("route: arrived");
         s_sig++;
         return;
@@ -740,6 +743,10 @@ void RouteGps(double lon, double lat, double kmh, double course)
 
 void RouteGet(RouteInfo* o)
 {
+    if (s_state == ROUTE_ARRIVED && GetTickCount() - s_arriveTick >= kArrivedMs) {
+        RouteClear();
+        Log("route: arrived %lu s ago - gone", kArrivedMs / 1000);
+    }
     memset(o, 0, sizeof(*o));
     o->state = s_state;
     o->text = s_stateText;

@@ -2563,6 +2563,18 @@ static void RouteMarker(HDC dc, int x, int y, COLORREF fill, const wchar_t* t)
         Text(dc, s_fontCap, RGB(255, 255, 255), x - 13, y - 13, x + 14, y + 14, DT_CENTER, t);
 }
 
+// Where the line starts (the user 2026-11-03: a long tail stayed behind the car): the car shown - a fix late - on
+// the route near the segment its tracking says (a few behind, one ahead): that segment, its point there (cut); -1:
+// the whole line (no route on, choosing, the car off it)
+static int RouteFrom(const double* ll, int np, double* cut)
+{
+    RouteInfo ri;
+    RouteGet(&ri);
+    if (ri.state != ROUTE_ON || !s_gps.valid || RouteAlts() >= 2)
+        return -1;
+    return RouteCut(ll, np, ri.seg - 8, ri.seg + 1, s_gps.lon, s_gps.lat, 50, cut);
+}
+
 static void DrawRoute(HDC dc, double cx, double cy, double vx, double vy, double angle)
 {
     DrawAltLines(dc, cx, cy, vx, vy, angle);
@@ -2598,12 +2610,15 @@ static void DrawRoute(HDC dc, double cx, double cy, double vx, double vy, double
         int nr = 0, n = 0, runStart = 0;
         bool open = false;
         double px = 0, py = 0;
-        for (int i = 0; i < np; i++) {
+        double cut[2];
+        int k = RouteFrom(ll, np, cut), i0 = k < 0 ? 0 : k;   // (k >= 0: from the car's point on segment k)
+        for (int i = i0; i < np; i++) {
             double gx, gy;
-            GeoToWorld(ll[i * 2], ll[i * 2 + 1], g_cfg.z, &gx, &gy);
+            bool at = i == i0 && k >= 0;
+            GeoToWorld(at ? cut[0] : ll[i * 2], at ? cut[1] : ll[i * 2 + 1], g_cfg.z, &gx, &gy);
             double dx = gx - vx, dy = gy - vy;
             double x = cx + dx * rc + dy * rs, y = cy - dx * rs + dy * rc;
-            if (i > 0) {
+            if (i > i0) {
                 double x0 = px - cx, y0 = py - cy, x1 = x - cx, y1 = y - cy;
                 bool tcut, in = LiftSeg(tp, &x0, &y0, &x1, &y1, &tcut);   // (the third person's view)
                 x0 += cx;
@@ -3898,8 +3913,8 @@ static void FavNamed()   // the keyboard's name for the new favourite (or the ca
             FavsSave();
             Log("favs: renamed \"%s\"", u);
         }
-    } else if (s_kb.text[0] && VFavsAdd(&s_favs, s_kb.text, s_lpLat, s_lpLon) >= 0) {
-        FavsSave();
+    } else if (s_kb.text[0] && (s_favEdit = VFavsAdd(&s_favs, s_kb.text, s_lpLat, s_lpLon)) >= 0) {
+        FavsSave();   // (its card at once: the sign chosen there - the user 2026-11-03: not by the name)
         Log("favs: \"%s\" %.5f, %.5f", u, s_lpLat, s_lpLon);
     }
     s_favName = false;

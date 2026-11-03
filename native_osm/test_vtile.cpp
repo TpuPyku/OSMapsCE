@@ -1157,6 +1157,31 @@ static void FitZoomChecks()
     Check(FitZoom(three, 3, 400, 302, 16, 18, &cx, &cy) == 16, "fit: zMin above what fits - zMin");
 }
 
+// The route behind the car cut off (the user 2026-11-03: a long tail stayed): where the car shown is on it
+static bool Deg(double a, double b)   // degrees alike to a centimetre
+{
+    return fabs(a - b) < 1e-7;
+}
+
+static void RouteCutChecks()
+{
+    double ll[6] = { 37.0, 55.0, 37.0, 55.001, 37.001, 55.001 }, cut[2];   // north 111 m, then east 64 m
+    Check(RouteCut(ll, 3, 0, 1, 37.0, 55.0005, 50, cut) == 0 && Deg(cut[0], 37.0) && Deg(cut[1], 55.0005),
+          "route cut: on the first segment - its point there");
+    Check(RouteCut(ll, 3, 0, 1, 37.0001, 55.00101, 50, cut) == 1 && Deg(cut[0], 37.0001) && Deg(cut[1], 55.001),
+          "route cut: past the turn, a little off - the second segment, the point on it");
+    Check(RouteCut(ll, 3, 0, 0, 37.0001, 55.00101, 50, cut) == 0 && Deg(cut[1], 55.001),
+          "route cut: only the segments asked (from..to) - the first one's end");
+    Check(RouteCut(ll, 3, 0, 1, 37.0, 54.9998, 50, cut) == 0 && Deg(cut[1], 55.0),
+          "route cut: before the start - at the start");
+    Check(RouteCut(ll, 3, 0, 1, 37.001, 55.0, 50, cut) == -1 && RouteCut(ll, 3, 0, 5, 37.0, 55.0005, 50, cut) == 0 &&
+          RouteCut(ll, 3, -3, 1, 37.0, 55.0005, 50, cut) == 0, "route cut: more than 50 m off - none; past the ends - "
+          "the segments there");
+    Check(RouteCut(ll, 1, 0, 1, 37.0, 55.0, 50, cut) == -1, "route cut: one point - none");
+    Check(RouteCut(ll, 3, 0, 9, 37.0005, 55.001, 50, cut) == 1 && Deg(cut[0], 37.0005),
+          "route cut: to past the end - the last segment still looked at");
+}
+
 // The memory's cap (the user 2026-11-02: in 3D the traffic came again and again - the rings' tiles pushed it out)
 static void CacheVictimChecks()
 {
@@ -1603,6 +1628,7 @@ int main()
     CacheVictimChecks();
     FitZoomChecks();
     LabelPassChecks();
+    RouteCutChecks();
     RECT whole = { 0, 0, 800, 480 };
     // the Russian name when the tile has one (name:ru), else the local one: a frame named so equals one whose tile
     // holds that text as its plain name

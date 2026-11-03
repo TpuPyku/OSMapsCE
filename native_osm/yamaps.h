@@ -355,6 +355,9 @@ double GlideCourse(double from, double to, DWORD ms);   // the turn from -> to a
 // The mark a fix late (the user 2026-11-02): its speed from where it is shown to the fix in periodMs, metres a ms east
 // and north; false: more than 50 m off or no time - none (put there)
 bool GlideAim(double lon, double lat, double tLon, double tLat, DWORD periodMs, double* ve, double* vn);
+// The route (lon, lat pairs) behind the car cut off: of its segments from..to (clamped) the nearest to (lon, lat) within
+// maxM; cut: the car's point on it. -1: none that near
+int  RouteCut(const double* ll, int np, int from, int to, double lon, double lat, double maxM, double* cut);
 void GlideMove(double* lon, double* lat, double ve, double vn, DWORD ms);
 int  JunctionSlice(const double* ll, int np, int at, double beforeM, double afterM, double* out, int cap, int* outAt,
                    double* course);   // lon, lat pairs; outAt: the maneuver's point in out; course: the way in's, degrees

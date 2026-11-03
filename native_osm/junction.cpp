@@ -92,6 +92,38 @@ static double Dist(const double* a, const double* b)
     return sqrt(e * e + n * n);
 }
 
+static double OnSegment(const double* a, const double* b, const double* p, double* q)   // p's nearest point on a-b: q;
+{                                                                                      // its distance, metres
+    double se, sn, pe, pn;
+    Metres(a, b, &se, &sn);
+    Metres(a, p, &pe, &pn);
+    double len2 = se * se + sn * sn, t = len2 > 0 ? (pe * se + pn * sn) / len2 : 0;
+    t = t < 0 ? 0 : t > 1 ? 1 : t;
+    q[0] = a[0] + (b[0] - a[0]) * t;
+    q[1] = a[1] + (b[1] - a[1]) * t;
+    return Dist(q, p);
+}
+
+// The route behind the car cut off (the user 2026-11-03: a long tail stayed behind it): the car shown (a fix late) is
+// looked for near the segment the route's own tracking says
+int RouteCut(const double* ll, int np, int from, int to, double lon, double lat, double maxM, double* cut)
+{
+    double p[2] = { lon, lat }, q[2];
+    int best = -1;
+    from = from < 0 ? 0 : from;
+    to = to > np - 2 ? np - 2 : to;
+    for (int i = from; i <= to; i++) {
+        double d = OnSegment(ll + i * 2, ll + i * 2 + 2, p, q);
+        if (d <= maxM) {
+            maxM = d;
+            best = i;
+            cut[0] = q[0];
+            cut[1] = q[1];
+        }
+    }
+    return best;
+}
+
 static void Put(double* out, int& n, int cap, double lon, double lat)
 {
     if (n < cap) {
