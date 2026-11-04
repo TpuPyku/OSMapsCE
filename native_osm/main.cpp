@@ -2,6 +2,8 @@
 #include "vkeys.h"     // VestaCore: the keyboard's text and cursor (VestaHome's)
 #include "vfavs.h"     // VestaCore: the favourite places (VestaHome reads them too)
 #include "vversion.h"   // VestaCore: the version "major.minor.YYMMDD" (the date: this file's build)
+#include "vhap.h"      // VestaCore: VestaHome's add-ons' protocol
+#include "vfont.h"     // VestaCore: the fonts
 static const wchar_t* const kRelease = L"1.03";   // raise by hand: minor - significant changes, major - big releases
 
 // ---------------------------------------------------------------- UI layout
@@ -5245,18 +5247,9 @@ const wchar_t* MapFace()
     return s_face;
 }
 
-static HFONT MakeFont(int height, int weight)
+static HFONT MakeFont(int height, int weight)   // (not smoothed: VestaCore vfont.h)
 {
-    LOGFONT lf;
-    memset(&lf, 0, sizeof(lf));
-    lf.lfHeight = -height;
-    lf.lfWeight = weight;
-    lf.lfCharSet = DEFAULT_CHARSET;
-    // no smoothing: on the unit ANTIALIASED_QUALITY comes out as ClearType - coloured fringes in the 16-bit
-    // frame (the user's report 2026-10-17; VestaHome found the same)
-    lf.lfQuality = NONANTIALIASED_QUALITY;
-    wcscpy(lf.lfFaceName, s_face);
-    return CreateFontIndirect(&lf);
+    return VFontMake(s_face, height, weight);
 }
 
 // ---------------------------------------------------------------- window
@@ -5392,7 +5385,6 @@ static void OnDestroy(HWND hwnd)
 // says hello and declares the picture widget "Карта" (2 x 2). While the widget is in sight (widget.show) the map is
 // drawn into the back buffer each second - minimized too - and its middle (the car) copied as RGB565 into the shared
 // memory VestaHome made; a tap on the widget brings OSMapsCE to the front. Without VestaHome nothing of this runs.
-#define VHAP_MAGIC 0x56484150   // 'VHAP'
 static HWND           s_vh;         // VestaHome's window
 static HANDLE         s_vhMap;
 static unsigned char* s_vhView;     // 16 bytes ('VHIM', w, h, frame number), then the rows
@@ -5406,38 +5398,10 @@ static void VhSend(const wchar_t* fmt, ...)
         s_vh = NULL;
         return;
     }
-    wchar_t t[256];
     va_list a;
     va_start(a, fmt);
-    int n = _vsnwprintf(t, 255, fmt, a);
+    VhapSendV(s_vh, s_wnd, fmt, a);
     va_end(a);
-    t[255] = 0;
-    if (n < 0)
-        n = (int)wcslen(t);
-    COPYDATASTRUCT c;
-    c.dwData = VHAP_MAGIC;
-    c.cbData = n * sizeof(wchar_t);
-    c.lpData = t;
-    SendMessage(s_vh, WM_COPYDATA, (WPARAM)s_wnd, (LPARAM)&c);
-}
-
-static bool VhField(const wchar_t* cmd, const wchar_t* key, wchar_t* out, int cap)
-{
-    out[0] = 0;
-    int kl = (int)wcslen(key);
-    for (const wchar_t* p = wcschr(cmd, L'\t'); p; p = wcschr(p + 1, L'\t')) {
-        if (wcsncmp(p + 1, key, kl) || p[1 + kl] != L'=')
-            continue;
-        const wchar_t* v = p + 2 + kl;
-        int n = 0;
-        while (v[n] && v[n] != L'\t' && n < cap - 1) {
-            out[n] = v[n];
-            n++;
-        }
-        out[n] = 0;
-        return true;
-    }
-    return false;
 }
 
 static void VhFree()
@@ -5455,15 +5419,15 @@ static int VhReceive(const wchar_t* cmd)   // 2 = a button taken (VestaHome leav
 {
     wchar_t v[64];
     if (!wcsncmp(cmd, L"welcome", 7) || !wcsncmp(cmd, L"theme", 5)) {   // VestaHome's accent: ours (the rule 2026-10-26)
-        if (VhField(cmd, L"accent", v, 16) && v[0]) {
+        if (VhapField(cmd, L"accent", v, 16) && v[0]) {
             unsigned long c = wcstoul(v, NULL, 16);
             AccentSet(RGB(c >> 16 & 0xFF, c >> 8 & 0xFF, c & 0xFF));
         }
     }
     if (!wcsncmp(cmd, L"route\t", 6)) {   // VestaHome's widget (a favourite): the route there, from the car
-        s_toLat = VhField(cmd, L"lat", v, 32) ? wcstod(v, NULL) : 0;
-        s_toLon = VhField(cmd, L"lon", v, 32) ? wcstod(v, NULL) : 0;
-        if (!VhField(cmd, L"name", s_toName, 80))
+        s_toLat = VhapField(cmd, L"lat", v, 32) ? wcstod(v, NULL) : 0;
+        s_toLon = VhapField(cmd, L"lon", v, 32) ? wcstod(v, NULL) : 0;
+        if (!VhapField(cmd, L"name", s_toName, 80))
             wcscpy(s_toName, L"Избранное");
         s_toTick = s_toLat || s_toLon ? GetTickCount() | 1 : 0;
         Log("vh: route to %.5f, %.5f", s_toLat, s_toLon);
@@ -5472,9 +5436,9 @@ static int VhReceive(const wchar_t* cmd)   // 2 = a button taken (VestaHome leav
     if (!wcsncmp(cmd, L"key", 3) && cmd[3] == L'\t') {
         // The wheel's buttons (the user 2026-10-26, 2026-11-02): held - the zoom (WheelZoom), while the map is in front
         // (VestaHome asks only then); short presses stay VestaHome's (the music, the phone).
-        int code = VhField(cmd, L"code", v, 8) ? _wtoi(v) : 0;
-        int st = VhField(cmd, L"st", v, 8) ? _wtoi(v) : 0;
-        int kind = VhField(cmd, L"kind", v, 8) ? _wtoi(v) : 0;
+        int code = VhapField(cmd, L"code", v, 8) ? _wtoi(v) : 0;
+        int st = VhapField(cmd, L"st", v, 8) ? _wtoi(v) : 0;
+        int kind = VhapField(cmd, L"kind", v, 8) ? _wtoi(v) : 0;
         int dz = WheelZoom(code, kind);
         if (dz) {
             if (WheelNow(code, st)) {
@@ -5491,11 +5455,11 @@ static int VhReceive(const wchar_t* cmd)   // 2 = a button taken (VestaHome leav
         VhSend(L"subscribe\twhat=keys");
     } else if (!wcsncmp(cmd, L"widget.size", 11)) {
         VhFree();
-        VhField(cmd, L"w", v, 8);
+        VhapField(cmd, L"w", v, 8);
         s_vhW = _wtoi(v);
-        VhField(cmd, L"h", v, 8);
+        VhapField(cmd, L"h", v, 8);
         s_vhH = _wtoi(v);
-        VhField(cmd, L"shm", v, 64);
+        VhapField(cmd, L"shm", v, 64);
         DWORD size = 16 + s_vhW * s_vhH * 2;
         if (s_vhW > 0 && s_vhH > 0 && s_vhW <= s_cw && s_vhH <= s_ch) {   // the same memory: VestaHome made it
             s_vhMap = CreateFileMapping(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, size, v);
@@ -5503,7 +5467,7 @@ static int VhReceive(const wchar_t* cmd)   // 2 = a button taken (VestaHome leav
         }
         Log("vestahome: map widget %d x %d %s", s_vhW, s_vhH, s_vhView ? "ok" : "NO MEMORY");
     } else if (!wcsncmp(cmd, L"widget.show", 11)) {
-        VhField(cmd, L"value", v, 8);
+        VhapField(cmd, L"value", v, 8);
         s_vhShown = v[0] == L'1';
     } else if (!wcsncmp(cmd, L"widget.tap", 10)) {   // to the front, the whole screen
         ShowWindow(s_wnd, SW_SHOW);
@@ -5922,11 +5886,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR cmdLine, int)
     // single instance: bring the running copy to front
     HWND prev = FindWindow(APP_CLASS, NULL);
     if (prev && routeArg) {
-        COPYDATASTRUCT c;
-        c.dwData = VHAP_MAGIC;
-        c.cbData = (DWORD)(wcslen(cmdLine) * sizeof(wchar_t));
-        c.lpData = cmdLine;
-        SendMessage(prev, WM_COPYDATA, 0, (LPARAM)&c);
+        VhapSend(prev, NULL, L"%s", cmdLine);
     }
     if (prev) {   // it may be behind another window or at the bottom (OSMapsCE's "home"): to the top
         ShowWindow(prev, SW_SHOW);
