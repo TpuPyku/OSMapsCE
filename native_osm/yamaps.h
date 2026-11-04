@@ -145,15 +145,8 @@ struct ApiResult {
 };
 DWORD NetApi(int kind, const char* host, bool https, const char* path);   // returns sequence number
 void  ApiFree(ApiResult* r);
-// json.cpp - JSON read in place, no tree: p points at a value
-const char* Ws(const char* p);                       // past the white space
-const char* JSkip(const char* p);                    // past the value
-const char* JKey(const char* p, const char* key);    // the object's value of key, NULL none
-const char* JFirst(const char* p);                   // the array's first item, NULL none
-const char* JNext(const char* p);                    // the next item, NULL none
-double      JNum(const char* p, double def);
-int         JStr(const char* p, char* out, int cap);   // a string, unescaped, UTF-8
-void        JWide(const char* p, wchar_t* out, int cap);
+// JSON and URL encoding: VestaCore vjson.cpp
+#include "vjson.h"
 
 // offmaps.cpp - the regions' maps downloaded on the unit: the release's catalog, the card's regions, a zip unpacked
 enum { MAP_NEW, MAP_UPDATE, MAP_OK };
@@ -163,7 +156,6 @@ struct MapRegion {
     int  fullKb;   // the region whole (its tiles too) on the catalog's Yandex Disk; 0 none
 };
 int  MapsCatalog(const char* json, MapRegion* out, int cap);
-void UrlEncode(const char* s, char* out, int cap);   // json.cpp: all but letters, digits, -_.~ as %XX
 void MapsHave(MapRegion* r, int n);
 int  MapState(const MapRegion& r);
 bool UrlSplit(const char* url, char* host, int cap, bool* https, const char** path);
