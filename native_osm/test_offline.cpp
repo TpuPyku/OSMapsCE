@@ -3,6 +3,7 @@
 // driver would see the answer. Exit code: the number of failed checks.
 #include "yamaps.h"
 #include <stdio.h>
+#include "fling.h"
 
 Config  g_cfg;
 wchar_t g_dir[MAX_PATH];
@@ -593,6 +594,97 @@ static bool Writable(const wchar_t* name)   // the data folder's file can be ope
 
 // A region downloaded again while its graph and index are in use (the user 2026-10-30: Moscow's oblast "failed" -
 // its route.grf held by the route just made, the zip not unpacked over it): OfflineDrop lets them go
+// The map's inertia (fling.cpp; the user 2026-11-04: "rubber" scrolling - the map goes on after the finger, by its
+// speed, and slows down)
+static void Swipe(Fling* f, DWORD t0, int n, int stepMs, int dxPerStep)   // the finger: n moves to the east
+{
+    FlingReset(f);
+    for (int i = 0; i <= n; i++)
+        FlingAdd(f, t0 + i * stepMs, 100 + i * dxPerStep, 200);
+}
+
+static double Glide(Fling* f, int stepMs, int steps, double* dy)
+{
+    double sx = 0, sy = 0, x, y;
+    for (int i = 0; i < steps && FlingStep(f, stepMs, &x, &y); i++) {
+        sx += x;
+        sy += y;
+    }
+    *dy = sy;
+    return sx;
+}
+
+static void FlingChecks()
+{
+    Fling f;
+    double dy;
+    Swipe(&f, 1000, 10, 10, 10);   // 1 px/ms
+    Check(FlingStart(&f, 1100), "fling: a quick swipe goes on", NULL);
+    double sx = Glide(&f, 20, 200, &dy);
+    Check(sx > 250 && sx < 325 && fabs(dy) < 0.5, "fling: ~ speed x 325 ms on, the finger's way only", NULL);
+    Check(!FlingStep(&f, 20, &sx, &dy), "fling: then it stops", NULL);
+
+    Swipe(&f, 1000, 10, 10, 10);
+    Check(!FlingStart(&f, 1200), "fling: the finger held still before the release - none", NULL);
+    Swipe(&f, 1000, 10, 10, 1);   // 0.1 px/ms
+    Check(!FlingStart(&f, 1100), "fling: a slow drag - none", NULL);
+    FlingReset(&f);
+    FlingAdd(&f, 1000, 100, 200);
+    Check(!FlingStart(&f, 1000), "fling: a tap - none", NULL);
+
+    Swipe(&f, 1000, 10, 10, 200);   // 20 px/ms
+    FlingStart(&f, 1100);
+    double x1, y1;
+    FlingStep(&f, 1, &x1, &y1);
+    Check(x1 > 3.5 && x1 <= 4.0, "fling: its speed capped (4 px/ms)", NULL);
+
+    Fling a, b;   // the same way whatever the frames
+    Swipe(&a, 1000, 10, 10, 10);
+    FlingStart(&a, 1100);
+    b = a;
+    double ya, yb, xa = Glide(&a, 10, 400, &ya), xb = Glide(&b, 80, 50, &yb);
+    Check(fabs(xa - xb) < 3, "fling: short frames and long ones - the same way", NULL);
+
+    FlingReset(&f);   // slow, then quick: the speed is the last 100 ms' (1 px/ms), not the whole way's
+    for (int i = 0; i <= 10; i++)
+        FlingAdd(&f, 1000 + i * 20, 100 + i * 2, 200);
+    for (int i = 1; i <= 5; i++)
+        FlingAdd(&f, 1200 + i * 20, 120 + i * 20, 200);
+    FlingStart(&f, 1300);
+    FlingStep(&f, 1, &x1, &y1);
+    Check(x1 > 0.95 && x1 < 1.05, "fling: the speed of the last 100 ms only", NULL);
+
+    FlingReset(&f);   // a pause, then one quick point: the last point counts, not the one before
+    for (int i = 0; i <= 5; i++)
+        FlingAdd(&f, 1000 + i * 10, 100 + i * 10, 200);
+    FlingAdd(&f, 1095, 200, 200);
+    Check(FlingStart(&f, 1100), "fling: the newest point's time decides the pause", NULL);
+
+    FlingReset(&f);   // two points are enough
+    FlingAdd(&f, 1000, 100, 200);
+    FlingAdd(&f, 1050, 150, 200);
+    Check(FlingStart(&f, 1050), "fling: two points - a swipe", NULL);
+    FlingReset(&f);   // two at the same moment: none (no division by 0)
+    FlingAdd(&f, 1000, 100, 200);
+    FlingAdd(&f, 1000, 150, 200);
+    Check(!FlingStart(&f, 1000), "fling: two points at once - none", NULL);
+    Check(!FlingStep(&f, 20, &x1, &y1) && x1 == 0 && y1 == 0, "fling: not started - nothing moves", NULL);
+
+    FlingReset(&f);   // diagonal, 3 + 3 px/ms: the speed is its length (4.24, capped to 4)
+    for (int i = 0; i <= 10; i++)
+        FlingAdd(&f, 1000 + i * 10, 100 + i * 30, 200 + i * 30);
+    Check(FlingStart(&f, 1100), "fling: a quick diagonal goes on", NULL);
+    FlingStep(&f, 1, &x1, &y1);
+    Check(x1 > 2.6 && x1 < 2.9 && y1 > 2.6 && y1 < 2.9, "fling: a diagonal capped by its length", NULL);
+
+    Swipe(&f, 1000, 10, 10, -10);   // to the west, and up
+    for (int i = 0; i <= 10; i++)
+        FlingAdd(&f, 1000 + i * 10, 100 - i * 10, 200 - i * 5);
+    FlingStart(&f, 1100);
+    sx = Glide(&f, 20, 200, &dy);
+    Check(sx < -250 && dy < -120 && dy > -170, "fling: west and up, both ways", NULL);
+}
+
 static void DropChecks()
 {
     char* r = Route("50.000,53.000;50.006,53.000");
@@ -628,6 +720,7 @@ int main()
     MapsChecks();
     DownloadChecks();
     DropChecks();
+    FlingChecks();
 
     // along the main street, west to east: ~400 m, no turn on the way
     char* b = Route("50.000,53.000;50.006,53.000");

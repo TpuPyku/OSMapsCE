@@ -1,4 +1,5 @@
 ﻿#include "yamaps.h"
+#include "fling.h"
 #include "vkeys.h"     // VestaCore: the keyboard's text and cursor (VestaHome's)
 #include "vfavs.h"     // VestaCore: the favourite places (VestaHome reads them too)
 #include "vversion.h"   // VestaCore: the version "major.minor.YYMMDD" (the date: this file's build)
@@ -74,7 +75,7 @@ static const COLORREF kLine    = RGB(0x2a, 0x2f, 0x37);   // separators
 static COLORREF       kOrange  = RGB(0xff, 0x6b, 0x1a);
 static const COLORREF kHair    = RGB(64, 68, 77);         // night: a card's 1 px edge over the dark map
 
-enum { TIMER_TICK = 1, TIMER_USER = 2, TIMER_DOCK = 3, TIMER_LONG = 4, TIMER_DISK = 5, TIMER_GLIDE = 6 };
+enum { TIMER_TICK = 1, TIMER_USER = 2, TIMER_DOCK = 3, TIMER_LONG = 4, TIMER_DISK = 5, TIMER_GLIDE = 6, TIMER_FLING = 7 };
 static const UINT kUserDelayMs = 900;    // wait for the user to stop pressing buttons
 
 // GPS button modes (g_cfg.follow)
@@ -165,6 +166,17 @@ static int        s_statGpsLines, s_statGpsBad;
 static int        s_pressed = -1;
 static bool       s_pressedInside;
 static bool       s_dragging, s_dragMoved;
+// The map going on after the finger (fling.h; the user 2026-11-04: "rubber" scrolling) - a frame each kFlingMs at most,
+// the way by the time that passed; while it goes, as while dragged: no refining, no following, no requests
+enum { kFlingMs = 30 };
+static Fling      s_fling;
+static bool       s_flinging;
+static DWORD      s_flingTick;
+
+static bool MapHeld()   // a finger on the map, or the map still going after it
+{
+    return s_dragging || s_flinging;
+}
 static POINT      s_dragStart;
 static double     s_dragWx, s_dragWy;
 static bool       s_dragTilt;           // the drag began in the third person's view: it stays on
@@ -705,7 +717,7 @@ static int LoadFromDisk(const MapRequest* keys, int n, int maxLoads, bool draft)
 // time); true: one was
 static bool RefineStep(const MapRequest* keys, int n)
 {
-    if (s_dragging)
+    if (MapHeld())
         return false;
     for (int i = 0; i < n; i++) {
         CacheEntry* e = CacheFind(keys[i], false);
@@ -825,6 +837,12 @@ static void OnMapResult(MapResult* res)
 }
 
 // Called after every user change: show what the disk has now, download later.
+static void FlingStop()
+{
+    s_flinging = false;
+    KillTimer(s_wnd, TIMER_FLING);
+}
+
 static void UserChanged()
 {
     MapRequest keys[kMaxKeys];
@@ -5556,7 +5574,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_TIMER:
         if (wp == TIMER_GLIDE) {   // a frame between the fixes: the map on screen (following or not - the car moves on
             // it then), the CPU not taken over
-            if (!s_dragging && !s_settings && !s_search && !s_plan &&
+            if (!MapHeld() && !s_settings && !s_search && !s_plan &&
                 GetForegroundWindow() == hwnd && GetTickCount() - s_lastPaintTick >= s_paintMs && GlideApply()) {
                 FollowGps();
                 if (FrameSig() != s_paintSig)
@@ -5566,6 +5584,20 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         }
         if (wp == TIMER_DOCK) {
             DockStep();
+            return 0;
+        }
+        if (wp == TIMER_FLING) {
+            DWORD now = GetTickCount();
+            double dx, dy, wx, wy;
+            if (s_flinging && FlingStep(&s_fling, now - s_flingTick, &dx, &dy)) {
+                ViewWorld(&wx, &wy);
+                WorldToGeo(wx - dx, wy - dy, g_cfg.z, &g_cfg.lon, &g_cfg.lat);
+                InvalidateRect(hwnd, NULL, FALSE);
+            } else {
+                FlingStop();
+                UserChanged();
+            }
+            s_flingTick = now;
             return 0;
         }
         if (wp == TIMER_DISK) {
@@ -5603,7 +5635,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             int sharedNight = NightShared();   // switched in VestaHome: follow it
             if (sharedNight >= 0 && (sharedNight != 0) != (g_cfg.night != 0))
                 NightSet(sharedNight != 0);
-            if (!s_dragging)
+            if (!MapHeld())
                 Ensure(REQ_AUTO);
             if (g_cfg.cacheKb > (LONG)g_cfg.cacheMb * 1024)
                 CachePrune();   // trims to 90% of the limit, so this is rare
@@ -5637,7 +5669,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 RouteAltsDone();   // driving: the route chosen is the one on
             RouteGps(s_gps.lon, s_gps.lat, s_gps.speedKmh, s_gps.course);
         }
-        if (!s_dragging) {
+        if (!MapHeld()) {
             GlideApply();
             AutoZoom();
             FollowGps();
@@ -5673,6 +5705,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_LBUTTONDOWN: {
         int x = (short)LOWORD(lp), y = (short)HIWORD(lp);
         SetCapture(hwnd);
+        if (s_flinging) {   // a touch stops the map where it is
+            FlingStop();
+            UserChanged();
+        }
         s_pressed = HitButton(x, y);
         if (s_pressed >= 0) {
             s_pressedInside = true;
@@ -5703,6 +5739,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             s_dragMoved = false;
             s_dragStart.x = x;
             s_dragStart.y = y;
+            FlingReset(&s_fling);
+            FlingAdd(&s_fling, s_downTick, x, y);
             ViewWorld(&s_dragWx, &s_dragWy);
             s_dragTilt = FlatAt(x, y, &s_dragFx, &s_dragFy);
         }
@@ -5735,6 +5773,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             } else if (s_dragMoved) {
                 WorldToGeo(s_dragWx - dx, s_dragWy - dy, g_cfg.z, &g_cfg.lon, &g_cfg.lat);
                 g_cfg.follow = FOLLOW_OFF;
+                FlingAdd(&s_fling, GetTickCount(), x, y);
                 InvalidateRect(hwnd, NULL, FALSE);
             }
         }
@@ -5781,7 +5820,15 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             if (s_longDone) {
                 s_longDone = false;   // done when it fired
             } else if (s_dragMoved) {
-                UserChanged();
+                DWORD now = GetTickCount();
+                FlingAdd(&s_fling, now, x, y);
+                if (!s_dragTilt && FlingStart(&s_fling, now)) {   // (the tilted view: not - its drag is the flat
+                    s_flinging = true;                               // point's, the way would not match the finger)
+                    s_flingTick = now;
+                    SetTimer(hwnd, TIMER_FLING, kFlingMs, NULL);
+                } else {
+                    UserChanged();
+                }
             } else if (GetTickCount() - s_downTick >= (DWORD)kLongMs) {
                 // held long, but the timer did not come in time (the thread was busy: input goes before timers)
                 if (s_pickSlot >= 0)
