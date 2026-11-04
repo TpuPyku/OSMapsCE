@@ -153,6 +153,11 @@ static DWORD      s_lastPaintTick;
 static DWORD      s_statTick;           // once a minute: memory and load to the log
 static int        s_statPaints;
 static DWORD      s_statPaintMax, s_statGpsBytes;
+// The frame's parts timed (the user 2026-11-04: smooth as Navitel - where a frame's 225-320 ms go): the background,
+// the tiles into the ring, the frame (turned / tilted / the ring's blit), the names, the route and marks, the panels,
+// the copy to the screen. Each part: the time since the last lap; the sum and the maximum go to the log each minute.
+enum { PT_BG, PT_RING, PT_FRAME, PT_LABELS, PT_MARKS, PT_UI, PT_OUT, PT_N };
+static DWORD      s_ptSum[PT_N], s_ptMax[PT_N], s_ptAt;
 static int        s_statGpsLines, s_statGpsBad;
 
 static int        s_pressed = -1;
@@ -2841,6 +2846,15 @@ static int FavAt(int x, int y)   // the mark under the finger (the nearest withi
     return best;
 }
 
+static void PartLap(int part)
+{
+    DWORD now = GetTickCount(), d = now - s_ptAt;
+    s_ptSum[part] += d;
+    if (d > s_ptMax[part])
+        s_ptMax[part] = d;
+    s_ptAt = now;
+}
+
 static void DrawMap(HDC dc)
 {
     RECT mr = { g_cfg.mapX, g_cfg.mapY, g_cfg.mapX + g_cfg.mapW, g_cfg.mapY + g_cfg.mapH };
@@ -2887,6 +2901,7 @@ static void DrawMap(HDC dc)
             s_far.z = g_cfg.z;
             RingUpdate(s_far, dc, ax, ay, kFarHalf, kFarHalf);
         }
+        PartLap(PT_RING);
         if (rotate) {   // turned again only when something moved
             int tz = tilt ? g_cfg.z : -1;
             if (s_rotStamp != s_ringStamp || s_rotVx != vx || s_rotVy != vy || s_rotAngle != angle || s_rotTilt != tz) {
@@ -2905,6 +2920,7 @@ static void DrawMap(HDC dc)
             RingBlit(dc, mr, vx, vy);
         }
     }
+    PartLap(PT_FRAME);
     if (!drawn)   // (the vector map: no network and nothing at hand here - the user 2026-10-30: just this)
         Text(dc, s_fontSmall, g_cfg.night ? RGB(160, 160, 160) : RGB(90, 90, 90), mr.left, mr.top, mr.right,
              mr.bottom, DT_CENTER, !s_lastErr ? L"Загрузка карты..." : g_cfg.vector ? L"Нет карты этой области"
@@ -2923,10 +2939,12 @@ static void DrawMap(HDC dc)
         VLabelsDraw(dc, mr, cx, cy, vx, vy, angle, g_cfg.z, avoid, na);
         g_tilt = NULL;
     }
+    PartLap(PT_LABELS);
     DrawAttribution(dc, mr);
     DrawRoute(dc, cx, cy, vx, vy, angle);
     DrawFavMarks(dc, cx, cy, vx, vy, angle);
     DrawGpsMarker(dc, cx, cy, vx, vy, angle);
+    PartLap(PT_MARKS);
 
     SelectClipRgn(dc, NULL);
     DeleteObject(rgn);
@@ -5161,6 +5179,7 @@ static void DrawButtons(HDC dc)
 
 static void Paint(HDC hdc)
 {
+    s_ptAt = GetTickCount();
     HDC dc = CreateCompatibleDC(hdc);
     HGDIOBJ oldBmp = SelectObject(dc, s_back);
     HGDIOBJ oldFont = SelectObject(dc, s_fontSmall);
@@ -5172,6 +5191,7 @@ static void Paint(HDC hdc)
         RECT r = { 0, 0, s_cw, s_ch };
         FillRect(dc, &r, (HBRUSH)GetStockObject(BLACK_BRUSH));
     }
+    PartLap(PT_BG);
     DrawMap(dc);
     if (s_settings && s_maps) {
         DrawMaps(dc);
@@ -5190,8 +5210,10 @@ static void Paint(HDC hdc)
         DrawButtons(dc);
         DrawOverMap(dc);
     }
+    PartLap(PT_UI);
 
     BitBlt(hdc, 0, 0, s_cw, s_ch, dc, 0, 0, SRCCOPY);
+    PartLap(PT_OUT);
     SelectObject(dc, oldFont);
     SelectObject(dc, oldBmp);
     DeleteDC(dc);
@@ -5252,6 +5274,16 @@ static void LogStat()
         ms.dwMemoryLoad, ms.dwAvailPhys / 1024, ms.dwAvailVirtual / 1024, CacheBytes() / 1024,
         s_statPaints, s_statPaintMax, s_statSlots,
         s_gps.bytes - s_statGpsBytes, s_gps.lines - s_statGpsLines, s_gps.badLines - s_statGpsBad);
+    if (s_statPaints) {   // the frame's parts: the average and the longest, ms
+        DWORD n = (DWORD)s_statPaints;
+        Log("paint: avg/max ms - bg %lu/%lu, tiles %lu/%lu, frame %lu/%lu, names %lu/%lu, marks %lu/%lu, "
+            "panels %lu/%lu, out %lu/%lu", s_ptSum[PT_BG] / n, s_ptMax[PT_BG], s_ptSum[PT_RING] / n,
+            s_ptMax[PT_RING], s_ptSum[PT_FRAME] / n, s_ptMax[PT_FRAME], s_ptSum[PT_LABELS] / n, s_ptMax[PT_LABELS],
+            s_ptSum[PT_MARKS] / n, s_ptMax[PT_MARKS], s_ptSum[PT_UI] / n, s_ptMax[PT_UI], s_ptSum[PT_OUT] / n,
+            s_ptMax[PT_OUT]);
+    }
+    memset(s_ptSum, 0, sizeof(s_ptSum));
+    memset(s_ptMax, 0, sizeof(s_ptMax));
     s_statTick = GetTickCount();
     s_statPaints = 0;
     s_statPaintMax = 0;
