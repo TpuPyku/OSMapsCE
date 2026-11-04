@@ -410,6 +410,8 @@ static DWORD WINAPI NetThread(LPVOID)
 
 void NetStart(HWND notify)
 {
+    static const HttpSetup setup = { HTTP_USER_AGENT, "image/png,image/*,*/*", 2 * 1024 * 1024, Log };
+    HttpInit(&setup);
     InitializeCriticalSection(&s_cs);
     s_notify = notify;
     s_wake = CreateEvent(NULL, FALSE, FALSE, NULL);

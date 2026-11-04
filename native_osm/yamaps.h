@@ -112,20 +112,10 @@ Overlay* OverlayFromMemory(const unsigned char* data, int len);   // free() it
 #define YA_H 450
 #define CACHE_BLOCK 64      // tiles per cache subfolder side: FAT is slow on big folders
 
-// http.cpp
-// With ifNoneMatch the server may answer 304 (no body); the ETag of the answer goes to etag.
-struct HttpExtra {             // a download's (offmaps.cpp): its request's headers, the answer's Location
-    const char* headers;       // e.g. "Range: bytes=0-1048575\r\n" (each line with CR LF), NULL none
-    char*       location;      // the answer's Location (a redirect: GitHub's release files), NULL not wanted
-    int         locCap;
-};
-int  HttpGet(const char* host, bool https, const char* path, unsigned char** body, int* bodyLen, int* status,
-             const char* ifNoneMatch = NULL, char* etag = NULL, int etagCap = 0, const HttpExtra* extra = NULL);
-void HttpSetGpsDate(int yyyymmdd);
-void HttpCloseAll();
+// HTTP: VestaCore vhttp.cpp (HttpInit in NetStart: HTTP_USER_AGENT, the log)
+#include "vhttp.h"
 
 // net.cpp
-enum { NET_OK = 0, NET_DNS, NET_CONNECT, NET_TIMEOUT, NET_HTTP, NET_DECODE, NET_MEMORY, NET_TLS };
 struct MapRequest { int src, z, x, y; };
 struct MapResult {
     MapRequest     req;
