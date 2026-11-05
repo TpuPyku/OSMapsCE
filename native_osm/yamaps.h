@@ -33,6 +33,7 @@ struct Config {
     int     z;
     int     traffic;        // traffic overlay on/off
     int     trafficSrc;     // TRF_*
+    int     trafficRoute;   // traffic on the route alone, not on the map (trafshade.h)
     int     follow;         // GPS mode: 0 off, 1 north-up, 2 heading-up
     int     night;          // dark map: lightness inverted, dimmed
     int     vector;         // the base map: 0 OSM raster tiles, 1 vector tiles (OpenFreeMap, vtile.cpp)

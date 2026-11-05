@@ -1,6 +1,7 @@
 ﻿#include "yamaps.h"
 #include "fling.h"
 #include "zoomanim.h"
+#include "trafshade.h"
 #include "vkeys.h"     // VestaCore: the keyboard's text and cursor (VestaHome's)
 #include "vfavs.h"     // VestaCore: the favourite places (VestaHome reads them too)
 #include "vversion.h"   // VestaCore: the version "major.minor.YYMMDD" (the date: this file's build)
@@ -296,11 +297,12 @@ static int s_setSheet;   // SHEET_*
 // 2026-10-29: the graphs for the routes and the search without the internet) - the release's catalog by its titles,
 // kMapsRows a page, a row's button downloads it (the trunk roads after the first one), "ОТМЕНА" while it goes;
 // "ЗАГРУЗИТЬ" and "ОК" (the same again) asked "ТОЧНО?"
-enum { M_KIND_PREV, M_KIND_NEXT, M_DETAIL_PREV, M_DETAIL_NEXT, M_REGIONS, M_BACK, M_COUNT };
+enum { M_KIND_PREV, M_KIND_NEXT, M_DETAIL_PREV, M_DETAIL_NEXT, M_TRF_PREV, M_TRF_NEXT, M_REGIONS, M_BACK, M_COUNT };
 static const RECT kMapsCtl[M_COUNT] = {
     { 512, 79, 560, 123 }, { 712, 79, 760, 123 },     // the steppers: the kind, the detail
     { 512, 129, 560, 173 }, { 712, 129, 760, 173 },
-    { 576, 179, 760, 223 },                            // the regions' page
+    { 512, 179, 560, 223 }, { 712, 179, 760, 223 },   // the traffic: on the map / on the route alone
+    { 576, 229, 760, 273 },                            // the regions' page
     { 8, 412, 80, 480 },                               // back to the settings
 };
 enum { kMapsRows = 6 };
@@ -703,6 +705,8 @@ static void MissForget()   // once a minute: the tiles once not found tried agai
 // -1: keys left untried
 static int LoadFromDisk(const MapRequest* keys, int n, int maxLoads, bool draft)
 {
+    if (MapHeld())   // nothing while the map moves (the user 2026-11-05: it stuttered) - when it stops
+        return maxLoads;
     for (int i = 0; i < n; i++) {
         if (CacheFind(keys[i], false) || RingHas(s_missKeys, keys[i]))
             continue;
@@ -768,8 +772,17 @@ static void DiskSteps()   // from now on, till done
 
 static int JunctionKeys(MapRequest* out, double* mx, double* my, bool early);
 
+static bool TrafficWanted()   // the traffic asked for: shown on the map, or a route to colour
+{
+    RouteInfo ri;
+    RouteGet(&ri);
+    return g_cfg.traffic && (!g_cfg.trafficRoute || ri.state != ROUTE_NONE || RouteAlts() >= 2);
+}
+
 static void Ensure(int mode)
 {
+    if (MapHeld())   // (no loads, no requests while the map moves: UserChanged when it stops)
+        return;
     MapRequest keys[kMaxKeys];
     int n = Unshown(keys, NeededKeys(SRC_OSM, keys, kMaxKeys));
     LoadFromDisk(keys, n, 6, true);
@@ -790,7 +803,7 @@ static void Ensure(int mode)
     LoadFromDisk(keys, n, 2, false);
     for (int i = 0; i < n; i++)
         Request(REQ_AUTO, keys[i], CacheFind(keys[i], false));
-    if (g_cfg.traffic) {
+    if (TrafficWanted()) {
         n = NeededKeys(TrafficSource(), keys, kMaxKeys);
         for (int i = 0; i < n; i++)
             Request(i == 0 ? mode : (mode == REQ_FORCE ? REQ_AUTO : mode), keys[i], CacheFind(keys[i], false));
@@ -1025,6 +1038,13 @@ static void OnMapsCtl(int id)
     case M_KIND_NEXT:   MapStyleSet(!g_cfg.vector); break;
     case M_DETAIL_PREV: DetailSet(g_cfg.detail - 1); break;
     case M_DETAIL_NEXT: DetailSet(g_cfg.detail + 1); break;
+    case M_TRF_PREV:
+    case M_TRF_NEXT:
+        g_cfg.trafficRoute = !g_cfg.trafficRoute;
+        Log("map: traffic %s", g_cfg.trafficRoute ? "on the route alone" : "on the map");
+        ConfigSave();
+        Ensure(REQ_AUTO);   // (the route alone, none: no requests)
+        break;
     case M_BACK:        s_maps = false; break;
     case M_REGIONS:
         s_regions = true;
@@ -1813,6 +1833,11 @@ static const unsigned short* NightLut()
 // differs slightly (sy = world px per image row).
 struct OvPlace { const CacheEntry* e; double left, top, right, bottom, sy; };
 
+static TrafficLook TrafficNow()   // how the traffic is shown now (trafshade.h)
+{
+    return TrafficLookOf(g_cfg.traffic != 0, g_cfg.trafficRoute != 0, g_cfg.night != 0, g_cfg.vector != 0);
+}
+
 static int OverlayPlaces(CacheEntry** list, int n, OvPlace* out)
 {
     int src = TrafficSource(), m = 0;
@@ -1879,11 +1904,12 @@ static DWORD SlotSig(int z, int tx, int ty, bool inWorld, const CacheEntry** bas
 {
     DWORD h = Mix(Mix(Mix(2166136261u, z), tx), ty);
     h = Mix(Mix(h, inWorld), g_cfg.night);
+    TrafficLook tl = TrafficNow();
     for (int i = 0; i < nb; i++)
         h = Mix(Mix(Mix(Mix(Mix(h, base[i]->req.z), base[i]->req.x), base[i]->req.y), base[i]->fetchTick),
                 (DWORD)(size_t)base[i]->img.bmp);
-    if (g_cfg.traffic) {
-        h = Mix(h, 0x7AFF + TrafficSource());
+    if (tl.onMap) {
+        h = Mix(h, 0x7AFF + TrafficSource() + (tl.mapDim ? 16 : 0));
         for (int i = 0; i < no; i++)
             if (ov[i].left < (tx + 1) * TILE && ov[i].right > tx * TILE && ov[i].top < (ty + 1) * TILE &&
                 ov[i].bottom > ty * TILE)
@@ -1893,9 +1919,11 @@ static DWORD SlotSig(int z, int tx, int ty, bool inWorld, const CacheEntry** bas
 }
 
 // A traffic image blended into the ring, clipped to `clip` (ring pixels); (left, top) its ring position, sy ring
-// px per image row, 1 px per image px horizontally.
-static void BlendRing(unsigned short* bits, const Overlay* ov, double left, double top, double sy, const RECT& clip)
+// px per image row, 1 px per image px horizontally; dim: its colours at kTrafficNightPct (the vector map's night)
+static void BlendRing(unsigned short* bits, const Overlay* ov, double left, double top, double sy, const RECT& clip,
+                      bool dim)
 {
+    int k = dim ? kTrafficNightPct : 100;
     int ix = (int)ceil(left);
     int y0 = (int)ceil(top), y1 = (int)floor(top + ov->h * sy);
     if (y0 < clip.top) y0 = clip.top;
@@ -1921,9 +1949,9 @@ static void BlendRing(unsigned short* bits, const Overlay* ov, double left, doub
                 int a = s[3];
                 unsigned short d = drow[x];
                 int dr = (d >> 8) & 0xF8, dg = (d >> 3) & 0xFC, db = (d << 3) & 0xF8;
-                dr += (s[0] - dr) * a / 255;
-                dg += (s[1] - dg) * a / 255;
-                db += (s[2] - db) * a / 255;
+                dr += (s[0] * k / 100 - dr) * a / 255;
+                dg += (s[1] * k / 100 - dg) * a / 255;
+                db += (s[2] * k / 100 - db) * a / 255;
                 drow[x] = RGB565(dr, dg, db);
             }
         }
@@ -1969,11 +1997,13 @@ static void DrawSlot(Ring& r, HDC rdc, HDC src, int tx, int ty, bool inWorld, co
 #ifndef UNDER_CE
     GdiFlush();   // desktop GDI may batch drawing into the DIB
 #endif
-    if (inWorld && g_cfg.traffic)
+    TrafficLook tl = TrafficNow();
+    if (inWorld && tl.onMap)
         for (int i = 0; i < no; i++)
             if (ov[i].left < (tx + 1) * TILE && ov[i].right > tx * TILE && ov[i].top < (ty + 1) * TILE &&
                 ov[i].bottom > ty * TILE)
-                BlendRing(r.bits, ov[i].e->ov, ox + ov[i].left - tx * TILE, oy + ov[i].top - ty * TILE, ov[i].sy, rc);
+                BlendRing(r.bits, ov[i].e->ov, ox + ov[i].left - tx * TILE, oy + ov[i].top - ty * TILE, ov[i].sy, rc,
+                          tl.mapDim);
     const unsigned short* lut = g_cfg.night && !g_cfg.vector ? NightLut() : NULL;   // (vector: its own night palette)
     if (lut)
         for (int y = rc.top; y < rc.bottom; y++) {
@@ -2009,7 +2039,7 @@ static int RingUpdate(Ring& r, HDC dc, double vx, double vy, double ex, double e
     CacheEntry* list[CACHE_MEM];
     int n = CacheList(list, CACHE_MEM);
     OvPlace ov[CACHE_MEM];
-    int no = g_cfg.traffic && &r == &s_near ? OverlayPlaces(list, n, ov) : 0;
+    int no = TrafficNow().onMap && &r == &s_near ? OverlayPlaces(list, n, ov) : 0;
     HDC rdc = NULL, src = NULL;
     HGDIOBJ old = NULL;
     int shown = 0;
@@ -2674,7 +2704,9 @@ static void DrawRoute(HDC dc, double cx, double cy, double vx, double vy, double
     }
     if (np >= 2 && s_rpts && s_ridx && s_rcolCap >= np) {
         // the colours' signature: the slots drawn (traffic came), the zoom, the provider, this route
-        DWORD sig = Mix(Mix(Mix(Mix(s_ringStamp, g_cfg.z), g_cfg.trafficSrc), g_cfg.traffic), (DWORD)(size_t)ll) | 1;
+        bool dim = TrafficNow().routeDim;   // (the route alone at night: dimmed as the map's would be)
+        DWORD sig = Mix(Mix(Mix(Mix(s_ringStamp, g_cfg.z), g_cfg.trafficSrc), g_cfg.traffic + 2 * dim),
+                        (DWORD)(size_t)ll) | 1;
         double l = g_cfg.mapX - 50, t = g_cfg.mapY - 50, r = g_cfg.mapX + g_cfg.mapW + 50, b = g_cfg.mapY + g_cfg.mapH + 50;
         const Tilt* tp = ViewTilt();
         static int runs[512];
@@ -2708,6 +2740,8 @@ static void DrawRoute(HDC dc, double cx, double cy, double vx, double vy, double
                             double ex = gx - ax, ey = gy - ay, len = sqrt(ex * ex + ey * ey);
                             if (len > 0)
                                 c = TrafficAt(ll[j * 2], ll[j * 2 + 1], -ey / len, ex / len);
+                            if (c != kRouteBlue)
+                                c = TrafficShade(c, dim);
                         }
                         s_rcol[j] = c;
                         s_rcolSig[j] = sig;
@@ -3394,7 +3428,11 @@ static void MapsLook(HDC dc)
     SetRow(dc, kSetRow0 + kSetRowH, L"Детализация", s, true);
     StepperAt(dc, kMapsCtl[M_DETAIL_PREV], kMapsCtl[M_DETAIL_NEXT], s_mapsPressed - M_DETAIL_PREV,
               kDetailNames[g_cfg.detail]);
-    SetRow(dc, kSetRow0 + 2 * kSetRowH, L"Карты областей", L"маршрут и поиск без интернета", false);
+    SetRow(dc, kSetRow0 + 2 * kSetRowH, L"Пробки", g_cfg.trafficRoute ? L"только на проложенном маршруте"
+                                                                   : L"на карте и на маршруте", true);
+    StepperAt(dc, kMapsCtl[M_TRF_PREV], kMapsCtl[M_TRF_NEXT], s_mapsPressed - M_TRF_PREV,
+              g_cfg.trafficRoute ? L"Маршрут" : L"Везде");
+    SetRow(dc, kSetRow0 + 3 * kSetRowH, L"Карты областей", L"маршрут и поиск без интернета", false);
     DrawCtl(dc, kMapsCtl[M_REGIONS], s_mapsPressed == M_REGIONS, s_fontLabel, L"СКАЧАТЬ");
 }
 
@@ -3431,7 +3469,7 @@ static void DrawMaps(HDC dc)
     _snwprintf(s, 32, L"%02d:%02d", t.wHour, t.wMinute);
     Text(dc, s_fontClock, kText, s_cw - 160, 0, s_cw - 16, 56, DT_RIGHT, s);
     BackDisc(dc, s_mapsPressed == (s_regions ? R_BACK : M_BACK));
-    RECT panel = { 16, 64, s_cw - 16, s_regions ? 412 : 226 };
+    RECT panel = { 16, 64, s_cw - 16, s_regions ? 412 : 276 };
     Tile(dc, panel, kPanel, kPanel, 32);
     if (s_regions)
         DrawRegions(dc);
@@ -5183,6 +5221,8 @@ static void DrawStatus(HDC dc)
         wcscpy(s, L"Загрузка…");
     } else if (!g_cfg.traffic) {
         wcscpy(s, L"Пробки выкл.");
+    } else if (!TrafficWanted()) {   // (on the route alone, no route)
+        wcscpy(s, L"Пробки · на маршруте");
     } else {
         MapRequest keys[kMaxKeys];
         CacheEntry* e = NeededKeys(TrafficSource(), keys, kMaxKeys) ? CacheFind(keys[0], false) : NULL;
@@ -5785,9 +5825,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_LBUTTONDOWN: {
         int x = (short)LOWORD(lp), y = (short)HIWORD(lp);
         SetCapture(hwnd);
-        if (s_flinging) {   // a touch stops the map where it is
-            FlingStop();
-            UserChanged();
+        if (s_flinging) {   // a touch stops the map where it is - and loads nothing yet (another swipe may
+            FlingStop();   // follow: the user 2026-11-05); a tap: in a while, a drag: when it ends
+            s_userPending = true;
+            SetTimer(hwnd, TIMER_USER, kUserDelayMs, NULL);
         }
         s_pressed = HitButton(x, y);
         if (s_pressed >= 0) {

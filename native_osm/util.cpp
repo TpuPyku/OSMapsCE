@@ -241,6 +241,7 @@ static void ConfigSet(const char* key, const char* val)
     else if (!strcmp(key, "lat"))          g_cfg.lat = atof(val);
     else if (!strcmp(key, "zoom"))         g_cfg.z = Clamp(atoi(val), 2, 19);
     else if (!strcmp(key, "traffic"))      g_cfg.traffic = atoi(val) != 0;
+    else if (!strcmp(key, "traffic_route")) g_cfg.trafficRoute = atoi(val) != 0;
     else if (!strcmp(key, "follow"))       g_cfg.follow = Clamp(atoi(val), 0, 2);
     else if (!strcmp(key, "traffic_ttl"))  g_cfg.trafficTtlMin = Clamp(atoi(val), 2, 600);
     else if (!strcmp(key, "yandex_limit")) g_cfg.yandexLimit = Clamp(atoi(val), 0, 100000);
@@ -321,6 +322,8 @@ void ConfigSave()
         "lat=%.6f\r\n"
         "zoom=%d\r\n"
         "traffic=%d\r\n"
+        "; traffic on the route alone (not on the map): 1\r\n"
+        "traffic_route=%d\r\n"
         "; yandex | 2gis\r\n"
         "traffic_src=%s\r\n"
         "; GPS mode: 0 off, 1 north-up, 2 heading-up\r\n"
@@ -371,7 +374,7 @@ void ConfigSave()
         "map_y=%d\r\n"
         "map_w=%d\r\n"
         "map_h=%d\r\n",
-        g_cfg.lon, g_cfg.lat, g_cfg.z, g_cfg.traffic, kTrafficNames[g_cfg.trafficSrc],
+        g_cfg.lon, g_cfg.lat, g_cfg.z, g_cfg.traffic, g_cfg.trafficRoute, kTrafficNames[g_cfg.trafficSrc],
         g_cfg.follow, g_cfg.night, g_cfg.vector, g_cfg.junction, g_cfg.noToll, g_cfg.detail, g_cfg.tilt, g_cfg.trafficTtlMin, g_cfg.yandexLimit, g_cfg.twogisLimit,
         g_cfg.autoReserve, g_cfg.cacheMb, g_cfg.cacheKb, g_cfg.cacheDays, g_cfg.reqDay,
         g_cfg.yandexCount, g_cfg.twogisCount, g_cfg.osmCount, g_cfg.apiLimit, g_cfg.apiCount,

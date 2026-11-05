@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include "fling.h"
 #include "zoomanim.h"
+#include "trafshade.h"
 
 Config  g_cfg;
 wchar_t g_dir[MAX_PATH];
@@ -764,6 +765,25 @@ static void DropChecks()
     free(r);
 }
 
+static void TrafficLookChecks()   // how the traffic is shown (trafshade.cpp)
+{
+    TrafficLook t = TrafficLookOf(true, false, false, true);
+    Check(t.onMap && !t.mapDim && !t.routeDim, "traffic: by day - on the map, bright", NULL);
+    t = TrafficLookOf(true, false, true, true);
+    Check(t.onMap && t.mapDim && !t.routeDim, "traffic: at night - the map's dimmed, the route's bright", NULL);
+    t = TrafficLookOf(true, false, true, false);
+    Check(t.onMap && !t.mapDim, "traffic: the raster's night - its own dimming, not twice", NULL);
+    t = TrafficLookOf(true, true, false, true);
+    Check(!t.onMap && !t.routeDim, "traffic: on the route alone - not on the map", NULL);
+    t = TrafficLookOf(true, true, true, false);
+    Check(!t.onMap && t.routeDim, "traffic: on the route alone at night - the route's dimmed", NULL);
+    t = TrafficLookOf(false, false, true, true);
+    Check(!t.onMap && !t.mapDim && !t.routeDim, "traffic: off - nowhere", NULL);
+    Check(TrafficShade(RGB(200, 100, 20), false) == RGB(200, 100, 20), "traffic: a colour kept", NULL);
+    Check(TrafficShade(RGB(200, 100, 20), true) == RGB(200 * kTrafficNightPct / 100, 100 * kTrafficNightPct / 100,
+                                                        20 * kTrafficNightPct / 100), "traffic: a colour dimmed", NULL);
+}
+
 int main()
 {
     GetModuleFileName(NULL, g_dir, MAX_PATH);
@@ -780,6 +800,7 @@ int main()
     DropChecks();
     FlingChecks();
     ZoomChecks();
+    TrafficLookChecks();
 
     // along the main street, west to east: ~400 m, no turn on the way
     char* b = Route("50.000,53.000;50.006,53.000");
