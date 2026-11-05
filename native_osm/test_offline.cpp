@@ -4,6 +4,7 @@
 #include "yamaps.h"
 #include <stdio.h>
 #include "fling.h"
+#include "zoomanim.h"
 
 Config  g_cfg;
 wchar_t g_dir[MAX_PATH];
@@ -685,6 +686,63 @@ static void FlingChecks()
     Check(sx < -250 && dy < -120 && dy > -170, "fling: west and up, both ways", NULL);
 }
 
+static bool Near(double a, double b)
+{
+    return a > b - 0.02 && a < b + 0.02;
+}
+
+static void ZoomChecks()   // the zoom's change shown smoothly (zoomanim.cpp)
+{
+    ZoomAnim a = { false, 0, 0, 0 };
+    double s = 0;
+    ZoomAnimStart(&a, 1000, 1);
+    Check(ZoomAnimScale(&a, 1000, &s) && Near(s, 1), "zoom: closer - the frame as it was at first", NULL);
+    Check(ZoomAnimScale(&a, 1000 + kZoomMs / 2, &s) && Near(s, 1.414), "zoom: halfway in time - halfway in scale", NULL);
+    double s1, s2;
+    ZoomAnimScale(&a, 1010, &s1);
+    ZoomAnimScale(&a, 1020, &s2);
+    Check(s2 - s1 < 0.01 && s1 >= 1, "zoom: eased at the start", NULL);
+    ZoomAnimScale(&a, 1000 + kZoomMs - 1, &s);
+    Check(s > 1.98 && s <= 2, "zoom: about twice at the end", NULL);
+    Check(!ZoomAnimScale(&a, 1000 + kZoomMs, &s) && !a.on && Near(s, 2), "zoom: then over - the new zoom's frame", NULL);
+    ZoomAnimStart(&a, 2000, -1);
+    Check(ZoomAnimScale(&a, 2000 + kZoomMs / 2, &s) && Near(s, 0.707), "zoom: farther - the frame shrinks (over again)",
+          NULL);
+    ZoomAnimStart(&a, 3000, -1);   // another level meanwhile: from where it is, on to a quarter
+    ZoomAnimScale(&a, 3000 + kZoomMs / 2, &s1);
+    ZoomAnimStart(&a, 3000 + kZoomMs / 2, -1);
+    ZoomAnimScale(&a, 3000 + kZoomMs / 2, &s2);
+    Check(Near(s1, s2), "zoom: a level more meanwhile - no jump", NULL);
+    Check(ZoomAnimScale(&a, 3000 + kZoomMs / 2 + kZoomMs - 1, &s) && s > 0.24 && s < 0.26,
+          "zoom: ... and on to both levels", NULL);
+    ZoomAnimStart(&a, 6000, 1);   // the last one over by the clock, never asked: a new one from the frame as it is
+    ZoomAnimStart(&a, 6000 + kZoomMs * 3, 1);
+    Check(ZoomAnimScale(&a, 6000 + kZoomMs * 3, &s) && Near(s, 1), "zoom: after a finished one - anew", NULL);
+    ZoomAnimStart(&a, 7000, 1);   // the new zoom's points (the car) onto the frame shown: half as far at first, then as is
+    ZoomAnimScale(&a, 7000, &s);
+    Check(Near(ZoomAnimNew(&a, s), 0.5), "zoom: the new frame's points - half way out at first", NULL);
+    ZoomAnimScale(&a, 7000 + kZoomMs - 1, &s);
+    Check(ZoomAnimNew(&a, s) > 0.99 && ZoomAnimNew(&a, s) <= 1.0, "zoom: ... where they are at the end", NULL);
+    ZoomAnimStart(&a, 8000, 1);   // asked late: the end's scale, not further
+    Check(!ZoomAnimScale(&a, 8000 + kZoomMs * 3 / 2, &s) && Near(s, 2), "zoom: asked late - the end's scale", NULL);
+    ZoomAnimStart(&a, 9000, 1);   // the next one just as this one ends: anew
+    ZoomAnimStart(&a, 9000 + kZoomMs, 1);
+    Check(ZoomAnimScale(&a, 9000 + kZoomMs, &s) && Near(s, 1), "zoom: one more just at the end - anew", NULL);
+    ZoomAnim off = { false, 0, 0, 0 };
+    Check(!ZoomAnimScale(&off, 5000, &s) && Near(s, 1), "zoom: not started - none", NULL);
+
+    RECT map = { 0, 0, 800, 480 }, r;
+    ZoomAnimRect(2, 400, 240, map, &r);
+    Check(r.left == -400 && r.top == -240 && r.right == 1200 && r.bottom == 720, "zoom: twice around the center", NULL);
+    ZoomAnimRect(2, 400, 400, map, &r);   // the car near the bottom: it stays where it is
+    Check(r.left == -400 && r.top == -400 && r.right == 1200 && r.bottom == 560, "zoom: twice around the car", NULL);
+    ZoomAnimRect(0.5, 400, 400, map, &r);
+    Check(r.left == 200 && r.top == 200 && r.right == 600 && r.bottom == 440, "zoom: half around the car", NULL);
+    RECT part = { 100, 50, 700, 450 };
+    ZoomAnimRect(1, 300, 200, part, &r);
+    Check(r.left == 100 && r.top == 50 && r.right == 700 && r.bottom == 450, "zoom: scale 1 - the map's own rect", NULL);
+}
+
 static void DropChecks()
 {
     char* r = Route("50.000,53.000;50.006,53.000");
@@ -721,6 +779,7 @@ int main()
     DownloadChecks();
     DropChecks();
     FlingChecks();
+    ZoomChecks();
 
     // along the main street, west to east: ~400 m, no turn on the way
     char* b = Route("50.000,53.000;50.006,53.000");

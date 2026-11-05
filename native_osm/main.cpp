@@ -1,5 +1,6 @@
 ﻿#include "yamaps.h"
 #include "fling.h"
+#include "zoomanim.h"
 #include "vkeys.h"     // VestaCore: the keyboard's text and cursor (VestaHome's)
 #include "vfavs.h"     // VestaCore: the favourite places (VestaHome reads them too)
 #include "vversion.h"   // VestaCore: the version "major.minor.YYMMDD" (the date: this file's build)
@@ -75,7 +76,7 @@ static const COLORREF kLine    = RGB(0x2a, 0x2f, 0x37);   // separators
 static COLORREF       kOrange  = RGB(0xff, 0x6b, 0x1a);
 static const COLORREF kHair    = RGB(64, 68, 77);         // night: a card's 1 px edge over the dark map
 
-enum { TIMER_TICK = 1, TIMER_USER = 2, TIMER_DOCK = 3, TIMER_LONG = 4, TIMER_DISK = 5, TIMER_GLIDE = 6, TIMER_FLING = 7 };
+enum { TIMER_TICK = 1, TIMER_USER = 2, TIMER_DOCK = 3, TIMER_LONG = 4, TIMER_DISK = 5, TIMER_GLIDE = 6, TIMER_FLING = 7, TIMER_ZOOM = 8 };
 static const UINT kUserDelayMs = 900;    // wait for the user to stop pressing buttons
 
 // GPS button modes (g_cfg.follow)
@@ -1105,11 +1106,46 @@ static void DragTilted(int x, int y)
     s_freeTick = GetTickCount();
 }
 
+// The zoom's change shown smoothly (the user 2026-11-05; zoomanim.cpp): the map's last frame (kept by DrawMap) scaled
+// around the point the zoom keeps - the car while following, else the map's center - then the new zoom's own frame
+static ZoomAnim       s_zoom;
+static Image          s_zoomImg;          // the map's last frame (768 KB at 800 x 480: kept while the map is drawn)
+static unsigned short* s_zoomBits;
+static double         s_zoomAx, s_zoomAy;  // the anchor on the screen
+enum { kZoomFrameMs = 30 };
+
+static void ZoomAnchor(double* ax, double* ay)   // where the zoom keeps the map: the car while following
+{
+    *ax = g_cfg.mapX + g_cfg.mapW / 2.0;
+    *ay = g_cfg.mapY + g_cfg.mapH / 2.0;
+    double gx, gy, vx, vy, sx, sy;
+    if (g_cfg.follow == FOLLOW_OFF || !s_gps.valid)
+        return;
+    GeoToWorld(s_gps.lon, s_gps.lat, g_cfg.z, &gx, &gy);
+    ViewWorld(&vx, &vy);
+    if (ScreenOf(gx, gy, vx, vy, *ax, *ay, ViewAngle(), &sx, &sy)) {
+        *ax = sx;
+        *ay = sy;
+    }
+}
+
+static void ZoomAnimate(int dz)   // (before the zoom changes: the anchor by the old one)
+{
+    if (!s_zoomBits)
+        return;
+    DWORD now = GetTickCount();
+    if (!s_zoom.on || now - s_zoom.t0 >= (DWORD)kZoomMs)   // a new one (more meanwhile: the same anchor)
+        ZoomAnchor(&s_zoomAx, &s_zoomAy);
+    ZoomAnimStart(&s_zoom, now, dz);
+    SetTimer(s_wnd, TIMER_ZOOM, kZoomFrameMs, NULL);
+}
+
 static void ZoomBy(int dz)
 {
     int z = g_cfg.z + dz;
     if (z < 2 || z > 19)
         return;
+    ZoomAnimate(dz);
     double x, y;
     ViewWorld(&x, &y);
     double f = pow(2.0, dz);
@@ -2875,6 +2911,32 @@ static void PartLap(int part)
     s_ptAt = now;
 }
 
+static void ZoomKeep(HDC dc, const RECT& mr)   // the map's frame (without the car) kept for a zoom's change
+{
+    if (!s_zoomBits && !(s_zoomBits = ImageCreate(mr.right - mr.left, mr.bottom - mr.top, &s_zoomImg)))
+        return;
+    HDC k = CreateCompatibleDC(dc);
+    HGDIOBJ old = SelectObject(k, s_zoomImg.bmp);
+    BitBlt(k, 0, 0, mr.right - mr.left, mr.bottom - mr.top, dc, mr.left, mr.top, SRCCOPY);
+    SelectObject(k, old);
+    DeleteDC(k);
+}
+
+static void ZoomFrame(HDC dc, const RECT& mr, double scale)   // that frame scaled around the anchor
+{
+    HBRUSH bg = CreateSolidBrush(MapBg());   // (farther: the ground around it)
+    FillRect(dc, &mr, bg);
+    DeleteObject(bg);
+    RECT r;
+    ZoomAnimRect(scale, s_zoomAx, s_zoomAy, mr, &r);
+    HDC k = CreateCompatibleDC(dc);
+    HGDIOBJ old = SelectObject(k, s_zoomImg.bmp);
+    StretchBlt(dc, r.left, r.top, r.right - r.left, r.bottom - r.top, k, 0, 0, mr.right - mr.left, mr.bottom - mr.top,
+               SRCCOPY);
+    SelectObject(k, old);
+    DeleteDC(k);
+}
+
 static void DrawMap(HDC dc)
 {
     RECT mr = { g_cfg.mapX, g_cfg.mapY, g_cfg.mapX + g_cfg.mapW, g_cfg.mapY + g_cfg.mapH };
@@ -2886,6 +2948,23 @@ static void DrawMap(HDC dc)
     double cx = g_cfg.mapX + g_cfg.mapW / 2.0;
     double cy = g_cfg.mapY + g_cfg.mapH / 2.0;
     double angle = ViewAngle();
+
+    double scale;
+    if (s_zoomBits && ZoomAnimScale(&s_zoom, GetTickCount(), &scale)) {   // the zoom changing: the last frame scaled
+        ZoomFrame(dc, mr, scale);
+        double k = ZoomAnimNew(&s_zoom, scale), gx, gy;   // the car on the frame shown, not where it ends
+        if (s_gps.valid) {
+            GeoToWorld(s_gps.lon, s_gps.lat, g_cfg.z, &gx, &gy);
+            vx = gx + k * (vx - gx);
+            vy = gy + k * (vy - gy);
+            cx = s_zoomAx + k * (cx - s_zoomAx);
+            cy = s_zoomAy + k * (cy - s_zoomAy);
+        }
+        DrawGpsMarker(dc, cx, cy, vx, vy, angle);
+        SelectClipRgn(dc, NULL);
+        DeleteObject(rgn);
+        return;
+    }
 
     // the rotated frame (768 KB at 800 x 480) is kept only while heading-up is on
     bool rotate = g_cfg.follow == FOLLOW_HEADING;
@@ -2946,23 +3025,18 @@ static void DrawMap(HDC dc)
              mr.bottom, DT_CENTER, !s_lastErr ? L"Загрузка карты..." : g_cfg.vector ? L"Нет карты этой области"
                                                                                  : NetErrorText(s_lastErr));
 
-    if (g_cfg.vector && drawn) {   // the names over the turned frame, upright (vtile.cpp); not under the car
-        RECT avoid[1];   // only the car: the controls are dark enough over the names (the user 2026-10-27)
-        int na = 0;
-        double gx, gy, sx, sy;
-        if (s_gps.fixTick) {   // the car
-            GeoToWorld(s_gps.lon, s_gps.lat, g_cfg.z, &gx, &gy);
-            if (ScreenOf(gx, gy, vx, vy, cx, cy, angle, &sx, &sy))
-                SetRect(&avoid[na++], (int)sx - 34, (int)sy - 34, (int)sx + 34, (int)sy + 34);
-        }
+    if (g_cfg.vector && drawn) {   // the names over the turned frame, upright (vtile.cpp); under the car too (the
+        // user 2026-11-05: kept away from it, they blinked as it went by - the car is drawn over them, neither hides
+        // the other; the controls are dark enough over them, 2026-10-27)
         g_tilt = tilt;   // (the names tilted with the frame)
-        VLabelsDraw(dc, mr, cx, cy, vx, vy, angle, g_cfg.z, avoid, na);
+        VLabelsDraw(dc, mr, cx, cy, vx, vy, angle, g_cfg.z, NULL, 0);
         g_tilt = NULL;
     }
     PartLap(PT_LABELS);
     DrawAttribution(dc, mr);
     DrawRoute(dc, cx, cy, vx, vy, angle);
     DrawFavMarks(dc, cx, cy, vx, vy, angle);
+    ZoomKeep(dc, mr);
     DrawGpsMarker(dc, cx, cy, vx, vy, angle);
     PartLap(PT_MARKS);
 
@@ -5580,6 +5654,12 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 if (FrameSig() != s_paintSig)
                     InvalidateRect(hwnd, NULL, FALSE);
             }
+            return 0;
+        }
+        if (wp == TIMER_ZOOM) {   // the zoom's change: a frame (the last one draws the new zoom's own)
+            if (!s_zoom.on)
+                KillTimer(hwnd, TIMER_ZOOM);
+            InvalidateRect(hwnd, NULL, FALSE);
             return 0;
         }
         if (wp == TIMER_DOCK) {
