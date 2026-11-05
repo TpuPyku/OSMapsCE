@@ -705,7 +705,9 @@ static void MissForget()   // once a minute: the tiles once not found tried agai
 // -1: keys left untried
 static int LoadFromDisk(const MapRequest* keys, int n, int maxLoads, bool draft)
 {
-    if (MapHeld())   // nothing while the map moves (the user 2026-11-05: it stuttered) - when it stops
+    // while the map moves (the user 2026-11-05: it stuttered) only the vector drafts - the fast style, the roads
+    // and the water (the user: "только дороги") - the rest when it stops
+    if (MapHeld() && (!draft || !g_cfg.vector))
         return maxLoads;
     for (int i = 0; i < n; i++) {
         if (CacheFind(keys[i], false) || RingHas(s_missKeys, keys[i]))
@@ -746,8 +748,9 @@ static bool DiskStep(bool* view)
     MissForget();
     MapRequest keys[kMaxKeys];
     int n = Unshown(keys, NeededKeys(SRC_OSM, keys, kMaxKeys));
-    int left = LoadFromDisk(keys, n, kDiskLoads, true);
-    *view = left != kDiskLoads;
+    int loads = MapHeld() ? 1 : kDiskLoads;   // (moving: one a step - the frames first)
+    int left = LoadFromDisk(keys, n, loads, true);
+    *view = left != loads;
     if (left < 0)
         return true;
     if (RefineStep(keys, n)) {
@@ -5722,7 +5725,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         }
         if (wp == TIMER_DISK) {
             bool view;
-            if (!DiskStep(&view))
+            if (!DiskStep(&view) && !MapHeld())   // (moving: on, for the new place's drafts)
                 KillTimer(hwnd, TIMER_DISK);
             if (view)
                 InvalidateRect(hwnd, NULL, FALSE);
@@ -5857,6 +5860,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             s_longDone = false;
             s_downTick = GetTickCount();
             s_dragging = true;
+            DiskSteps();   // (the drafts of where it goes)
             s_dragMoved = false;
             s_dragStart.x = x;
             s_dragStart.y = y;
