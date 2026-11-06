@@ -15,168 +15,11 @@ static const double kOffM         = 50;     // farther from the line than this .
 static const int    kOffFixes     = 4;      // ... this many fixes in a row: off the route
 static const DWORD  kRerouteMs    = 15000;  // a new route not more often
 static const double kArriveM      = 30;     // the destination this close: arrived
+static const DWORD  kArrivedMs    = 10000;  // "Вы приехали" this long, then the route gone (the user 2026-11-03)
+static DWORD        s_arriveTick;
 
-// ---------------------------------------------------------------- JSON (read in place, no tree)
-
-static const char* Ws(const char* p)
-{
-    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n')
-        p++;
-    return p;
-}
-
-static const char* JSkip(const char* p)
-{
-    p = Ws(p);
-    if (*p == '"') {
-        for (p++; *p && *p != '"'; p++)
-            if (*p == '\\' && p[1])
-                p++;
-        return *p ? p + 1 : p;
-    }
-    if (*p == '{' || *p == '[') {
-        int depth = 0;
-        while (*p) {
-            if (*p == '"') {
-                p = JSkip(p);
-                continue;
-            }
-            if (*p == '{' || *p == '[')
-                depth++;
-            else if ((*p == '}' || *p == ']') && --depth == 0)
-                return p + 1;
-            p++;
-        }
-        return p;
-    }
-    while (*p && *p != ',' && *p != '}' && *p != ']')
-        p++;
-    return p;
-}
-
-// The value of key in the object at p, NULL if none.
-static const char* JKey(const char* p, const char* key)
-{
-    if (!p)
-        return NULL;
-    p = Ws(p);
-    if (*p != '{')
-        return NULL;
-    p = Ws(p + 1);
-    int kl = (int)strlen(key);
-    while (*p == '"') {
-        const char* k = p + 1;
-        p = JSkip(p);
-        bool match = p - k - 1 == kl && !strncmp(k, key, kl);
-        p = Ws(p);
-        if (*p != ':')
-            return NULL;
-        p = Ws(p + 1);
-        if (match)
-            return p;
-        p = Ws(JSkip(p));
-        if (*p != ',')
-            return NULL;
-        p = Ws(p + 1);
-    }
-    return NULL;
-}
-
-static const char* JFirst(const char* p)   // the first item of the array at p
-{
-    if (!p)
-        return NULL;
-    p = Ws(p);
-    if (*p != '[')
-        return NULL;
-    p = Ws(p + 1);
-    return *p == ']' || !*p ? NULL : p;
-}
-
-static const char* JNext(const char* p)
-{
-    p = Ws(JSkip(p));
-    return *p == ',' ? Ws(p + 1) : NULL;
-}
-
-static double JNum(const char* p, double def)
-{
-    if (!p || !((*p >= '0' && *p <= '9') || *p == '-'))
-        return def;
-    return atof(p);
-}
-
-// A string value, unescaped, UTF-8 into out (cap bytes); "" if p is not a string.
-static int JStr(const char* p, char* out, int cap)
-{
-    int n = 0;
-    if (p && *p == '"') {
-        for (p++; *p && *p != '"' && n < cap - 4; p++) {
-            if (*p != '\\') {
-                out[n++] = *p;
-                continue;
-            }
-            p++;
-            switch (*p) {
-            case 'n': out[n++] = ' '; break;
-            case 't': out[n++] = ' '; break;
-            case 'r': case 'b': case 'f': break;
-            case 'u': {
-                unsigned u = 0;
-                for (int i = 1; i <= 4 && p[i]; i++) {
-                    char c = p[i];
-                    u = u * 16 + (c >= '0' && c <= '9' ? c - '0' : (c | 32) - 'a' + 10);
-                }
-                p += 4;
-                if (u < 0x80) {
-                    out[n++] = (char)u;
-                } else if (u < 0x800) {
-                    out[n++] = (char)(0xC0 | (u >> 6));
-                    out[n++] = (char)(0x80 | (u & 63));
-                } else {   // (surrogate pairs: not in Russian place names)
-                    out[n++] = (char)(0xE0 | (u >> 12));
-                    out[n++] = (char)(0x80 | ((u >> 6) & 63));
-                    out[n++] = (char)(0x80 | (u & 63));
-                }
-                break;
-            }
-            case 0: p--; break;
-            default: out[n++] = *p; break;   // \" \\ \/
-            }
-        }
-    }
-    out[n] = 0;
-    return n;
-}
-
-static void JWide(const char* p, wchar_t* out, int cap)
-{
-    char u[512];
-    JStr(p, u, sizeof(u));
-    if (!MultiByteToWideChar(CP_UTF8, 0, u, -1, out, cap))
-        out[0] = 0;
-    out[cap - 1] = 0;
-}
 
 // ---------------------------------------------------------------- requests
-
-static void UrlEncode(const char* s, char* out, int cap)
-{
-    static const char hex[] = "0123456789ABCDEF";
-    int n = 0;
-    for (; *s && n < cap - 4; s++) {
-        unsigned char c = (unsigned char)*s;
-        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' ||
-            c == '.' || c == '~') {
-            out[n++] = (char)c;
-        } else {
-            out[n++] = '%';
-            out[n++] = hex[c >> 4];
-            out[n++] = hex[c & 15];
-        }
-    }
-    out[n] = 0;
-}
 
 static bool Budget()
 {
@@ -286,6 +129,7 @@ static RoutePlan s_plan;
 struct Maneuver {
     int     shape;          // its point on the line
     int     turn;           // RouteInfo::turn
+    bool    complex;        // a fork, a ramp, a roundabout, a merge (JunctionComplex: the junction card)
     wchar_t text[112];
 };
 
@@ -380,6 +224,8 @@ static void Ask(double fromLon, double fromLat, double course)
         for (int i = 0; i <= s_plan.nvia && n > 0; i++)
             n += _snprintf(path + n, sizeof(path) - n, ";");
     }
+    if (n > 0 && g_cfg.noToll)   // (the unit's graphs keep off them; OSRM's servers cannot: net.cpp)
+        n += _snprintf(path + n, sizeof(path) - n, "&exclude=toll");
     (void)head;
     path[sizeof(path) - 1] = 0;
     s_wantAlts = false;   // (asked once: a new route off the line takes the best one)
@@ -494,11 +340,26 @@ void PlaceLookup(const RoutePlace& p)
     l.seq = NetApi(API_REVERSE, kPhoton, true, path);
 }
 
+static SearchHit s_revHit;   // the last place named, at the point asked (the long press's card: PlaceNamed)
+static bool      s_revGot;
+
+bool PlaceNamed(double lon, double lat, SearchHit* h)
+{
+    if (!s_revGot || s_revHit.lon != lon || s_revHit.lat != lat)
+        return false;
+    *h = s_revHit;
+    return true;
+}
+
 static void OnReverse(const char* body, double lon, double lat)
 {
     SearchHit h;
     if (!ParseHits(body, &h, 1))
         return;
+    s_revHit = h;
+    s_revHit.lon = lon;
+    s_revHit.lat = lat;
+    s_revGot = true;
     RoutePlace* all[kMaxVia + 2] = { &s_plan.from, &s_plan.to, &s_plan.via[0], &s_plan.via[1], &s_plan.via[2] };
     for (int i = 0; i < kMaxVia + 2; i++)
         if (all[i]->kind == PL_PLACE && all[i]->lon == lon && all[i]->lat == lat) {
@@ -728,6 +589,7 @@ static void OnRoute(const char* body, int k)
             Maneuver& d = man[s_nm++];
             d.shape = at;
             d.turn = Turn(m, type, mod, stop);
+            d.complex = JunctionComplex(type);
             Instruction(st, m, type, mod, stop, d.text, 112);
             if (stop && !strcmp(type, "arrive") && s_nViaShape < kMaxVia)
                 s_viaShape[s_nViaShape++] = at;
@@ -785,7 +647,9 @@ bool OnApiResult(ApiResult* r)
         else {
             if (!s_np)
                 s_state = ROUTE_FAIL;
-            _snwprintf(s_stateText, 64, r->err == NET_OK ? L"Ошибка сервера %d" : L"Нет связи с сервером",
+            // (the user 2026-10-29: Moscow - Samara, both regions on the card, no trunk roads: "no connection")
+            _snwprintf(s_stateText, 64, r->err == NET_OK ? L"Ошибка сервера %d" : OfflineHasTrunk() ?
+                       L"Нет связи с сервером" : L"Нет сети, а между областями нужны магистрали (КАРТЫ)",
                        r->httpStatus);
             s_stateText[63] = 0;
         }
@@ -858,6 +722,7 @@ void RouteGps(double lon, double lat, double kmh, double course)
     if (sqrt(dx * dx + dy * dy) < kArriveM || (s_cum[s_np - 1] - s_along < kArriveM && best < kOffM)) {
         FreeRoute();
         s_state = ROUTE_ARRIVED;
+        s_arriveTick = GetTickCount();
         Log("route: arrived");
         s_sig++;
         return;
@@ -878,6 +743,10 @@ void RouteGps(double lon, double lat, double kmh, double course)
 
 void RouteGet(RouteInfo* o)
 {
+    if (s_state == ROUTE_ARRIVED && GetTickCount() - s_arriveTick >= kArrivedMs) {
+        RouteClear();
+        Log("route: arrived %lu s ago - gone", kArrivedMs / 1000);
+    }
     memset(o, 0, sizeof(*o));
     o->state = s_state;
     o->text = s_stateText;
@@ -898,6 +767,8 @@ void RouteGet(RouteInfo* o)
         if (s_cum[s_man[i].shape] > s_along + 5 || i == s_nm - 1) {
             o->text = s_man[i].text;
             o->turn = s_man[i].turn;
+            o->complex = s_man[i].complex;
+            o->shape = s_man[i].shape;
             o->nextM = (int)(s_cum[s_man[i].shape] - s_along);
             if (o->nextM < 0)
                 o->nextM = 0;

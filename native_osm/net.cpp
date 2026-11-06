@@ -172,8 +172,74 @@ static int TrafficTimestamp(const char* code)
     return err;
 }
 
+// ---------------------------------------------------------------- vector tiles (OpenFreeMap)
+// The tiles' path names the data's version: read from its TileJSON once a run ("tiles": [".../planet/<ver>/{z}/{x}/{y}.pbf"]).
+static char s_vecPath[96];   // "/planet/<ver>", "" = not read yet
+
+static int VecVersion()
+{
+    if (s_vecPath[0])
+        return NET_OK;
+    unsigned char* body = NULL;
+    int len = 0, status = 0;
+    int err = HttpGet("tiles.openfreemap.org", true, "/planet", &body, &len, &status);
+    if (err == NET_OK && status != 200)
+        err = NET_HTTP;
+    if (err == NET_OK) {
+        const char* t = strstr((const char*)body, "\"tiles\"");
+        const char* p = t ? strstr(t, "/planet/") : NULL;
+        const char* e = p ? strstr(p, "/{z}") : NULL;
+        if (e && e - p < (int)sizeof(s_vecPath)) {
+            memcpy(s_vecPath, p, e - p);
+            s_vecPath[e - p] = 0;
+            Log("net: vector tiles %s", s_vecPath);
+        } else
+            err = NET_DECODE;
+    }
+    free(body);
+    return err;
+}
+
+// A shown tile from its data tile: the region's pack's (z15 there: the house numbers), the disk's .pbf, else
+// downloaded (and kept) - then drawn.
+static void FetchVector(const MapRequest& r, MapResult* res)
+{
+    res->look = MapLook();   // (read before drawing: a switch meanwhile drops this tile)
+    if (VTileLocal(r, &res->img))
+        return;
+    MapRequest d = VTileData(r);
+    unsigned char* body = NULL;
+    int len = 0;
+    DWORD t0 = GetTickCount();
+    res->err = VecVersion();
+    if (res->err != NET_OK)
+        return;
+    char path[160];
+    _snprintf(path, sizeof(path), "%s/%d/%d/%d.pbf", s_vecPath, d.z - VEC_ZBASE, d.x, d.y);
+    path[sizeof(path) - 1] = 0;
+    res->err = HttpGet("tiles.openfreemap.org", true, path, &body, &len, &res->httpStatus);
+    if (res->err == NET_OK && res->httpStatus != 200) {
+        Log("net: HTTP %d: %.200s", res->httpStatus, body);
+        res->err = NET_HTTP;
+        if (res->httpStatus == 404)
+            s_vecPath[0] = 0;   // a new version: the old one's tiles are gone - read it again
+    }
+    if (res->err == NET_OK) {
+        res->bytes = len;
+        SaveToCache(d, body, len, "");
+        if (!VTileRender(r, body, len, &res->img))
+            res->err = NET_DECODE;
+    }
+    free(body);
+    Log("net: vector %s -> %d (%d bytes, %lu ms)", path, res->err, res->bytes, GetTickCount() - t0);
+}
+
 static void Fetch(const MapRequest& r, MapResult* res)
 {
+    if (r.src == SRC_OSM && g_cfg.vector) {
+        FetchVector(r, res);
+        return;
+    }
     const char* host;
     bool https;
     char path[256];
@@ -283,7 +349,31 @@ static DWORD WINAPI NetThread(LPVOID)
                 ar->kind = job.kind;
                 ar->seq = apiSeq;
                 DWORD t0 = GetTickCount();
-                ar->err = HttpGet(job.host, job.https, job.path, (unsigned char**)&ar->body, &ar->len, &ar->httpStatus);
+                // tolls kept off (the user 2026-10-29): OSRM's servers cannot - the trunk roads' graph before them
+                char* noToll = strstr(job.path, "&exclude=toll");
+                if ((job.kind == API_ROUTE && (OfflineRoute(job.path, &ar->body, &ar->len) ||   // a region's data
+                                               (noToll && OfflineTrunkRoute(job.path, &ar->body, &ar->len)))) ||
+                    ((job.kind == API_SEARCH || job.kind == API_REVERSE) && OfflineSearch(job.path, &ar->body, &ar->len))) {
+                    ar->err = NET_OK;
+                    ar->httpStatus = 200;
+                } else {
+                    char path[sizeof(job.path)];
+                    strcpy(path, job.path);
+                    if (noToll)   // (FOSSGIS: "Exclude flag combination is not supported" - the route as it is)
+                        memmove(path + (noToll - job.path), noToll + 13, strlen(noToll + 13) + 1);
+                    ar->err = HttpGet(job.host, job.https, path, (unsigned char**)&ar->body, &ar->len,
+                                      &ar->httpStatus);
+                    char* trunk = NULL;   // OSRM did not answer (no internet): over the trunk roads (4b), if there
+                    int trunkLen = 0;
+                    if (job.kind == API_ROUTE && (ar->err != NET_OK || ar->httpStatus != 200) &&
+                        OfflineTrunkRoute(job.path, &trunk, &trunkLen)) {
+                        free(ar->body);
+                        ar->body = trunk;
+                        ar->len = trunkLen;
+                        ar->err = NET_OK;
+                        ar->httpStatus = 200;
+                    }
+                }
                 Log("net: api %s%.120s -> %d (HTTP %d, %d bytes, %lu ms)", job.host, job.path, ar->err,
                     ar->httpStatus, ar->len, GetTickCount() - t0);
                 if (s_stop || !PostMessage(s_notify, WM_APP_API, 0, (LPARAM)ar))
@@ -304,6 +394,7 @@ static DWORD WINAPI NetThread(LPVOID)
                 break;
             res->req = r;
             res->seq = seq;
+            res->look = -1;
             Fetch(r, res);
             if (s_stop || !PostMessage(s_notify, WM_APP_MAP, 0, (LPARAM)res)) {
                 ImageFree(&res->img);
@@ -319,6 +410,8 @@ static DWORD WINAPI NetThread(LPVOID)
 
 void NetStart(HWND notify)
 {
+    static const HttpSetup setup = { HTTP_USER_AGENT, "image/png,image/*,*/*", 2 * 1024 * 1024, Log };
+    HttpInit(&setup);
     InitializeCriticalSection(&s_cs);
     s_notify = notify;
     s_wake = CreateEvent(NULL, FALSE, FALSE, NULL);

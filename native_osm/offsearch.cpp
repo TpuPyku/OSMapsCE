@@ -1,0 +1,679 @@
+﻿#include "yamaps.h"
+
+// Offline search (2026-10-27, the user: a full offline mode): a region's index (OSMapsData\<region>\search.idx, made
+// by offline/make_search.py) answers Photon's requests - the search and the address of a point - as Photon's GeoJSON,
+// so route.cpp reads them unchanged. The region: the one whose graph holds the point (OfflineDir). Names are matched by
+// their normalized form (lower case, ё = е, only letters and digits; make_search.py's norm()): every word of the
+// query begins a word of the name. A query's first word starting with a digit and the rest after it: the house.
+
+#pragma pack(push, 1)
+struct SHead {
+    char  magic[4];
+    DWORD version, places, streets, houses, pois, strBytes, gw, gh;
+    int   cell, minLat, minLon;
+    DWORD items;
+    DWORD off[6];   // strings, places, streets, houses, pois, grid
+};
+struct SPlace  { int lat, lon; DWORD name, norm, rank; };
+struct SStreet { int lat, lon; DWORD name, norm, city, first, count; };
+struct SHouse  { int lat, lon; DWORD street, number; };
+struct SPoi    { int lat, lon; DWORD name, norm, city, what, street, number; };
+#pragma pack(pop)
+
+struct Index {
+    wchar_t  dir[MAX_PATH];
+    SHead    h;
+    char*    str;
+    SPlace*  places;
+    SStreet* streets;
+    SPoi*    pois;
+    OffFile  d;      // the parts above; the houses and their grid are read from its file
+};
+static Index s_x;
+
+// The towns' names normalized (as the query's words), kept by their string's offset: a street's town is asked for
+// every street the query's words do not all name
+enum { kTowns = 256 };
+static struct { DWORD off; char norm[64]; } s_towns[kTowns];   // off: the string's offset + 1 (0: none kept)
+
+static void Unload()
+{
+    OffClose(&s_x.d);
+    memset(&s_x, 0, sizeof(s_x));
+    memset(s_towns, 0, sizeof(s_towns));   // (another index: other offsets)
+}
+
+static bool ReadAt(DWORD off, void* to, DWORD bytes)
+{
+    return OffRead(s_x.d.file, off, to, bytes);
+}
+
+// The index of the region at a point: loaded; false = none.
+static bool LoadDir(const wchar_t* dir)
+{
+    wchar_t path[MAX_PATH];
+    if (s_x.str && !wcscmp(s_x.dir, dir))
+        return true;
+    Unload();
+    _snwprintf(path, MAX_PATH, L"%s\\search.idx", dir);
+    path[MAX_PATH - 1] = 0;
+    if (!OffOpen(&s_x.d, path, &s_x.h, sizeof(s_x.h)) || memcmp(s_x.h.magic, "OSMS", 4) || s_x.h.version != 1) {
+        Unload();
+        return false;
+    }
+    const SHead& h = s_x.h;
+    s_x.str = (char*)OffPart(&s_x.d, h.off[0], h.strBytes);
+    s_x.places = (SPlace*)OffPart(&s_x.d, h.off[1], h.places * sizeof(SPlace));
+    s_x.streets = (SStreet*)OffPart(&s_x.d, h.off[2], h.streets * sizeof(SStreet));
+    s_x.pois = (SPoi*)OffPart(&s_x.d, h.off[4], h.pois * sizeof(SPoi));
+    if (s_x.d.bad) {
+        Log("offsearch: cannot load %S", path);
+        Unload();
+        return false;
+    }
+    wcscpy(s_x.dir, dir);
+    Log("offsearch: %S: %lu places, %lu streets, %lu houses, %lu pois", path, h.places, h.streets, h.houses, h.pois);
+    return true;
+}
+
+static bool Load(int lat, int lon)   // the index of the region the point is in
+{
+    int pt[2] = { lat, lon };
+    wchar_t dir[MAX_PATH];
+    return OfflineDir(pt, 1, dir) && LoadDir(dir);
+}
+
+// The regions on the card with a search index: OffRegion's walk, each one taken (the test never "holds")
+enum { kRegions = 32 };
+struct Regions { wchar_t dir[kRegions][MAX_PATH]; int n; };
+
+static bool Collect(const wchar_t* path, void* ctx)
+{
+    Regions* r = (Regions*)ctx;
+    if (r->n < kRegions && GetFileAttributes(path) != 0xFFFFFFFF) {   // (CE: no INVALID_FILE_ATTRIBUTES)
+        wcscpy(r->dir[r->n], path);
+        *wcsrchr(r->dir[r->n], L'\\') = 0;
+        r->n++;
+    }
+    return false;
+}
+
+// ---------------------------------------------------------------- the query
+
+static wchar_t Lower(wchar_t c)   // Latin and Russian lower case, ё -> е
+{
+    if (c == 0x401 || c == 0x451)
+        return 0x435;
+    bool upper = (c >= L'A' && c <= L'Z') || (c >= 0x410 && c <= 0x42F);
+    return upper ? (wchar_t)(c + 32) : c;
+}
+
+static bool IsWordChar(wchar_t c)   // a lower case letter (Latin, Russian) or a digit
+{
+    return (c >= L'a' && c <= L'z') || (c >= L'0' && c <= L'9') || (c >= 0x430 && c <= 0x44F);
+}
+
+// make_search.py's norm(): lower case, ё -> е, letters (Latin, Russian) and digits, the rest one space
+static void Norm(const wchar_t* s, wchar_t* out, int cap)
+{
+    int n = 0;
+    bool space = true;
+    for (; *s && n < cap - 1; s++) {
+        wchar_t c = Lower(*s);
+        if (IsWordChar(c)) {
+            out[n++] = c;
+            space = false;
+        } else if (!space) {
+            out[n++] = L' ';
+            space = true;
+        }
+    }
+    while (n && out[n - 1] == L' ')
+        n--;
+    out[n] = 0;
+}
+
+// The street's kind words: not needed to find it ("ул ленина" = "ленина")
+static const wchar_t* kStop[] = { L"ул", L"улица", L"пр", L"проспект", L"пер", L"переулок", L"ш", L"шоссе",
+                                  L"бульвар", L"пл", L"площадь", L"проезд", L"д", L"дом", L"г", L"город",
+                                  L"с", L"село", L"п", L"пос", L"поселок", L"наб", L"набережная", L"мкр" };
+
+enum { kTok = 8 };
+struct Query {
+    char tok[kTok][64];   // the name's words, normalized, UTF-8
+    int  nt;
+    char house[48];       // the house, normalized ("15 к2"), "" none
+    char all[200];        // the name's words joined (exact matches)
+};
+
+static bool IsStop(const wchar_t* t)
+{
+    for (int i = 0; i < (int)(sizeof(kStop) / sizeof(kStop[0])); i++)
+        if (!wcscmp(t, kStop[i]))
+            return true;
+    return false;
+}
+
+static bool HouseStarts(const wchar_t* t, const Query& q, bool last)   // a number after the name, or alone at the end
+{
+    return *t >= L'0' && *t <= L'9' && (q.nt || last);
+}
+
+static void Join(char* to, size_t cap, const char* word)   // the words joined by a space
+{
+    if (to[0])
+        strncat(to, " ", cap - strlen(to) - 1);
+    strncat(to, word, cap - strlen(to) - 1);
+}
+
+static void AddWord(Query* q, const wchar_t* t, bool inHouse)   // a word of the house, else of the name (not a kind)
+{
+    char u[64];
+    WideCharToMultiByte(CP_UTF8, 0, t, -1, u, 64, NULL, NULL);
+    u[63] = 0;
+    if (inHouse)
+        Join(q->house, sizeof(q->house), u);
+    else if (!IsStop(t) && q->nt < kTok) {
+        strcpy(q->tok[q->nt++], u);
+        Join(q->all, sizeof(q->all), u);
+    }
+}
+
+static void ParseQuery(const char* utf8, Query* q)
+{
+    wchar_t w[200], n[200];
+    memset(q, 0, sizeof(*q));
+    if (!MultiByteToWideChar(CP_UTF8, 0, utf8, -1, w, 200))
+        return;
+    w[199] = 0;
+    Norm(w, n, 200);
+    bool inHouse = false;
+    for (wchar_t* t = n; *t;) {
+        wchar_t* e = wcschr(t, L' ');
+        if (e)
+            *e = 0;
+        inHouse = inHouse || HouseStarts(t, *q, !e);
+        AddWord(q, t, inHouse);
+        if (!e)
+            break;
+        t = e + 1;
+    }
+}
+
+static bool HasWord(const char* text, const char* tok)   // the token begins a word of the text
+{
+    int len = (int)strlen(tok);
+    for (const char* p = text; *p;) {
+        if (!strncmp(p, tok, len))
+            return true;
+        const char* sp = strchr(p, ' ');
+        p = sp ? sp + 1 : p + strlen(p);
+    }
+    return false;
+}
+
+// Every word of the query begins a word of the name.
+static bool Match(const char* name, const Query& q)
+{
+    for (int i = 0; i < q.nt; i++)
+        if (!HasWord(name, q.tok[i]))
+            return false;
+    return true;
+}
+
+static void NormUtf8(const char* s, char* out, int cap);
+static const char* S(DWORD off);
+
+static const char* TownNorm(DWORD town)
+{
+    int k = (int)(town % kTowns);
+    if (s_towns[k].off != town + 1) {
+        NormUtf8(S(town), s_towns[k].norm, sizeof(s_towns[k].norm));
+        s_towns[k].off = town + 1;
+    }
+    return s_towns[k].norm;
+}
+
+// The name with its town (the user 2026-10-29: "Жигулёвск Ткачёва 71" found nothing): each word of the query begins a
+// word of the name or of the town's, one of the name's at least (the town's name alone is the place, not its streets).
+static bool MatchIn(const char* name, DWORD town, const Query& q)
+{
+    if (Match(name, q))
+        return true;
+    bool named = false;
+    for (int i = 0; i < q.nt; i++) {
+        bool inName = HasWord(name, q.tok[i]);
+        if (!inName && !HasWord(TownNorm(town), q.tok[i]))
+            return false;
+        named = named || inName;
+    }
+    return named;
+}
+
+static void NormUtf8(const char* s, char* out, int cap)   // a house number from the index, as the query's
+{
+    wchar_t w[64], n[64];
+    MultiByteToWideChar(CP_UTF8, 0, s, -1, w, 64);
+    w[63] = 0;
+    Norm(w, n, 64);
+    WideCharToMultiByte(CP_UTF8, 0, n, -1, out, cap, NULL, NULL);
+    out[cap - 1] = 0;
+}
+
+// ---------------------------------------------------------------- the answer (Photon's GeoJSON)
+
+enum { H_HOUSE, H_PLACE, H_STREET, H_POI };
+struct Hit { int kind, lat, lon; DWORD name, street, number, city, what; double score; };
+
+static double Km(int lat0, int lon0, int lat1, int lon1)
+{
+    double dy = (lat1 - lat0) * 0.000111195, dx = (lon1 - lon0) * 0.000111195 * cos(lat0 / 1e6 * M_PI / 180);
+    return sqrt(dx * dx + dy * dy);
+}
+
+static void AddHit(Hit* hits, int* n, int cap, const Hit& h)
+{
+    if (*n < cap) {
+        hits[(*n)++] = h;
+        return;
+    }
+    int worst = 0;
+    for (int i = 1; i < cap; i++)
+        if (hits[i].score > hits[worst].score)
+            worst = i;
+    if (h.score < hits[worst].score)
+        hits[worst] = h;
+}
+
+template <class T> static int CmpScore(const void* a, const void* b)   // qsort's: the lower score first
+{
+    double d = ((const T*)a)->score - ((const T*)b)->score;
+    return d < 0 ? -1 : d > 0 ? 1 : 0;
+}
+
+static void PutField(JBuf& o, const char* key, const char* s, bool comma)
+{
+    JPut(o, comma ? ",\"" : "\"");
+    JPut(o, key);
+    JPut(o, "\":");
+    JPutStr(o, s, (int)strlen(s));
+}
+
+static const char* S(DWORD off)
+{
+    return off < s_x.h.strBytes ? s_x.str + off : "";
+}
+
+static void PutHit(JBuf& o, const Hit& h)   // one feature
+{
+    char t[96];
+    _snprintf(t, sizeof(t), "{\"geometry\":{\"coordinates\":[%.6f,%.6f]},\"properties\":{", h.lon / 1e6, h.lat / 1e6);
+    JPut(o, t);
+    char name[200];
+    if (h.kind == H_POI && h.what) {   // "Лукойл (АЗС)"
+        _snprintf(name, sizeof(name), "%s (%s)", S(h.name), S(h.what));
+        name[sizeof(name) - 1] = 0;
+    } else
+        strncpy(name, S(h.name), sizeof(name) - 1), name[sizeof(name) - 1] = 0;
+    PutField(o, "name", name, false);
+    PutField(o, "street", h.street != 0xFFFFFFFF ? S(s_x.streets[h.street].name) : "", true);
+    PutField(o, "housenumber", S(h.number), true);
+    PutField(o, "city", S(h.city), true);
+    JPut(o, "}}");
+}
+
+static void PutHits(JBuf& o, const Hit* hits, int n)
+{
+    JPut(o, "{\"features\":[");
+    for (int i = 0; i < n; i++) {
+        JPut(o, i ? "," : "");
+        PutHit(o, hits[i]);
+    }
+    JPut(o, "]}");
+}
+
+// The answers of the regions asked (each region's own strings: kept as their features' JSON), the best kAnswer
+enum { kAnswer = 7 };
+struct Found { double score; char* json; };
+static Found s_found[kAnswer];
+static int   s_nFound;
+
+static void AddFound(const Hit& h)
+{
+    int at = s_nFound;
+    if (s_nFound == kAnswer) {   // full: in place of the worst, when better
+        at = 0;
+        for (int i = 1; i < kAnswer; i++)
+            if (s_found[i].score > s_found[at].score)
+                at = i;
+        if (h.score >= s_found[at].score)
+            return;
+    } else
+        s_nFound++;
+    JBuf o = { NULL, 0, 0 };
+    PutHit(o, h);
+    free(s_found[at].json);
+    s_found[at].score = h.score;
+    s_found[at].json = o.p;
+}
+
+static bool AnswerFound(char** body, int* len)   // Photon's GeoJSON of the regions' answers, the best first
+{
+    qsort(s_found, s_nFound, sizeof(Found), CmpScore<Found>);
+    JBuf o = { NULL, 0, 0 };
+    JPut(o, "{\"features\":[");
+    for (int i = 0; i < s_nFound; i++) {
+        JPut(o, i ? "," : "");
+        JPut(o, s_found[i].json ? s_found[i].json : "");
+        free(s_found[i].json);
+    }
+    JPut(o, "]}");
+    bool any = s_nFound > 0;
+    memset(s_found, 0, sizeof(s_found));
+    s_nFound = 0;
+    *body = any ? o.p : NULL;
+    *len = any ? o.n : 0;
+    if (!any)
+        free(o.p);
+    return any;
+}
+
+static bool ReadHouse(DWORD i, SHouse* hs)
+{
+    return ReadAt(s_x.h.off[3] + i * sizeof(SHouse), hs, sizeof(SHouse));
+}
+
+static bool Answer(const Hit* hits, int n, char** body, int* len)   // Photon's GeoJSON of the hits
+{
+    JBuf o = { NULL, 0, 0 };
+    PutHits(o, hits, n);
+    *body = o.p;
+    *len = o.n;
+    return o.p != NULL;
+}
+
+enum { kHits = 32 };
+
+// Places: an exact name first (by size), then the words' matches; none when a house is asked.
+static void FindPlaces(const Query& q, int lat, int lon, Hit* hits, int* n)
+{
+    if (q.house[0])
+        return;
+    for (DWORD i = 0; i < s_x.h.places; i++) {
+        const SPlace& p = s_x.places[i];
+        if (!Match(S(p.norm), q))
+            continue;
+        Hit x = { H_PLACE, p.lat, p.lon, p.name, 0xFFFFFFFF, 0, 0, 0, 0 };
+        bool exact = !strcmp(S(p.norm), q.all);
+        x.score = (exact ? -500 : 50) + (int)p.rank * 20 + Km(lat, lon, p.lat, p.lon) / 10;
+        AddHit(hits, n, kHits, x);
+    }
+}
+
+// The asked house on street i (its first 4000): x = it; false = not there.
+static bool FindHouse(const Query& q, DWORD i, double km, Hit* x)
+{
+    const SStreet& s = s_x.streets[i];
+    for (DWORD k = 0; k < s.count && k < 4000; k++) {
+        SHouse hs;
+        char num[48];
+        if (!ReadHouse(s.first + k, &hs))
+            return false;
+        NormUtf8(S(hs.number), num, sizeof(num));
+        if (!strcmp(num, q.house)) {
+            Hit h = { H_HOUSE, hs.lat, hs.lon, 0, i, hs.number, s.city, 0, -1000 + km };
+            *x = h;
+            return true;
+        }
+    }
+    return false;
+}
+
+static void FindStreets(const Query& q, int lat, int lon, Hit* hits, int* n)   // the streets, or their house asked
+{
+    for (DWORD i = 0; i < s_x.h.streets; i++) {
+        const SStreet& s = s_x.streets[i];
+        if (!MatchIn(S(s.norm), s.city, q))
+            continue;
+        double km = Km(lat, lon, s.lat, s.lon);
+        Hit x = { H_STREET, s.lat, s.lon, s.name, 0xFFFFFFFF, 0, s.city, 0, 100 + km };
+        if (q.house[0])
+            FindHouse(q, i, km, &x);   // found: the house instead of its street
+        AddHit(hits, n, kHits, x);
+    }
+}
+
+static void FindPois(const Query& q, int lat, int lon, Hit* hits, int* n)   // places to go: by name or kind ("азс")
+{
+    for (DWORD i = 0; i < s_x.h.pois; i++) {
+        const SPoi& p = s_x.pois[i];
+        char what[64];
+        NormUtf8(S(p.what), what, sizeof(what));
+        if (!MatchIn(S(p.norm), p.city, q) && !Match(what, q))
+            continue;
+        Hit x = { H_POI, p.lat, p.lon, p.name, p.street, p.number, p.city, p.what, 150 + Km(lat, lon, p.lat, p.lon) };
+        AddHit(hits, n, kHits, x);
+    }
+}
+
+static const double kNone = 1e30;   // Search's best score when nothing found; under 0: an exact place or house
+
+static const SPlace* PlaceNamed(const char* word)   // the region's biggest settlement of that name, NULL: none
+{
+    const SPlace* best = NULL;
+    for (DWORD i = 0; i < s_x.h.places; i++)
+        if (!strcmp(S(s_x.places[i].norm), word) && (!best || s_x.places[i].rank < best->rank))
+            best = &s_x.places[i];
+    return best;
+}
+
+static void DropWord(Query* q, int t)   // the query's word t out (the words joined again)
+{
+    for (int k = t + 1; k < q->nt; k++)
+        strcpy(q->tok[k - 1], q->tok[k]);
+    q->nt--;
+    q->all[0] = 0;
+    for (int k = 0; k < q->nt; k++)
+        Join(q->all, sizeof(q->all), q->tok[k]);
+}
+
+// A word of the query naming a settlement of the region (the biggest of that name): not to match - the search is
+// near it (the user 2026-10-29: "балашиха кольцевая 5" - that Кольцевая is the next settlement's in OSM)
+static void PlaceHint(Query* q, int* lat, int* lon)
+{
+    for (int t = 0; t < q->nt && q->nt > 1; t++) {
+        const SPlace* p = PlaceNamed(q->tok[t]);
+        if (p) {
+            *lat = p->lat;
+            *lon = p->lon;
+            DropWord(q, t);
+            return;
+        }
+    }
+}
+
+// The query in the loaded region: its best kAnswer hits into the answers (AddFound); the best score
+static double Search(const char* q8, int lat, int lon)
+{
+    Query q;
+    ParseQuery(q8, &q);
+    if (!q.nt)
+        return kNone;
+    PlaceHint(&q, &lat, &lon);
+    static Hit hits[kHits];
+    int n = 0;
+    FindPlaces(q, lat, lon, hits, &n);
+    FindStreets(q, lat, lon, hits, &n);
+    FindPois(q, lat, lon, hits, &n);
+    qsort(hits, n, sizeof(Hit), CmpScore<Hit>);
+    for (int i = 0; i < n && i < kAnswer; i++)
+        AddFound(hits[i]);
+    return n ? hits[0].score : kNone;
+}
+
+// The query in the card's other regions (the user 2026-10-29: Togliatti asked from Moscow - "no network"; "Жигулёвск"
+// from Moscow - Moscow's Жигулёвская streets, not the town): their answers with the others, till an exact one
+static void SearchOthers(const char* q8, const wchar_t* tried, int lat, int lon)
+{
+    static Regions r;
+    wchar_t unused[MAX_PATH];
+    r.n = 0;
+    OffRegion(L"search.idx", Collect, &r, unused);
+    double best = kNone;
+    for (int i = 0; i < r.n && best >= 0; i++)
+        if (wcscmp(r.dir[i], tried) && LoadDir(r.dir[i])) {
+            double b = Search(q8, lat, lon);
+            best = b < best ? b : best;
+        }
+}
+
+// The house cells' run of a grid row y around column cx (3 cells, cut at the grid's edges): its items from .. to.
+static bool HouseRow(int y, int cx, DWORD* from, DWORD* to)
+{
+    const SHead& h = s_x.h;
+    if (y < 0 || y >= (int)h.gh)
+        return false;
+    int x0 = cx - 1 < 0 ? 0 : cx - 1, x1 = cx + 1 >= (int)h.gw ? h.gw - 1 : cx + 1;
+    if (x0 > x1)
+        return false;
+    DWORD cs[4];
+    if (!ReadAt(h.off[5] + (y * h.gw + x0) * 4, cs, (x1 - x0 + 2) * 4))
+        return false;
+    *from = cs[0];
+    *to = cs[x1 - x0 + 1];
+    return true;
+}
+
+static void HousesIn(DWORD from, DWORD to, int lat, int lon, Hit* best)   // the grid's items: the nearest within 80 m
+{
+    const SHead& h = s_x.h;
+    for (DWORD k = from; k < to && k < from + 2000; k++) {
+        DWORD hi;
+        SHouse hs;
+        if (!ReadAt(h.off[5] + (h.gw * h.gh + 1 + k) * 4, &hi, 4) || !ReadHouse(hi, &hs))
+            break;
+        double km = Km(lat, lon, hs.lat, hs.lon);
+        if (km < 0.08 && km < best->score) {
+            Hit x = { H_HOUSE, hs.lat, hs.lon, 0, hs.street, hs.number, s_x.streets[hs.street].city, 0, km };
+            *best = x;
+        }
+    }
+}
+
+static void HouseNear(int lat, int lon, Hit* best)   // the nearest house within 80 m (the 3 x 3 cells around)
+{
+    const SHead& h = s_x.h;
+    int cy = (lat - h.minLat) / h.cell, cx = (lon - h.minLon) / h.cell;
+    for (int y = cy - 1; y <= cy + 1; y++) {
+        DWORD from, to;
+        if (HouseRow(y, cx, &from, &to))
+            HousesIn(from, to, lat, lon, best);
+    }
+}
+
+// A street or a settlement km away as the point's address: best when nearer than it.
+static void Nearer(Hit* best, int kind, int lat, int lon, DWORD name, DWORD city, double km)
+{
+    if (km < best->score) {
+        Hit x = { kind, lat, lon, name, 0xFFFFFFFF, 0, city, 0, km };
+        *best = x;
+    }
+}
+
+// The road under the point (the graph's, as a route's): of the streets of its name the nearest one - its settlement.
+static void RoadNear(int lat, int lon, Hit* best)
+{
+    char road[200];
+    if (!OfflineRoadAt(lat, lon, 400, road, sizeof(road)))
+        return;
+    for (DWORD i = 0; i < s_x.h.streets; i++) {
+        const SStreet& s = s_x.streets[i];
+        if (!strcmp(S(s.name), road))
+            Nearer(best, H_STREET, lat, lon, s.name, s.city, Km(lat, lon, s.lat, s.lon));
+    }
+}
+
+static void PlaceNear(int lat, int lon, Hit* best)   // the nearest settlement (not a suburb) within 5 km
+{
+    for (DWORD i = 0; i < s_x.h.places; i++) {
+        const SPlace& p = s_x.places[i];
+        double km = Km(lat, lon, p.lat, p.lon);
+        if (p.rank <= 3 && km < 5)
+            Nearer(best, H_PLACE, lat, lon, p.name, 0, km);
+    }
+}
+
+// The address of a point: the nearest house within 80 m, else the nearest street (its middle) within 400 m, else
+// the settlement.
+static bool Reverse(int lat, int lon, char** body, int* len)
+{
+    Hit best = { -1 };
+    best.score = 1e18;
+    HouseNear(lat, lon, &best);
+    if (best.kind < 0)
+        RoadNear(lat, lon, &best);
+    if (best.kind < 0)
+        PlaceNear(lat, lon, &best);
+    return best.kind >= 0 && Answer(&best, 1, body, len);
+}
+
+// ---------------------------------------------------------------- Photon's requests
+
+static void UrlDecode(const char* s, char* out, int cap)
+{
+    int n = 0;
+    for (; *s && *s != '&' && n < cap - 1; s++) {
+        if (*s == '+')
+            out[n++] = ' ';
+        else if (*s == '%' && s[1] && s[2]) {
+            char hex[3] = { s[1], s[2], 0 };
+            out[n++] = (char)strtol(hex, NULL, 16);
+            s += 2;
+        } else
+            out[n++] = *s;
+    }
+    out[n] = 0;
+}
+
+static double Arg(const char* path, const char* key, double def)
+{
+    const char* p = strstr(path, key);
+    return p ? atof(p + strlen(key)) : def;
+}
+
+// "/api/?q=...&limit=7&lat=..&lon=.." or "/reverse?lon=..&lat=..&limit=1": answered from the region's index, as
+// Photon's; false: no region there, or nothing found - Photon is asked.
+// A search: in the point's region (here: its index loaded), else in the card's others
+static bool Forward(const char* path, bool here, int la, int lo, char** body, int* len)
+{
+    const char* q = strstr(path, "q=");
+    char text[300];
+    UrlDecode(q ? q + 2 : "", text, sizeof(text));
+    if (!here || Search(text, la, lo) >= 0)   // no exact place or house here: the other regions too
+        SearchOthers(text, here ? s_x.dir : L"", la, lo);
+    return AnswerFound(body, len);
+}
+
+void OfflineSearchDrop()
+{
+    Unload();
+}
+
+bool OfflineSearch(const char* path, char** body, int* len)
+{
+    OffUseScope use;
+    DWORD t0 = GetTickCount();
+    bool rev = !strncmp(path, "/reverse", 8);
+    double lat = Arg(path, rev ? "?lon=" : "&lat=", 0), lon = 0;
+    if (rev) {
+        lon = lat;
+        lat = Arg(path, "&lat=", 0);
+    } else
+        lon = Arg(path, "&lon=", 0);
+    int la = (int)(lat * 1e6), lo = (int)(lon * 1e6);
+    bool here = Load(la, lo);
+    bool ok = rev ? here && Reverse(la, lo, body, len)   // (an address: only the point's own region)
+                  : Forward(path, here, la, lo, body, len);
+    Log("offsearch: %s -> %s (%lu ms)", rev ? "reverse" : "search", ok ? "found" : "nothing", GetTickCount() - t0);
+    return ok;
+}

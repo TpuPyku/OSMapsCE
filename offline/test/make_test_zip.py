@@ -29,4 +29,5 @@ if __name__ == '__main__':
         z.writestr('region.txt', b'name=zz\ndate=2026-10-30\ntiles=20261030\n')
     with zipfile.ZipFile(os.path.join(folder, 'overview.zip'), 'w', zipfile.ZIP_STORED) as z:
         z.writestr('overview.vtp', b'OVERVIEW' * 100)
-        z.writestr('region.txt', b'name=overview\ntiles=20261030\n')
+        z.writestr(zipfile.ZipInfo('trunk.grf'), b'OSMG' * 100, compress_type=zipfile.ZIP_DEFLATED)
+        z.writestr('region.txt', b'name=overview\ntiles=20261030\ndate=2026-10-30\n')

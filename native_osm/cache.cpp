@@ -164,6 +164,19 @@ void CacheInit()
 
 static int s_bytes;   // decoded images in s_mem, held under CACHE_BYTES
 
+int CacheCap()   // by the memory free at the first call
+{
+    static int cap;
+    if (!cap) {
+        MEMORYSTATUS m;
+        m.dwLength = sizeof(m);
+        GlobalMemoryStatus(&m);
+        cap = CacheCapFor((DWORD)(m.dwAvailPhys / 1024));
+        Log("cache: images up to %d MB (%lu MB free)", cap >> 20, (unsigned long)(m.dwAvailPhys >> 20));
+    }
+    return cap;
+}
+
 static int EntryBytes(const CacheEntry* e)
 {
     return e->img.w * e->img.h * 2 + (e->ov ? e->ov->bytes : 0);
@@ -177,15 +190,12 @@ static void FreeEntry(CacheEntry* e)
     e->ov = NULL;
 }
 
-// Drops the least recently used entries (never keep) while over the memory cap.
+// Drops entries (never keep; the traffic used lately last - ring.cpp CacheVictim) while over the memory cap.
 // The last entry moves into a freed slot; returns where keep is now.
 static CacheEntry* Trim(CacheEntry* keep)
 {
     while (s_bytes > CACHE_BYTES && s_count > 1) {
-        CacheEntry* e = NULL;
-        for (int i = 0; i < s_count; i++)
-            if (&s_mem[i] != keep && (!e || s_mem[i].useTick < e->useTick))
-                e = &s_mem[i];
+        CacheEntry* e = &s_mem[CacheVictim(s_mem, s_count, (int)(keep - s_mem), GetTickCount())];
         FreeEntry(e);
         CacheEntry* last = &s_mem[--s_count];
         if (e != last) {
@@ -225,13 +235,14 @@ CacheEntry* CacheAdd(MapResult* res, DWORD fetchTick)
     e->ov = res->ov;
     e->fetchTick = fetchTick;
     e->fileDay = 0;
+    e->draft = false;
     res->img.bmp = NULL;
     res->ov = NULL;
     s_bytes += EntryBytes(e);
     return Trim(e);
 }
 
-CacheEntry* CacheFind(const MapRequest& r, bool loadFromDisk)
+CacheEntry* CacheFind(const MapRequest& r, bool loadFromDisk, bool draft)
 {
     for (int i = 0; i < s_count; i++) {
         if (SameKey(s_mem[i].req, r)) {
@@ -242,15 +253,47 @@ CacheEntry* CacheFind(const MapRequest& r, bool loadFromDisk)
     if (!loadFromDisk || r.src != SRC_OSM)
         return NULL;
     wchar_t path[MAX_PATH];
-    CachePath(path, r);
     MapResult res;
     memset(&res, 0, sizeof(res));
     res.req = r;
+    if (g_cfg.vector) {   // the data at hand (a region's pack, the cache's .pbf: never expires, versioned), drawn now
+        draft = draft && VTileDetail() != 2;   // (the fast style chosen: no draft of it)
+        if (!VTileLocal(r, &res.img, draft))
+            return NULL;
+        CacheEntry* e = CacheAdd(&res, 0);
+        e->draft = draft;
+        return e;
+    }
+    CachePath(path, r);
     if (!ImageFromFile(path, &res.img))
         return NULL;
     CacheEntry* e = CacheAdd(&res, 0);
     e->fileDay = FileDay(path);
     return e;
+}
+
+bool CacheRefine(CacheEntry* e)
+{
+    Image img;
+    if (!e->draft || !VTileLocal(e->req, &img))
+        return false;
+    ImageFree(&e->img);   // (the same size: the bytes counted stay)
+    e->img = img;
+    e->draft = false;
+    return true;
+}
+
+void CacheDropBase()
+{
+    for (int i = 0; i < s_count;) {
+        if (s_mem[i].req.src != SRC_OSM) {
+            i++;
+            continue;
+        }
+        FreeEntry(&s_mem[i]);
+        s_mem[i] = s_mem[--s_count];
+        memset(&s_mem[s_count], 0, sizeof(s_mem[s_count]));
+    }
 }
 
 int CacheBytes()

@@ -135,11 +135,22 @@ def build_day(build):
     return build.rsplit('/', 1)[1].split('.')[0]
 
 
-def stored_zip(out, folder, files, info):
-    """The folder's files into out, stored (unpacked by the unit piece by piece); region.txt: info."""
+def dist_rings(dist):
+    """The regions' outlines beside the catalog (make_outlines.py, the job's step before), None: not there."""
+    path = os.path.join(dist, 'outlines.json')
+    if not os.path.exists(path):
+        return None
+    import maps_app
+    with open(path, encoding='utf-8') as f:
+        return maps_app.overview_rings(json.load(f))
+
+
+def stored_zip(out, folder, files, info, packed=()):
+    """The folder's files into out, stored (unpacked by the unit piece by piece) - packed ones compressed (the graph: a
+    third of its size; tiles are compressed already); region.txt: info."""
     with zipfile.ZipFile(out, 'w', zipfile.ZIP_STORED) as z:
         for f in files:
-            z.write(os.path.join(folder, f), f)
+            z.write(os.path.join(folder, f), f, zipfile.ZIP_DEFLATED if f in packed else zipfile.ZIP_STORED)
         z.writestr('region.txt', info)
 
 
@@ -191,21 +202,24 @@ def build_full(entry, folder, dist, get_bytes, day, disk, rings=None):
 
 
 def publish_disk(dist, disk, get_bytes, day):
-    """The overview whole up (maps_app's: z0-8 of all the regions' box), the folder public; the catalog in dist
-    told: disk (the folder's public link), overview = {zip, size, tiles}."""
+    """The overview's pack up (maps_app's: z0-8 inside the regions' borders, and the trunk roads' graph), the folder
+    public; the catalog in dist told: disk (the folder's public link), overview = {zip, size, tiles, date}."""
     import maps_app   # (its overview: one cut for the app and the release)
     path = os.path.join(dist, 'catalog.json')
     with open(path, encoding='utf-8') as f:
         cat = json.load(f)
     work = tempfile.mkdtemp()
     try:
-        maps_app.install_overview(cat, work, get_bytes, day)
+        maps_app.install_overview(cat, work, get_bytes, day, rings=dist_rings(dist))
+        graph = maps_app.install_trunk(work, maps_app.download) == 'written'
         folder = os.path.join(work, 'OSMapsData', maps_app.OVERVIEW)
         with open(os.path.join(folder, 'region.txt'), encoding='utf-8') as f:
             info = f.read()
         zpath = os.path.join(dist, 'overview.zip')
-        stored_zip(zpath, folder, ('overview.vtp',), info)
+        stored_zip(zpath, folder, ('overview.vtp', 'trunk.grf') if graph else ('overview.vtp',), info, ('trunk.grf',))
         cat['overview'] = {'zip': 'overview.zip', 'size': upload_zip(disk, 'overview.zip', zpath), 'tiles': day}
+        if graph:
+            cat['overview']['date'] = maps_app.trunk_date(work)
     finally:
         shutil.rmtree(work, ignore_errors=True)
     cat['disk'] = disk.publish(DISK)
