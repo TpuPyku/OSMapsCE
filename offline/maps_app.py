@@ -2,7 +2,7 @@
 (release_regions.py) and their map (make_outlines.py's outlines.json), the chosen ones written to a flash drive or the
 SD card as \\OSMapsData\\<region>\\ - the release's zip (the road graph, the search) and the tiles cut out of
 Protomaps' newest build (z0-15; nothing of the tiles stored by us); the trunk roads (routes between the regions) as
-\\OSMapsData\\trunk\\.
+\\OSMapsData\\overview\\.
 
     python maps_app.py          (or the exe PyInstaller makes of it)
 """
@@ -28,6 +28,18 @@ import yadisk
 MAXZOOM = 15   # Protomaps' deepest: the house numbers, the car parks
 STATE = {'new': 'нет', 'update': 'есть новее', 'ok': 'свежая'}
 kTilesPart = 0.75   # a region's progress: its tiles up to here, then the release's zip (the graph, the search)
+RELEASE = '1.0'   # the loader's own number, raised by hand (it changes less often than OSMapsCE); the date: build_app.bat's
+try:
+    from app_build import BUILD
+except ImportError:   # (run from the sources)
+    BUILD = None
+
+
+def app_version(build=BUILD):
+    """The number shown: "1.0.261106", from the sources "1.0"."""
+    return '%s.%s' % (RELEASE, build) if build else RELEASE
+
+
 STAGE = 'OSMapsCE-Maps'   # the PC's temp folder the maps go to first (copy_to: onto the card after)
 STAGE_DAYS = 7            # left longer (a job given up): removed, not gone on with
 
@@ -377,7 +389,7 @@ class App:
         self.chosen = set()
         self.press = None
         self.root = tk.Tk()
-        self.root.title('Карты OSMapsCE')
+        self.root.title('Карты OSMapsCE ' + app_version())
         self.root.configure(bg=INK)
         self.drive = tk.StringVar(value=(removable_drives() or [''])[0])
         self.find = tk.StringVar()

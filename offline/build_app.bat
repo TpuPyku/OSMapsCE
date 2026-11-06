@@ -6,6 +6,8 @@ rem Needs: pip install pyinstaller pmtiles osmium pillow
 setlocal
 cd /d "%~dp0"
 python make_icon.py >nul || exit /b 1
+rem the date of the build for its number (maps_app.py: app_version)
+python -c "import time; open('app_build.py', 'w').write('BUILD = %%r\n' %% time.strftime('%%y%%m%%d'))" || exit /b 1
 python -m PyInstaller --noconfirm --onedir --windowed --noupx --icon "%~dp0app.ico" --name OSMapsCE-Maps ^
   --distpath app --workpath work\pyinstaller --specpath work\pyinstaller --hidden-import tkinter.filedialog ^
   maps_app.py || exit /b 1

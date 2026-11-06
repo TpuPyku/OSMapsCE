@@ -246,6 +246,12 @@ class Maps(unittest.TestCase):
         self.assertEqual(graph, [(maps_app.kTilesPart + (1 - maps_app.kTilesPart) * 0.5, 'граф и поиск: half'),
                                  (1.0, 'граф и поиск: all')])
 
+    def test_app_version(self):
+        """The loader's own number (the user 2026-11-06: it changes less often than OSMapsCE): 1.0, then the build's date
+        when it was built; run from the sources: no date."""
+        self.assertEqual(maps_app.app_version('261106'), '1.0.261106')
+        self.assertEqual(maps_app.app_version(None), '1.0')
+
     def test_app_writes_the_overview(self):
         """The overview pack (the user 2026-10-30: a region's pack holds its region only - its small zooms empty round
         it): z0..OVERVIEW_Z of all the regions' box whole, slim, its region.txt last (tiles= its build); not a region
@@ -376,6 +382,7 @@ class Maps(unittest.TestCase):
             app.root.geometry('+-3000+-3000')   # (shown - its rows laid out - but off the screen)
             app.on_catalog(cat)
             app.root.update()
+            self.assertEqual(app.root.title(), 'Карты OSMapsCE ' + maps_app.app_version())   # its own number shown
             self.assertEqual(app.tree.get_children(), ('overview', 'a_oblast', 'b_oblast'))   # the overview and
                                                                                    # the trunk roads: one row, first
             self.assertEqual(app.tree.item('b_oblast', 'tags'), ('update',))       # newer in the catalog
