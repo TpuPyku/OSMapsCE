@@ -73,6 +73,7 @@ OSMapsCE.log: выключен	OSMapsCE.log: off
 Вкл	On
 Выкл	Off
 О программе	About
+интерфейс программы	the program's interface
 ЗАПРОСЫ	REQUESTS
 Порт	Port
 Скорость порта	Port speed

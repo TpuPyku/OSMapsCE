@@ -265,7 +265,8 @@ static const int   kSetCacheCount = sizeof(kSetCacheMb) / sizeof(kSetCacheMb[0])
 // top, one panel of six rows within 64..400 (a row's stepper applies at once), "back" and the exit's sign (asked in a
 // sheet: the user 2026-10-30) in the bottom strip; what does not fit - the GPS port's settings, the requests' counters - in a sheet over the bottom
 // (VestaHome's windows: full width, the main action right, in the accent), a tap beside it closes it.
-// Rows at kSetRow0 + i * kSetRowH (the maps' screen has the same rows).
+// The main page's seven rows at kSetRow0 + i * kMainRowH, tighter than the other screens' to stay in the panel; the maps'
+// screen: at kSetRow0 + i * kSetRowH.
 enum { S_MAPS, S_ROUTE, S_CACHE_PREV, S_CACHE_NEXT, S_LOG_PREV, S_LOG_NEXT, S_GPS,
        S_INFO, S_LANG_PREV, S_LANG_NEXT, S_EXIT, S_BACK, S_PAGE_END,
        S_PORT_PREV = S_PAGE_END, S_PORT_NEXT, S_BAUD_PREV, S_BAUD_NEXT, S_SCAN, S_GPS_DONE, S_GPS_END,
@@ -273,15 +274,15 @@ enum { S_MAPS, S_ROUTE, S_CACHE_PREV, S_CACHE_NEXT, S_LOG_PREV, S_LOG_NEXT, S_GP
        S_JUNC_PREV = S_INFO_END, S_JUNC_NEXT, S_TOLL_PREV, S_TOLL_NEXT, S_ROUTE_DONE, S_ROUTE_END,
        S_EXIT_YES = S_ROUTE_END, S_EXIT_NO, S_COUNT };
 enum { SHEET_NONE, SHEET_GPS, SHEET_INFO, SHEET_ROUTE, SHEET_EXIT };
-enum { kSetRow0 = 76, kSetRowH = 50, kSheetY = 200 };
+enum { kSetRow0 = 76, kSetRowH = 50, kMainRowH = 46, kSheetY = 200 };
 static const RECT kSetCtl[S_COUNT] = {
-    { 576, 79, 760, 123 },                             // the maps: their page (the kind, the detail, the regions)
-    { 576, 129, 760, 173 },                            // the route: its sheet (the junction card, the tolls)
-    { 512, 179, 560, 223 }, { 712, 179, 760, 223 },   // the steppers' arrows: rows 2, 3
-    { 512, 229, 560, 273 }, { 712, 229, 760, 273 },
-    { 576, 279, 760, 323 },                            // GPS: its sheet
-    { 576, 329, 760, 373 },                            // the requests: their sheet
-    { 444, 416, 492, 468 }, { 644, 416, 692, 468 },   // the language: below the panel
+    { 576, 78, 760, 118 },                             // the maps: their page (the kind, the detail, the regions)
+    { 576, 124, 760, 164 },                            // the route: its sheet (the junction card, the tolls)
+    { 512, 170, 560, 210 }, { 712, 170, 760, 210 },   // the steppers' arrows: rows 2, 3
+    { 512, 216, 560, 256 }, { 712, 216, 760, 256 },
+    { 576, 262, 760, 302 },                            // GPS: its sheet
+    { 576, 354, 760, 394 },                            // the requests: their sheet
+    { 512, 308, 560, 348 }, { 712, 308, 760, 348 },   // the language: the row under GPS
     { 716, 416, 784, 468 },                            // exit the program (its sign; asked in a sheet)
     { 8, 412, 80, 480 },                               // back: VestaHome's, at the bottom left
     { 512, 259, 560, 303 }, { 712, 259, 760, 303 },   // the GPS sheet: the port, the speed
@@ -3131,12 +3132,12 @@ static void DrawCtl(HDC dc, const RECT& r, bool pressed, HFONT font, const wchar
 }
 
 // A row of the settings panel: label, a muted line under it, a separator under the row.
-static void SetRow(HDC dc, int y, const wchar_t* label, const wchar_t* sub, bool sep)
+static void SetRow(HDC dc, int y, const wchar_t* label, const wchar_t* sub, bool sep, int rowH = kSetRowH)
 {
     Text(dc, s_fontLabel, kText, 36, y + 3, 500, y + 28, DT_LEFT, label);
     Text(dc, s_fontSmall, kTextDim, 36, y + 27, 500, y + 48, DT_LEFT, sub);
     if (sep) {
-        RECT l = { 24, y + kSetRowH - 2, s_cw - 24, y + kSetRowH };
+        RECT l = { 24, y + rowH - 2, s_cw - 24, y + rowH };
         HBRUSH b = CreateSolidBrush(kLine);
         FillRect(dc, &l, b);
         DeleteObject(b);
@@ -3160,6 +3161,12 @@ static void StepperAt(HDC dc, const RECT& a, const RECT& b, int pressed, const w
             BlendSign(dc, ov, (z.left + z.right - ov->w) / 2, (z.top + z.bottom - ov->h) / 2);
     }
     Text(dc, s_fontBig, kText, a.right, a.top, b.left, a.bottom, DT_CENTER, value);
+}
+
+// A row of the main settings page, its texts a little up to clear the tighter row's line
+static void MainRow(HDC dc, int i, const wchar_t* label, const wchar_t* sub, bool sep)
+{
+    SetRow(dc, kSetRow0 + i * kMainRowH - 3, label, sub, sep, kMainRowH + 3);
 }
 
 static void Stepper(HDC dc, int prev, int next, const wchar_t* value)
@@ -3221,17 +3228,17 @@ static void DrawSettings(HDC dc)
         _snwprintf(s, 160, Tr(L"векторная · детализация: %s"), Tr(kDetailLow[g_cfg.detail - 1]));
     else
         _snwprintf(s, 160, Tr(L"векторная · детализация: авто (%s)"), Tr(kDetailLow[VTileDetail()]));
-    SetRow(dc, kSetRow0, L"Карта", s, true);
+    MainRow(dc, 0, L"Карта", s, true);
     DrawCtl(dc, kSetCtl[S_MAPS], s_setPressed == S_MAPS, s_fontLabel, L"КАРТЫ");
     _snwprintf(s, 160, Tr(L"схема развязки: %s · платные: %s"), g_cfg.junction ? Tr(L"вкл") : Tr(L"выкл"),
                g_cfg.noToll ? Tr(L"объезжать") : Tr(L"можно"));
-    SetRow(dc, kSetRow0 + kSetRowH, L"Маршрут", s, true);
+    MainRow(dc, 1, L"Маршрут", s, true);
     DrawCtl(dc, kSetCtl[S_ROUTE], s_setPressed == S_ROUTE, s_fontLabel, L"НАСТРОИТЬ");
     if (g_cfg.cacheKb >= 0)
         _snwprintf(s, 160, Tr(L"занято %ld МБ"), g_cfg.cacheKb / 1024);
     else
         wcscpy(s, L"занято ?");
-    SetRow(dc, kSetRow0 + 2 * kSetRowH, L"Кэш карт", s, true);
+    MainRow(dc, 2, L"Кэш карт", s, true);
     int mb = kSetCacheMb[s_setCache];
     _snwprintf(s, 160, mb >= 1000 ? Tr(L"%d ГБ") : Tr(L"%d МБ"), mb >= 1000 ? mb / 1000 : mb);
     Stepper(dc, S_CACHE_PREV, S_CACHE_NEXT, s);
@@ -3241,16 +3248,16 @@ static void DrawSettings(HDC dc)
         _snwprintf(s, 160, wcslen(path) > 44 ? L"…%s" : L"%s", path + (wcslen(path) > 44 ? wcslen(path) - 43 : 0));
     else
         wcscpy(s, g_cfg.log ? L"некуда писать: нет карты памяти" : L"OSMapsCE.log: выключен");
-    SetRow(dc, kSetRow0 + 3 * kSetRowH, L"Журнал", s, true);
+    MainRow(dc, 3, L"Журнал", s, true);
     Stepper(dc, S_LOG_PREV, S_LOG_NEXT, g_cfg.log ? L"Вкл" : L"Выкл");
     GpsLine(s, 160);
-    SetRow(dc, kSetRow0 + 4 * kSetRowH, L"GPS", s, true);
+    MainRow(dc, 4, L"GPS", s, true);
     DrawCtl(dc, kSetCtl[S_GPS], s_setPressed == S_GPS, s_fontLabel, L"НАСТРОИТЬ");
-    _snwprintf(s, 160, L"OSMapsCE %s", AppVersion(kRelease));   // VestaCore vversion.h
-    SetRow(dc, kSetRow0 + 5 * kSetRowH, L"О программе", s, false);
-    DrawCtl(dc, kSetCtl[S_INFO], s_setPressed == S_INFO, s_fontLabel, L"ЗАПРОСЫ");
-    Text(dc, s_fontLabel, kText, 100, 416, 436, 468, DT_LEFT, L"Язык / Language");   // (in both: found by who needs it)
+    MainRow(dc, 5, L"Язык / Language", L"интерфейс программы", true);   // (in both: found by who needs it)
     Stepper(dc, S_LANG_PREV, S_LANG_NEXT, LangName());
+    _snwprintf(s, 160, L"OSMapsCE %s", AppVersion(kRelease));   // VestaCore vversion.h
+    MainRow(dc, 6, L"О программе", s, false);
+    DrawCtl(dc, kSetCtl[S_INFO], s_setPressed == S_INFO, s_fontLabel, L"ЗАПРОСЫ");
     DrawCtl(dc, kSetCtl[S_EXIT], s_setPressed == S_EXIT, s_fontLabel, L"");
     PowerSign(dc, kSetCtl[S_EXIT], s_setPressed == S_EXIT ? kInk : kText);
     if (s_setSheet == SHEET_GPS)
