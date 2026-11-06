@@ -1253,15 +1253,34 @@ static bool Free(const LabelView& v, const Placed& box)
     return true;
 }
 
+// A name: its text, font and palette; halo false - the plain text (house numbers)
+struct NameArg { const wchar_t* s; int n; HGDIOBJ font; const Style* st; bool halo; };
+
 // Text with the halo of its palette: 8 copies 1 px around in the halo's colour, then the text.
-static void Halo(HDC dc, int x, int y, const wchar_t* s, int n, const Style& st)
+static void NamePaint(HDC dc, int x, int y, void* arg)
 {
     static const int kHalo[8][2] = { { -1, -1 }, { 0, -1 }, { 1, -1 }, { -1, 0 }, { 1, 0 }, { -1, 1 }, { 0, 1 }, { 1, 1 } };
-    SetTextColor(dc, RGB(st.cr, st.cg, st.cb));
-    for (int h = 0; h < 8; h++)
-        ExtTextOut(dc, x + kHalo[h][0], y + kHalo[h][1], 0, NULL, s, (UINT)n, NULL);
-    SetTextColor(dc, RGB(st.r, st.g, st.b));
-    ExtTextOut(dc, x, y, 0, NULL, s, (UINT)n, NULL);
+    const NameArg* a = (const NameArg*)arg;
+    SelectObject(dc, a->font);
+    if (a->halo) {
+        SetTextColor(dc, RGB(a->st->cr, a->st->cg, a->st->cb));
+        for (int h = 0; h < 8; h++)
+            ExtTextOut(dc, x + kHalo[h][0], y + kHalo[h][1], 0, NULL, a->s, (UINT)a->n, NULL);
+    }
+    SetTextColor(dc, RGB(a->st->r, a->st->g, a->st->b));
+    ExtTextOut(dc, x, y, 0, NULL, a->s, (UINT)a->n, NULL);
+}
+
+// The name at (x, y), inside the box l, t, r, b: as a stamp (stamp.cpp), the dc's font; 3 px around for the halo
+static void Name(HDC dc, int x, int y, const wchar_t* s, int n, const Style& st, bool halo, int l, int t, int r, int b)
+{
+    enum { kM = 3 };
+    HGDIOBJ font = GetCurrentObject(dc, OBJ_FONT);
+    NameArg a = { s, n, font, &st, halo };
+    COLORREF c = RGB(st.r, st.g, st.b), ch = halo ? RGB(st.cr, st.cg, st.cb) : c;
+    int w = r - l + 2 * kM, h = b - t + 2 * kM, ox = x - l + kM, oy = y - t + kM;
+    StampKey key = { s, n, (int)(INT_PTR)font, (int)c, (int)ch, ox << 16 | oy };
+    StampDraw(dc, key, l - kM, t - kM, w, h, NamePaint, &a, ox, oy);
 }
 
 // A filling station (a pump in a disc) or a car park ("P" in a rounded square), 20 px, centred on (x, y).
@@ -1406,7 +1425,7 @@ static bool SignLabel(LabelView& v, int kind, const wchar_t* s, int n, const SIZ
         return false;
     PoiSign(v.dc, (int)x, (int)y, kind, v.pal[kind]);
     if (named)
-        Halo(v.dc, (int)x - sz.cx / 2, (int)y + 11, s, n, v.pal[K_ROADNAME]);
+        Name(v.dc, (int)x - sz.cx / 2, (int)y + 11, s, n, v.pal[K_ROADNAME], true, box.l, box.t, box.r, box.b);
     return true;
 }
 
@@ -1420,12 +1439,8 @@ static bool TextLabel(LabelView& v, int kind, const wchar_t* s, int n, const SIZ
     box.b = box.t + sz.cy + 2;
     if (!Free(v, box))
         return false;
-    if (kind == K_PLACE)
-        Halo(v.dc, box.l + 2, box.t + 1, s, n, v.pal[K_PLACE]);
-    else {
-        SetTextColor(v.dc, RGB(v.pal[K_HOUSENUM].r, v.pal[K_HOUSENUM].g, v.pal[K_HOUSENUM].b));
-        ExtTextOut(v.dc, box.l + 2, box.t + 1, 0, NULL, s, (UINT)n, NULL);
-    }
+    Name(v.dc, box.l + 2, box.t + 1, s, n, v.pal[kind == K_PLACE ? K_PLACE : K_HOUSENUM], kind == K_PLACE, box.l, box.t,
+         box.r, box.b);
     return true;
 }
 
@@ -1504,7 +1519,7 @@ static bool StreetLabel(LabelView& v, const VLabel& lb, const wchar_t* s, int n,
     if (SameStreetNear(v, box) || !Free(v, box))
         return false;
     SelectObject(v.dc, StreetFont(bucket));
-    Halo(v.dc, (int)floor(tx + 0.5), (int)floor(ty + 0.5), s, n, v.pal[K_ROADNAME]);
+    Name(v.dc, (int)floor(tx + 0.5), (int)floor(ty + 0.5), s, n, v.pal[K_ROADNAME], true, box.l, box.t, box.r, box.b);
     return true;
 }
 

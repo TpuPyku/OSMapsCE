@@ -190,7 +190,8 @@ static DWORD      s_freeTick;           // the third person's view moved by hand
 static const DWORD kFreeMs = 5000;      // then back to the car (the user 2026-10-29)
 
 static GpsState   s_gps;               // as shown: the car driving on by the prediction (GlideApply)
-static GpsState   s_fix;               // the last fix as it came
+static GpsState   s_raw;               // the last fix as it came (what the route's progress goes by)
+static GpsState   s_fix;               // the same as shown: on the route's line when near it (RouteMagnet)
 static double     s_showLon, s_showLat, s_showCourse;   // the car shown
 static DWORD      s_showTick;          // its last step (0: none - put on the fix)
 static DWORD      s_paintMs;           // the last frame's drawing (the glide's frames: not more than the CPU allows)
@@ -343,6 +344,9 @@ static double ViewAngle()
 static void GpsTake()
 {
     GpsGet(&s_fix);
+    s_raw = s_fix;
+    if (s_fix.valid)
+        RouteMagnet(&s_fix.lon, &s_fix.lat, s_fix.speedKmh, &s_fix.course);
     s_gps = s_fix;
     if (s_gps.valid) {   // (saved with the view, each 5 minutes: StartFrom)
         g_cfg.lastLon = s_gps.lon;
@@ -1558,19 +1562,31 @@ static void Blit(HDC dc, const Image* im, int x, int y)
     DeleteDC(src);
 }
 
+struct TextArg { HFONT font; COLORREF color; const wchar_t* s; int w, h; UINT align; };
+
+static void TextPaint(HDC dc, int x, int y, void* arg)
+{
+    const TextArg* a = (const TextArg*)arg;
+    RECT rc = { x, y, x + a->w, y + a->h };
+    SelectObject(dc, a->font);
+    SetTextColor(dc, a->color);
+    DrawText(dc, a->s, -1, &rc, a->align | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+}
+
 static void Text(HDC dc, HFONT font, COLORREF color, int l, int t, int r, int b, UINT align, const wchar_t* s)
 {
     s = Tr(s);
-    RECT rc = { l, t, r, b };
-    SelectObject(dc, font);
-    SetTextColor(dc, color);
     wchar_t ye[256];
     if (g_noYo && wcslen(s) < 256) {
         wcscpy(ye, s);
         NoYo(ye);
         s = ye;
     }
-    DrawText(dc, s, -1, &rc, align | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+    SelectObject(dc, font);   // (the dc as this always left it: some drawing goes on with its font and colour)
+    SetTextColor(dc, color);
+    TextArg a = { font, color, s, r - l, b - t, align };
+    StampKey key = { s, (int)wcslen(s), (int)(INT_PTR)font, (int)color, (r - l) << 16 | (b - t), (int)align };
+    StampDraw(dc, key, l, t, r - l, b - t, TextPaint, &a, 0, 0);
 }
 
 // ---- see-through bars and tiles, drawn straight into the frame's pixels (s_backBits)
@@ -5324,6 +5340,8 @@ static void Paint(HDC hdc)
     HGDIOBJ oldBmp = SelectObject(dc, s_back);
     HGDIOBJ oldFont = SelectObject(dc, s_fontSmall);
     SetBkMode(dc, TRANSPARENT);
+    if (s_backBits)   // (the frame's rows lie bottom-up)
+        StampTarget(dc, s_backBits + (s_ch - 1) * BackStride(), -BackStride(), s_cw, s_ch);
 
     if (s_bg.bmp) {
         Blit(dc, &s_bg, 0, 0);
@@ -5354,6 +5372,7 @@ static void Paint(HDC hdc)
 
     BitBlt(hdc, 0, 0, s_cw, s_ch, dc, 0, 0, SRCCOPY);
     PartLap(PT_OUT);
+    StampTarget(NULL, NULL, 0, 0, 0);
     SelectObject(dc, oldFont);
     SelectObject(dc, oldBmp);
     DeleteDC(dc);
@@ -5405,6 +5424,9 @@ static void LogStat()
         ms.dwMemoryLoad, ms.dwAvailPhys / 1024, ms.dwAvailVirtual / 1024, CacheBytes() / 1024,
         s_statPaints, s_statPaintMax, s_statSlots,
         s_gps.bytes - s_statGpsBytes, s_gps.lines - s_statGpsLines, s_gps.badLines - s_statGpsBad);
+    int stHit, stMiss, stDirect;
+    StampStats(&stHit, &stMiss, &stDirect);
+    Log("stamps: %d KB; ready %d, new %d, by GDI %d", StampWords() * 2 / 1024, stHit, stMiss, stDirect);
     if (s_statPaints) {   // the frame's parts: the average and the longest, ms
         DWORD n = (DWORD)s_statPaints;
         Log("paint: avg/max ms - bg %lu/%lu, tiles %lu/%lu, frame %lu/%lu, names %lu/%lu, marks %lu/%lu, "
@@ -5844,7 +5866,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         if (s_gps.valid) {
             if (RouteAlts() >= 2 && s_gps.speedKmh > 15)
                 RouteAltsDone();   // driving: the route chosen is the one on
-            RouteGps(s_gps.lon, s_gps.lat, s_gps.speedKmh, s_gps.course);
+            RouteGps(s_raw.lon, s_raw.lat, s_raw.speedKmh, s_raw.course);
         }
         if (!MapHeld()) {
             GlideApply();

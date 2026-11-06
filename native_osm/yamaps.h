@@ -97,6 +97,20 @@ unsigned short* ImageCreate(int w, int h, Image* out);   // 16bpp RGB565, bottom
 bool ImageFromMemory(const unsigned char* data, int len, Image* out);
 bool ImageFromFile(const wchar_t* path, Image* out);
 void ImageFree(Image* im);
+// Text as ready pixels (stamp.cpp; the Shturmann's frame 2026-11: names and panels, GDI's text, over half of it): a text
+// drawn once on black and on white gives its runs; the next frames lay those straight into the frame.
+struct StampKey { const wchar_t* s; int n, a, b, c, d; };   // the text and what else makes its look (font, colours, box)
+typedef void (*StampPaint)(HDC dc, int x, int y, void* arg);   // draws it with its origin at (x, y)
+int StampBuild(const WORD* onBlack, const WORD* onWhite, int stride, int w, int h, WORD* out, int cap);   // words, -1 no room
+void StampBlit(const WORD* runs, int words, WORD* frame, int stride, int cw, int ch, int x, int y);   // frame: top-down
+void StampReset(int budgetWords);
+const WORD* StampFind(const StampKey& key, int* words);
+bool StampPut(const StampKey& key, const WORD* runs, int words);
+int StampWords();
+void StampTarget(HDC dc, WORD* frame, int stride, int cw, int ch);   // frame with stride: dc's pixels, rows as they lie
+// Draws the box (x, y, w, h) on the target's dc, paint's origin at (x + ox, y + oy); other dc, or too big: paint itself.
+void StampDraw(HDC dc, const StampKey& key, int x, int y, int w, int h, StampPaint paint, void* arg, int ox, int oy);
+void StampStats(int* hits, int* misses, int* direct);   // since the last call
 // Traffic overlay in one malloc'ed block, transparent pixels left out (most of a traffic
 // image is empty). Row y (top-down) at rowOfs[y] from the block start:
 // u16 run count, u16 padding, then runs of { u16 skip, u16 count, count * RGBA }.
@@ -264,6 +278,7 @@ bool RouteAltGet(int k, const double** lonLat, int* np, double* timeS, double* d
 void RouteAltChoose(int k);
 void RouteAltsDone();                    // chosen: the others and the kept answer go
 void RouteClear();
+void RouteMagnet(double* lon, double* lat, double kmh, double* course);   // the fix shown: on the line when near it
 void RouteGps(double lon, double lat, double kmh, double course);   // each fix: progress, off -> a new route
 void RouteGet(RouteInfo* out);
 int  RoutePoints(const double** lonLat);   // the line: lon, lat pairs
@@ -341,6 +356,9 @@ double GlideCourse(double from, double to, DWORD ms);   // the turn from -> to a
 // The mark a fix late (the user 2026-11-02): its speed from where it is shown to the fix in periodMs, metres a ms east
 // and north; false: more than 50 m off or no time - none (put there)
 bool GlideAim(double lon, double lat, double tLon, double tLat, DWORD periodMs, double* ve, double* vn);
+// The car on the route's line, for the eye only (the user 2026-11-03: it jumps about on a poor signal): the line's nearest
+// point around segment seg of pts[np] (lon, lat pairs) when the fix is near it and goes its way. "was": it was on the line.
+bool MagnetSnap(const double* pts, int np, int seg, double* lon, double* lat, double kmh, double* course, bool was);
 // The route (lon, lat pairs) behind the car cut off: of its segments from..to (clamped) the nearest to (lon, lat) within
 // maxM; cut: the car's point on it. -1: none that near
 int  RouteCut(const double* ll, int np, int from, int to, double lon, double lat, double maxM, double* cut);
