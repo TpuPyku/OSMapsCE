@@ -88,11 +88,11 @@ jobs:
         run: |
           gh release download maps -p catalog.json -O previous.json || echo '{"regions": []}' > previous.json
           python offline/release_regions.py catalog dist previous.json
-      - name: The overview whole onto Yandex Disk, its folder public (the catalog tells the link)
+      - name: The regions' outlines for the app's map and the overview's cut (the sources' .poly)
+        run: python offline/make_outlines.py dist/outlines.json
+      - name: The overview's pack (the map and the trunk roads) onto Yandex Disk, its folder public (the catalog tells the link)
         if: ${{ env.YANDEX_DISK_TOKEN != '' }}
         run: python offline/release_regions.py disk dist
-      - name: The regions' outlines for the app's map (the sources' .poly)
-        run: python offline/make_outlines.py dist/outlines.json
       - run: gh release upload maps dist/*.zip dist/catalog.json dist/outlines.json --clobber
       - name: The zips no longer in the catalog (regions merged or gone) removed
         run: |

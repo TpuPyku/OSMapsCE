@@ -69,11 +69,10 @@ def installed(drive):
             if n not in (TRUNK, OVERVIEW) and os.path.exists(os.path.join(root, n, 'region.txt'))}
 
 
-TRUNK = 'trunk'   # the trunk roads of Russia and the CIS (4b): routes from one region to another
-TRUNK_TITLE = 'Магистрали России и СНГ'   # (the routes between the regions)
-OVERVIEW = 'overview'   # the small zooms of all the regions' box whole (the user 2026-10-30: a region's pack holds its
-OVERVIEW_TITLE = 'Обзорная карта СНГ'    # region only - empty round it); OSMapsCE takes it when no cached tile
-OVERVIEW_Z = 8          # z0-8: ~60 MB (z7: 24, z9: ~150)
+TRUNK = 'trunk'   # the old folder of the trunk roads (cards from before 2026-11-06), and their archive in the release
+OVERVIEW = 'overview'   # one pack as a region's (the user 2026-11-06): the map's small zooms inside the regions' borders
+OVERVIEW_TITLE = 'Обзорная карта и магистрали'   # (a region's pack holds its region only - empty round it; OSMapsCE takes
+OVERVIEW_Z = 8          # them when no cached tile) and the trunk roads' graph (routes from one region to another)
 
 
 def bounds(pts):
@@ -84,6 +83,24 @@ def bounds(pts):
 def overview_box(cat):
     """All the regions' bounds: (minLon, minLat, maxLon, maxLat)."""
     return bounds([c for r in cat['regions'] for c in (r['bbox'][:2], r['bbox'][2:])])
+
+
+def overview_rings(shapes):
+    """The regions' outlines as one list of rings, None: not known (the box then)."""
+    return [r for rings in shapes.values() for r in rings] if shapes else None
+
+
+def pack_info(dst, have, **new):
+    """The pack's region.txt in dst: what is known of it (on have, the card, when written elsewhere first; in dst) with
+    the new keys. One file tells both builds: tiles= the map's, date= the graph's."""
+    info = {}
+    for root in (have, os.path.dirname(os.path.dirname(dst))):
+        path = os.path.join(root, 'OSMapsData', OVERVIEW, 'region.txt') if root else ''
+        if path and os.path.exists(path):
+            info.update(release_regions.region_info(path))
+    info.update(new, name=OVERVIEW)
+    with open(os.path.join(dst, 'region.txt'), 'w') as f:
+        f.write(''.join('%s=%s\n' % kv for kv in info.items()))
 
 
 def folder_info(drive, name, key):
@@ -97,46 +114,40 @@ def overview_date(drive):
     return folder_info(drive, OVERVIEW, 'tiles')
 
 
-def install_overview(cat, drive, get_bytes, day, tell=lambda part, text: None):
-    """The overview pack on the drive (\\OSMapsData\\overview\\overview.vtp - not tiles.vtp: no region's), cut out of
-    Protomaps' build like a region's tiles; region.txt last (tiles= its build)."""
+def install_overview(cat, drive, get_bytes, day, tell=lambda part, text: None, rings=None, have=None):
+    """The overview's map on the drive (\\OSMapsData\\overview\\overview.vtp - not tiles.vtp: no region's), cut out of
+    Protomaps' build: the tiles the regions' outlines touch, no margin (rings; none known: their box); region.txt last
+    (tiles= its build)."""
     dst = os.path.join(drive, 'OSMapsData', OVERVIEW)
     os.makedirs(dst, exist_ok=True)
     out = os.path.join(dst, 'overview.vtp')
-    pmextract.extract(get_bytes, overview_box(cat), OVERVIEW_Z, out + '.part', tell, pmextract.slim)
+    pmextract.extract(get_bytes, overview_box(cat), OVERVIEW_Z, out + '.part', tell, pmextract.slim, rings, 0)
     os.replace(out + '.part', out)
-    with open(os.path.join(dst, 'region.txt'), 'w') as f:
-        f.write('name=%s\ntiles=%s\n' % (OVERVIEW, day))
+    pack_info(dst, have, tiles=day)
 
 
 def trunk_date(drive):
-    """The trunk roads' build on the drive, None: not there."""
-    return folder_info(drive, TRUNK, 'date')
+    """The trunk roads' build in the drive's pack, None: not there."""
+    return folder_info(drive, OVERVIEW, 'date')
 
 
 def install_trunk(drive, get_file, tell=lambda part, text: None, have=None):
-    """The trunk roads' graph on the drive (\\OSMapsData\\trunk\\, region.txt last): 'written', 'same' (that build
-    there already - on have, the card, when written elsewhere first) or 'none' (no graph in the release)."""
+    """The trunk roads' graph into the drive's pack (region.txt last): 'written', 'same' (that build there already -
+    on have, the card, when written elsewhere first) or 'none' (no graph in the release)."""
     try:
         data = get_file(release_regions.ASSETS + TRUNK + '.zip', tell)
     except Exception:
         return 'none'
-    dst = os.path.join(drive, 'OSMapsData', TRUNK)
-    there = os.path.join(have or drive, 'OSMapsData', TRUNK, 'region.txt')
+    dst = os.path.join(drive, 'OSMapsData', OVERVIEW)
     with zipfile.ZipFile(io.BytesIO(data)) as z:
-        info = z.read('region.txt')
-        if os.path.exists(there) and read_bytes(there) == info:
+        date = dict(line.split('=', 1) for line in z.read('region.txt').decode().split('\n') if '=' in line).get('date')
+        if date and trunk_date(have or drive) == date:
             return 'same'
         os.makedirs(dst, exist_ok=True)
-        for f in ('trunk.grf', 'region.txt'):
-            with open(os.path.join(dst, f), 'wb') as out:
-                out.write(z.read(f))
+        with open(os.path.join(dst, 'trunk.grf'), 'wb') as out:
+            out.write(z.read('trunk.grf'))
+    pack_info(dst, have, date=date)
     return 'written'
-
-
-def read_bytes(path):
-    with open(path, 'rb') as f:
-        return f.read()
 
 
 def states(cat, have):
@@ -228,7 +239,14 @@ def remove_regions(drive, names):
         unmark(path)
         shutil.rmtree(path)
         gone.append(name)
+        if name == OVERVIEW:
+            drop_old_trunk(drive)
     return gone
+
+
+def drop_old_trunk(drive):
+    """The trunk roads' own folder of a card from before: OSMapsCE takes the first trunk.grf it finds."""
+    shutil.rmtree(os.path.join(drive, 'OSMapsData', TRUNK), ignore_errors=True)
 
 
 def ready_links(cat, chosen, href=yadisk.public_href):
@@ -299,7 +317,7 @@ def trunk_state(cat, drive):
 def outdated(cat, have, drive=None):
     """The regions with a newer build in the catalog (and the trunk roads, on the drive)."""
     old = {n for n, s in states(cat, have).items() if s == 'update'}
-    return old | {TRUNK} if drive and trunk_state(cat, drive) == 'update' else old
+    return old | {OVERVIEW} if drive and trunk_state(cat, drive) == 'update' else old
 
 
 def removable_drives(mask=None, kind=None):
@@ -492,11 +510,11 @@ class App:
                                           chosen_size(self.cat, self.chosen) / 1e6, self.free()))
 
     def special_rows(self, find):
-        """The trunk roads (the user 2026-10-29: "where are they?") and the overview first, if the search lets them."""
+        """The overview and the trunk roads, one row first (the user 2026-11-06), if the search lets it."""
         drive = self.drive.get()
-        for name, title, size, date, state in (
-                (TRUNK, TRUNK_TITLE, '≈10 МБ', trunk_date(drive), trunk_state(self.cat, drive)),
-                (OVERVIEW, OVERVIEW_TITLE, '≈60 МБ', overview_date(drive), 'ok' if overview_date(drive) else 'new')):
+        state = trunk_state(self.cat, drive)
+        state = 'new' if not overview_date(drive) else state
+        for name, title, size, date in ((OVERVIEW, OVERVIEW_TITLE, '≈70 МБ', overview_date(drive)),):
             if find in title.casefold():
                 tags = ('chosen',) if name in self.chosen else ('update',) if state == 'update' else ()
                 self.tree.insert('', 'end', iid=name, text=title, tags=tags,
@@ -587,7 +605,7 @@ class App:
     def job(self, drive):
         """What to write: the chosen regions, the trunk roads and the overview (chosen, or none there: with any region)."""
         entries = [r for r in self.cat['regions'] if r['name'] in self.chosen]
-        trunk = TRUNK in self.chosen or bool(entries) and trunk_state(self.cat, drive) != 'ok'   # (none, older)
+        trunk = OVERVIEW in self.chosen or bool(entries) and trunk_state(self.cat, drive) != 'ok'   # (none, older)
         overview = OVERVIEW in self.chosen or bool(entries) and overview_date(drive) is None
         return entries, trunk, overview
 
@@ -611,10 +629,9 @@ class App:
     def chosen_there(self, drive):
         """The chosen ones on the drive, and their titles."""
         have = self.have()
-        there = sorted(n for n in self.chosen if n in have or n == TRUNK and trunk_date(drive) or
-                       n == OVERVIEW and overview_date(drive))
+        there = sorted(n for n in self.chosen if n in have or n == OVERVIEW and (overview_date(drive) or trunk_date(drive)))
         titles = {r['name']: r.get('title', r['name']) for r in self.cat['regions']}
-        titles[TRUNK], titles[OVERVIEW] = TRUNK_TITLE, OVERVIEW_TITLE
+        titles[OVERVIEW] = OVERVIEW_TITLE
         return there, [titles.get(n, n) for n in there]
 
     def open_ready(self):
@@ -646,11 +663,12 @@ class App:
             self.refresh()
             self.status.set('Удалено: %d. ' % len(gone) + self.status.get())
 
-    def write_overview(self, stage, get_bytes, day, k, total):   # the overview into stage: the bar's part k
+    def write_overview(self, stage, get_bytes, day, k, total, drive=None):   # the overview into stage: the bar's part k
         if overview_date(stage) == day:   # (downloaded before a break)
             return
         install_overview(self.cat, stage, get_bytes, day,
-                         lambda part, text: self.tell(OVERVIEW_TITLE, (k + part) / total, text))
+                         lambda part, text: self.tell(OVERVIEW_TITLE, (k + part) / total, text),
+                         overview_rings(getattr(self, 'shapes', None)), drive)
 
     def tell(self, head, part, text):   # (from the writing thread: through the queue); stopped - Cancelled
         if self.stop.is_set():
@@ -665,6 +683,8 @@ class App:
         stage = stage_dir()
         done = self.write_stage(entries, stage, drive, trunk, total, overview)
         copy_to(stage, drive, lambda part, text: self.tell('На флешку', (total - 1 + part) / total, text))
+        if trunk_date(drive):   # the pack holds the graph now
+            drop_old_trunk(drive)
         shutil.rmtree(stage, ignore_errors=True)   # (an error before: kept - the next time goes on there)
         self.news.put(('status', done + '. Флешку — в ГУ (папка OSMapsData в корне).'))
         self.news.put(('catalog', self.cat))
@@ -683,12 +703,11 @@ class App:
                     lambda part, text, h=head, k=i: self.tell(h, (k + part) / total, text), day)
         done = 'Готово: областей %d' % len(entries)
         if overview:
-            self.write_overview(stage, get_bytes, day, len(entries), total)
+            self.write_overview(stage, get_bytes, day, len(entries), total, drive)
             done += ', обзорная карта записана'
         if trunk:
-            head = 'Магистрали России и СНГ'
-            got = install_trunk(stage, download, lambda part, text: self.tell(head, (total - 2 + part) / total, text),
-                                drive)
+            got = install_trunk(stage, download,
+                                lambda part, text: self.tell(OVERVIEW_TITLE, (total - 2 + part) / total, text), drive)
             done += {'written': ', магистрали записаны', 'same': ', магистрали уже свежие',
                      'none': ', магистралей в релизе нет'}[got]
         return done

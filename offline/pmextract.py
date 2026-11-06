@@ -77,24 +77,24 @@ def ring_rows(ring, n):
     return rows
 
 
-def poly_ranges(rings, z):
+def poly_ranges(rings, z, margin=1):
     """{y: [(x0, x1)]} of zoom z's tiles a region's outline (rings of (lon, lat)) touches, a tile round them (the
     maps workflow 2026-11-03: Kazakhstan's box - twice the country - never cut in GitHub's 6 h)."""
     n = 1 << z
     out = {}
     for ring in rings:
         for y, rs in ring_rows(ring, n).items():
-            for yy in (y - 1, y, y + 1):
+            for yy in range(y - margin, y + margin + 1):
                 if 0 <= yy < n:
-                    out.setdefault(yy, []).extend((max(0, a - 1), min(n - 1, b + 1)) for a, b in rs)
+                    out.setdefault(yy, []).extend((max(0, a - margin), min(n - 1, b + margin)) for a, b in rs)
     return {y: joined(v) for y, v in out.items()}
 
 
-def wanted(bbox, maxzoom, rings):
-    """(z, x, y) of a region's tiles: its outline's (rings), else its box's."""
+def wanted(bbox, maxzoom, rings, margin=1):
+    """(z, x, y) of a region's tiles: its outline's (rings; margin: tiles round it), else its box's."""
     for z in range(0, maxzoom + 1):
         if rings:
-            for y, rs in poly_ranges(rings, z).items():
+            for y, rs in poly_ranges(rings, z, margin).items():
                 for a, b in rs:
                     for x in range(a, b + 1):
                         yield z, x, y
@@ -187,14 +187,14 @@ def processed(items, total, tell):
             tell(kDataEnd + (1 - kDataEnd) * i / total, 'обработка: %d из %d плиток' % (i, total))
 
 
-def extract(get_bytes, bbox, maxzoom, out, progress=None, keep=lambda tile: tile, rings=None):
+def extract(get_bytes, bbox, maxzoom, out, progress=None, keep=lambda tile: tile, rings=None, margin=1):
     """The region's tiles into the pack out - its box's, or its outline's (rings of (lon, lat)); keep: what of a tile
     is kept (slim); progress(part 0..1, text) from the start: the archive's directories first, then the data."""
     tell = progress or (lambda part, text: None)
     tell(0, 'каталог архива…')
     with ThreadPoolExecutor(kThreads) as pool:
         archive = Archive(get_bytes)
-        keys = {zxy_to_tileid(z, x, y): (z, x, y) for z, x, y in wanted(bbox, maxzoom, rings)}
+        keys = {zxy_to_tileid(z, x, y): (z, x, y) for z, x, y in wanted(bbox, maxzoom, rings, margin)}
         located = {keys[t]: span for t, span in archive.locate_all(keys, pool, tell).items()}
         tell(kDirsPart, 'каталог: %d плиток' % len(located))
         data = fetch(archive, located, pool, tell)

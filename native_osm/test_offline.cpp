@@ -165,7 +165,7 @@ static int   s_stored, s_expireAt, s_sigFloor;
 // the overview; its API answers a public file's link (dl.example), which serves full.zip / overview.zip in ranges
 static char* s_full;
 static char* s_ov;
-static int   s_fullLen, s_ovLen, s_withDisk, s_apiFail, s_ovAsks, s_trunkAsks, s_catFails;
+static int   s_fullLen, s_ovLen, s_withDisk, s_apiFail, s_ovAsks, s_catFails;
 static char  s_apiQuery[512];
 
 static char* FileBytes(const wchar_t* name, int* len)   // a file of obj\test (malloc)
@@ -243,15 +243,14 @@ static int FakeGet(const char* host, bool, const char* path, unsigned char** bod
         static const char* kCat = "{\"regions\":[{\"name\":\"tiny\",\"title\":\"T\",\"date\":\"2026-10-20\",\"zip\":"
                                   "\"tiny.zip\",\"size\":10},{\"name\":\"zz\",\"title\":\"Z\",\"date\":\"2026-10-29\","
                                   "\"zip\":\"zz.zip\",\"size\":2048}]}";
-        static const char* kDiskCat = "{\"disk\":\"https://disk.example/d/x y\",\"trunk\":{\"date\":\"2026-10-30\"},\"overview\":{\"zip\":\"overview.zip\","
-                                      "\"size\":2048},\"regions\":[{\"name\":\"yy\",\"title\":\"Y\",\"date\":\"2026-10-29\","
+        static const char* kDiskCat = "{\"disk\":\"https://disk.example/d/x y\",\"overview\":{\"zip\":\"overview.zip\","
+                                      "\"size\":2048,\"date\":\"2026-10-30\"},\"regions\":[{\"name\":\"yy\",\"title\":\"Y\",\"date\":\"2026-10-29\","
                                       "\"zip\":\"yy.zip\",\"size\":2048},{\"name\":\"zz\",\"title\":\"Z\",\"date\":\"2026-10-30\","
                                       "\"zip\":\"zz.zip\",\"size\":2048,\"full\":{\"zip\":\"zz.zip\",\"size\":300000}}]}";
         return Body(s_withDisk ? kDiskCat : kCat, body, len, status);
     }
     if (s_withDisk && (!strcmp(host, "cloud-api.yandex.net") || !strcmp(host, "dl.example")))
         return DiskGet(host, path, body, len, status, x);
-    s_trunkAsks += strstr(path, "trunk.zip") != NULL;
     if (!strcmp(host, "github.com")) {
         *status = 302;
         _snprintf(x->location, x->locCap, "https://store.example/f%s?sig=%d", strrchr(path, '/'), s_asked);
@@ -349,7 +348,12 @@ static void DiskChecks()
     wchar_t zz[MAX_PATH], ov[MAX_PATH], yy[MAX_PATH];
     PathInDir(zz, L"OSMapsData\\zz");
     Remove(zz);
-    s_trunkAsks = 0;
+    wchar_t oldTrunk[MAX_PATH], oldGraph[MAX_PATH];   // a card from before: the trunk roads' own folder
+    PathInDir(oldTrunk, L"OSMapsData\\trunk");
+    CreateDirectory(oldTrunk, NULL);
+    PathInDir(oldGraph, L"OSMapsData\\trunk\\trunk.grf");
+    HANDLE og = CreateFile(oldGraph, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
+    CloseHandle(og);
     Check(MapsGetRegion(1) && WaitMaps() && MapsAt(1, &m) && MapState(m) == MAP_OK, "disk: the region downloaded", NULL);
     Check(strstr(s_apiQuery, "/v1/disk/public/resources/download?public_key=https%3A%2F%2Fdisk.example%2Fd%2Fx%20y") &&
           strstr(s_apiQuery, "&path=%2Foverview.zip"), "disk: the link asked of its API, encoded", s_apiQuery);
@@ -364,19 +368,29 @@ static void DiskChecks()
     char* ovb = FileBytes(L"OSMapsData\\overview\\overview.vtp", &n);
     Check(n == 800 && !memcmp(ovb, "OVERVIEW", 8), "disk: the overview after it", NULL);
     free(ovb);
-    Check(s_trunkAsks > 0, "disk: the trunk roads of another build than the catalog's - downloaded again", NULL);
-    int trunkAsks = s_trunkAsks;
-    wchar_t tr[MAX_PATH], tdate[MAX_PATH];
-    PathInDir(tr, L"OSMapsData\\trunk");
-    Remove(tr);   // (its attempt here: the made-up server's zip has no graph)
-    PathInDir(tdate, L"..\\OSMapsData\\trunk\\region.txt");
+    char* grf = FileBytes(L"OSMapsData\\overview\\trunk.grf", &n);
+    Check(n == 400 && !memcmp(grf, "OSMG", 4), "disk: the trunk roads in the same pack", NULL);
+    free(grf);
+    Check(GetFileAttributes(oldTrunk) == 0xFFFFFFFF, "disk: the trunk roads' old folder gone", NULL);
+    Check(s_ovAsks == 1, "disk: one archive for both", NULL);
+    wchar_t tdate[MAX_PATH];
+    PathInDir(tdate, L"..\\OSMapsData\\trunk\\region.txt");   // (the test's own graph found first: of that build too)
     HANDLE h = CreateFile(tdate, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
     DWORD put;
     WriteFile(h, "name=trunk\ndate=2026-10-30\n", 27, &put, NULL);
     CloseHandle(h);
     Remove(zz);
-    Check(MapsGetRegion(1) && WaitMaps() && s_ovAsks == 1, "disk: the overview there - not asked again", NULL);
-    Check(s_trunkAsks == trunkAsks, "disk: the trunk roads of the catalog's build there - not downloaded", NULL);
+    Check(MapsGetRegion(1) && WaitMaps() && s_ovAsks == 1, "disk: the pack there, of the catalog's build - not asked again", NULL);
+    h = CreateFile(tdate, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
+    WriteFile(h, "name=trunk\ndate=2026-10-01\n", 27, &put, NULL);
+    CloseHandle(h);
+    wchar_t odate[MAX_PATH];
+    PathInDir(odate, L"OSMapsData\\overview\\region.txt");
+    h = CreateFile(odate, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
+    WriteFile(h, "name=overview\ndate=2026-10-01\n", 30, &put, NULL);
+    CloseHandle(h);
+    Remove(zz);
+    Check(MapsGetRegion(1) && WaitMaps() && s_ovAsks == 2, "disk: the graph of another build - the pack downloaded again", NULL);
     DeleteFile(tdate);
     PathInDir(yy, L"OSMapsData\\yy");
     Remove(yy);
@@ -449,7 +463,7 @@ static void DownloadChecks()
     Check(GetFileAttributes(left) == 0xFFFFFFFF, "download: the zip removed after", NULL);
 
     // the job, as the screen starts it: the catalog, then a region (into the program's OSMapsData here - no card),
-    // the trunk roads after it when the card has none (they are there: obj\test\OSMapsData\trunk)
+    // no pack after it: this catalog has no disk
     Check(MapsBusyRegion() == -1, "job: no region downloaded before any", NULL);
     s_catFails = 2;
     Check(MapsList() && WaitMaps() && MapsCount() == 2, "job: the catalog loaded (the link lost twice: asked again)", NULL);

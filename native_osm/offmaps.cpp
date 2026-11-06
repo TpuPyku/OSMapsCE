@@ -360,14 +360,14 @@ bool MapsFetch(const char* url, const wchar_t* file, int chunk)
     return false;
 }
 
-// A zip (url) into data\<name>\ - kind MAPS_*: a region's graph and search, the trunk roads, a region whole (its
-// tiles too), the overview - through data\<name>.zip, removed after; region.txt last
+// A zip (url) into data\<name>\ - kind MAPS_*: a region's graph and search, a region whole (its tiles too), the overview's
+// pack (its map and the trunk roads) - through data\<name>.zip, removed after; region.txt last
 bool MapsInstall(const char* url, const wchar_t* data, const char* name, int kind)
 {
-    static const char* const kFiles[4][4] = { { "route.grf", "search.idx", "region.txt" }, { "trunk.grf", "region.txt" },
+    static const char* const kFiles[3][4] = { { "route.grf", "search.idx", "region.txt" },
                                               { "route.grf", "search.idx", "tiles.vtp", "region.txt" },
-                                              { "overview.vtp", "region.txt" } };
-    static const int kCount[4] = { 3, 2, 4, 2 };
+                                              { "overview.vtp", "trunk.grf", "region.txt" } };
+    static const int kCount[3] = { 3, 4, 3 };
     wchar_t zip[MAX_PATH], part[MAX_PATH], dir[MAX_PATH];
     CreateDirectory(data, NULL);
     _snwprintf(zip, MAX_PATH, L"%s\\%S.zip", data, name);
@@ -403,7 +403,8 @@ static volatile LONG    s_busyRegion = -1;   // the region GetThread downloads
 static wchar_t          s_text[128];   // what goes on / the last result
 static int              s_totalKb;     // the file being downloaded
 static char             s_disk[256];   // the catalog's Yandex Disk folder (public link): the regions whole; "" none
-static char             s_trunkDate[16];   // the catalog's trunk roads' build ("" not told)
+static char             s_trunkDate[16];   // the catalog's trunk roads' build in the overview's pack ("" not told: an old
+                                           // catalog, its pack holds no graph)
 static int              s_ovKb;        // ... its overview's size
 
 static void Lock()
@@ -451,7 +452,7 @@ static DWORD WINAPI ListThread(LPVOID)
     int ovKb = n ? (int)(JNum(JKey(JKey((const char*)body, "overview"), "size"), 0) / 1024) : 0;
     char trunkDate[16] = "";
     if (n)
-        Copy(trunkDate, sizeof(trunkDate), JKey(JKey((const char*)body, "trunk"), "date"));
+        Copy(trunkDate, sizeof(trunkDate), JKey(JKey((const char*)body, "overview"), "date"));
     free(body);
     qsort(got, n, sizeof(MapRegion), ByTitle);
     MapsHave(got, n);
@@ -478,7 +479,7 @@ static bool TrunkCurrent()
         return false;
     _snwprintf(path, MAX_PATH, L"%s\\region.txt", dir);
     path[MAX_PATH - 1] = 0;
-    return !s_trunkDate[0] || (RegionDate(path, date, sizeof(date)) && !strcmp(date, s_trunkDate));
+    return RegionDate(path, date, sizeof(date)) && !strcmp(date, s_trunkDate);
 }
 
 // A public file of the catalog's Yandex Disk folder: its download link, asked of the disk's API (no token); false -
@@ -516,25 +517,30 @@ static bool GetRegion(const MapRegion& r, const wchar_t* data)
     return MapsInstall(url, data, r.name, MAPS_GRAPH);
 }
 
-// After a region: the overview (the disk's; none where the region went) and the trunk roads (~10 MB, none on a card)
+// After a region: the overview's pack - its map and the trunk roads, one archive on the disk (GitHub, where the trunk roads
+// were, is blocked on the unit): when its map is missing or its graph is another build. None where the region went.
 static void GetExtras(const wchar_t* data)
 {
+    wchar_t ov[MAX_PATH], old[MAX_PATH];
     char url[2048];
-    wchar_t ov[MAX_PATH];
     _snwprintf(ov, MAX_PATH, L"%s\\overview\\overview.vtp", data);
     ov[MAX_PATH - 1] = 0;
-    if (s_disk[0] && s_ovKb && !Exists(ov, NULL) && !s_cancel) {
-        Say(L"Обзорная карта СНГ…", NULL);
-        s_totalKb = s_ovKb;
-        if (DiskHref("overview.zip", url, sizeof(url)))
-            MapsInstall(url, data, "overview", MAPS_OVERVIEW);
-    }
-    if (!TrunkCurrent() && !s_cancel) {
-        Say(L"Магистрали России и СНГ…", NULL);
-        _snprintf(url, sizeof(url), "%strunk.zip", kAssets);
-        s_totalKb = 10 * 1024;
-        MapsInstall(url, data, "trunk", MAPS_TRUNK);
-    }
+    if (!s_disk[0] || !s_ovKb || !s_trunkDate[0] || s_cancel || (Exists(ov, NULL) && TrunkCurrent()))
+        return;
+    Say(L"Обзорная карта и магистрали…", NULL);
+    s_totalKb = s_ovKb;
+    if (!DiskHref("overview.zip", url, sizeof(url)) || !MapsInstall(url, data, "overview", MAPS_OVERVIEW))
+        return;
+    // a card from before: the trunk roads' own folder goes (the first trunk.grf found is the one taken)
+    _snwprintf(old, MAX_PATH, L"%s\\trunk\\trunk.grf", data);
+    old[MAX_PATH - 1] = 0;
+    DeleteFile(old);
+    _snwprintf(old, MAX_PATH, L"%s\\trunk\\region.txt", data);
+    old[MAX_PATH - 1] = 0;
+    DeleteFile(old);
+    _snwprintf(old, MAX_PATH, L"%s\\trunk", data);
+    old[MAX_PATH - 1] = 0;
+    RemoveDirectory(old);
 }
 
 static DWORD WINAPI GetThread(LPVOID p)

@@ -165,7 +165,7 @@ typedef int (*MapsGetFn)(const char* host, bool https, const char* path, unsigne
                          const HttpExtra* extra);
 void MapsSetGet(MapsGetFn fn, int retryMs);   // tests: a made-up server; NULL - HttpGet
 bool MapsFetch(const char* url, const wchar_t* file, int chunk);   // resumable, in ranges, through redirects
-enum { MAPS_GRAPH, MAPS_TRUNK, MAPS_FULL, MAPS_OVERVIEW };   // what a zip holds (its files unpacked)
+enum { MAPS_GRAPH, MAPS_FULL, MAPS_OVERVIEW };   // what a zip holds (its files unpacked)
 bool MapsInstall(const char* url, const wchar_t* data, const char* name, int kind);   // a zip downloaded, unpacked
 enum { MAPS_IDLE, MAPS_BUSY };
 bool MapsList();                 // the release's catalog, on a thread (false: busy)
