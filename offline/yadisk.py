@@ -32,7 +32,7 @@ def urllib_send(method, url, headers, body=None):
         return e.code, e.read()
 
 
-class ServerBusy(OSError):   # the server's 5xx on the way up: asked again
+class ServerBusy(OSError):   # the upload link's 5xx or 404 (a link gone, 2026-11-06): asked again with a new one
     pass
 
 
@@ -52,7 +52,7 @@ def call(send, method, what, params, headers, ok=(200, 201, 202)):
     return answer(status, data, what, ok)
 
 
-WAITS = (30, 60)   # the upload asked again after these seconds (a connection reset, the server's 5xx)
+WAITS = (30, 60)   # the upload asked again after these seconds (a connection reset, the link's 5xx or 404)
 
 
 class Disk:
@@ -64,11 +64,11 @@ class Disk:
         call(self.send, 'PUT', 'resources', {'path': path}, self.auth, ok=(201, 409))
 
     def put_once(self, path, file):
-        """One try: a new link, the file whole to it; the server's 5xx - an OSError (asked again)."""
+        """One try: a new link, the file whole to it; the server's 5xx or 404 - an OSError (asked again)."""
         href = call(self.send, 'GET', 'resources/upload', {'path': path, 'overwrite': 'true'}, self.auth)['href']
         with open(file, 'rb') as f:
             status, data = self.send('PUT', href, {'Content-Type': 'application/octet-stream'}, f)
-        if status >= 500:
+        if status >= 500 or status == 404:
             raise ServerBusy(answer_text(status, data, 'upload ' + path))
         answer(status, data, 'upload ' + path, ok=(200, 201, 202))
 

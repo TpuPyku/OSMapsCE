@@ -100,6 +100,42 @@ class YaDisk(unittest.TestCase):
         finally:
             os.remove(f.name)
 
+    def test_upload_link_not_found(self):
+        """The upload's link answering 404 (the maps workflow 2026-11-06: Kostroma and Kurgan among dozens that went up
+        the same way, each losing its whole build): asked again with a new link; another answer of the link - the file
+        too big - told at once."""
+        def disk(answers):
+            fake = FakeDisk({('PUT', '/v1/disk/resources'): (201, {}),
+                             ('GET', '/v1/disk/resources/upload'): (200, {'href': 'https://up.example/put/1'}),
+                             ('PUT', '/put/1'): (201, b'')})
+            left = list(answers)
+
+            def send(method, url, headers, body=None):
+                if '/put/' in url and left:
+                    return left.pop(0), b''
+                return fake(method, url, headers, body)
+            return fake, send
+        with tempfile.NamedTemporaryFile(delete=False) as f:
+            f.write(b'ZIP')
+        try:
+            fake, send = disk([404])
+            waits = []
+            yadisk.Disk('tok', send, waits.append).upload('app:/maps/a.zip', f.name)
+            self.assertEqual(len([c for c in fake.calls if c[1].endswith('/resources/upload')]), 2)
+            self.assertEqual(fake.calls[-1][4], b'ZIP')
+            self.assertEqual(waits, [30])
+            fake, send = disk([404, 404, 404])
+            with self.assertRaises(yadisk.DiskError) as e:
+                yadisk.Disk('tok', send, waits.append).upload('app:/maps/a.zip', f.name)
+            self.assertIn('404', str(e.exception))
+            fake, send = disk([413])
+            waits = []
+            with self.assertRaises(yadisk.DiskError):
+                yadisk.Disk('tok', send, waits.append).upload('app:/maps/a.zip', f.name)
+            self.assertEqual(waits, [])
+        finally:
+            os.remove(f.name)
+
     def test_publish(self):
         """The folder public: published, its public link read back."""
         fake = FakeDisk({('PUT', '/v1/disk/resources/publish'): (200, {'href': 'x'}),
