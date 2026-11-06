@@ -4,8 +4,6 @@
 
 A navigation app on [OpenStreetMap](https://www.openstreetmap.org) maps for Windows CE devices with an 800×480 screen: map, search and routes, including offline, plus traffic. On the Lada Vesta MMC head unit (before 2021) with the [VestaHome](https://github.com/TpuPyku/VestaHome) shell it also supports color themes and a home screen widget.
 
-**The interface is in Russian for now.** English is planned.
-
 | Day | Night, 3D view | Route: traffic on the route |
 |---|---|---|
 | ![Day map without traffic](docs/day.png) | ![Night map without traffic](docs/night.png) | ![Route with traffic on its line](docs/route.png) |
@@ -14,9 +12,10 @@ A navigation app on [OpenStreetMap](https://www.openstreetmap.org) maps for Wind
 - **Offline:** regions of Russia and the CIS with a map, address search and routes. Routes between regions follow the main roads.
 - **Map:** raster (OSM tiles) or vector (OpenFreeMap) with day and night palettes, a 3D view, bridges, tunnels, house numbers, filling stations and car parks. Places you have viewed are cached.
 - **Routes:** search for addresses and places, turn guidance, rerouting when you leave the route, alternatives with time estimates, avoiding toll roads, a card for complex junctions.
-- **Route editor:** long press on the map, up to three stops, your own starting point. Favorite places show on the map.
-- **Traffic:** updated every 10 minutes. In the map settings, «Пробки: Маршрут» (traffic: route) shows it on the route line only.
+- **Route editor:** long press on the map, up to three stops, your own starting point. Without a GPS signal, a route starts from the last known location, or from the map center if GPS has not worked yet. Favorite places show on the map.
+- **Traffic:** updated every 10 minutes. In the map settings, "Traffic: Route" shows it on the route line only.
 - **GPS:** the car on the map, north-up and heading-up modes.
+- **Interface language:** Russian or English, in Настройки → Язык / Language (Settings → Language). Map labels and region names stay in Russian or the local language. For another language, add a file to the `Lang` folder: a copy of `en.txt` with your translation.
 - **On the Lada Vesta with VestaHome:** the theme color and a map widget on the home screen. During a route the widget shows the road and the maneuver, and other screens show the maneuver in the top bar.
 
 ## Outside Russia and the CIS
@@ -30,7 +29,7 @@ Online mode is not tied to a region: map tiles, search and routing use worldwide
 
 ## Offline maps
 There are two ways to install regions:
-- **On the device:** Settings → КАРТЫ (maps). This needs internet access.
+- **On the device:** Settings → MAPS. This needs internet access.
 - **From a computer:** the `OSMapsCE-Maps` program from the [maps-app](../../releases/tag/maps-app) release writes the chosen regions to a flash drive or memory card.
 
 The data goes into an `OSMapsData` folder in the root of any volume on the device. A region takes about 125 MB on average, and the largest takes about 1.3 GB. A region comes with the overview and main roads pack, which provides the small zoom levels and routes between regions.
@@ -38,7 +37,7 @@ The data goes into an `OSMapsData` folder in the root of any volume on the devic
 Maps are rebuilt every week.
 
 ## GPS
-The app only reads the GPS port and picks NMEA sentences from the stream. The default is `COM4:` at 115200. For another device, use Settings → Поиск GPS (GPS search), which tries COM1…COM9 and the common speeds, or set the port and speed by hand.
+The app only reads the GPS port and picks NMEA sentences from the stream. The default is `COM4:` at 115200. For another device, use Settings → GPS → FIND GPS, which tries COM1…COM9 and the common speeds, or set the port and speed by hand.
 Port errors:
 - The NMEA counter in the settings does not grow: wrong port.
 - Many lines with errors: wrong speed.
@@ -60,7 +59,8 @@ Almost everything can be changed on screen. Edit the file only while the app is 
 | `gps`, `gps_port@<device>`, `gps_baud@<device>` | 1, COM4:, 115200 | GPS on/off, port, speed (0: leave as is); port and speed are kept per device, so one card can serve two devices |
 | `kill` | CityGuideCE.exe | program to close if it holds the GPS port (empty: never) |
 | `hide_taskbar` | 1 | hide the taskbar |
-| `log` | 0 | log; also switched by the Settings → ЖУРНАЛ (log) button |
+| `lang` | empty | interface language: the file `Lang\<lang>.txt`, empty for Russian |
+| `log` | 0 | log; also switched in Settings → Log |
 
 The other keys hold the app's state and counters.
 
@@ -75,8 +75,8 @@ The other keys hold the app's state and counters.
 Search and routing use free servers meant for moderate use, hence `api_limit`. Map data © OpenStreetMap contributors, [ODbL](https://www.openstreetmap.org/copyright).
 
 ## Troubleshooting
-- Turn the log on in Settings → ЖУРНАЛ (log). `OSMapsCE.log` records requests, network errors, GPS and cache (up to 256 KB, the previous part is in `OSMapsCE.old.log`).
-- "Ошибка HTTPS" (HTTPS error) usually means a wrong date on the device and no GPS signal.
+- Turn the log on in Settings → Log. `OSMapsCE.log` records requests, network errors, GPS and cache (up to 256 KB, the previous part is in `OSMapsCE.old.log`).
+- "HTTPS error" usually means a wrong date on the device and no GPS signal.
 - Delete `OSMapsCE.ini` to restore the default settings. The `Cache` folder can be deleted too.
 
 ## Building
@@ -86,7 +86,7 @@ C++, Win32 API, sources in [native_osm](native_osm). Requires Visual Studio 2005
 2. `native_osm\build_bearssl.bat`, once: BearSSL for ARM and x86.
 3. `native_osm\build.bat` builds `OSMapsCE\OSMapsCE.exe` (ARMv4, Windows CE) and `OSMapsCE\OSMapsPC.exe` (for testing on a PC: arrows, `+`/`-` and the mouse wheel for zoom; `T` traffic, `L` source, `G` GPS, `S` settings, `N` night, `F3` search).
 
-Tests: `native_osm\test_offline.bat`, `native_osm\test_vtile.bat`, and `python -m unittest test_maps` in `offline\test`. The map build is in [offline](offline) and the `maps` workflow.
+Tests: `native_osm\test_offline.bat`, `native_osm\test_vtile.bat`, `native_osm\test_ui.bat` (route start and translations), and `python -m unittest test_maps` in `offline\test`. The map build is in [offline](offline) and the `maps` workflow.
 
 Tools: `core\make_ta.py` for root certificates; `native_osm\make_regions.py` for 2GIS cities (needs a key in `native_osm\.env`, not part of the app).
 

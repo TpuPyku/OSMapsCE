@@ -1,4 +1,5 @@
 ﻿#include "yamaps.h"
+#include "lang.h"
 #include "stb_image.h"   // (its zlib: the zips' deflated files; the implementation is image.cpp's)
 
 // The regions' maps downloaded on the unit (the user 2026-10-29: "пусть хотя бы графы будут", from OSMapsCE itself,
@@ -462,7 +463,7 @@ static DWORD WINAPI ListThread(LPVOID)
     strcpy(s_disk, disk);
     s_ovKb = ovKb;
     strcpy(s_trunkDate, trunkDate);
-    _snwprintf(s_text, 128, n ? L"Областей: %d" : L"Каталог не получен (нет связи с GitHub?)", n);
+    _snwprintf(s_text, 128, n ? Tr(L"Областей: %d") : Tr(L"Каталог не получен (нет связи с GitHub?)"), n);
     LeaveCriticalSection(&s_cs);
     Log("maps: catalog %d regions (HTTP %d, error %d)", n, status, err);
     InterlockedExchange((LONG*)&s_busy, 0);
@@ -527,7 +528,7 @@ static void GetExtras(const wchar_t* data)
     ov[MAX_PATH - 1] = 0;
     if (!s_disk[0] || !s_ovKb || !s_trunkDate[0] || s_cancel || (Exists(ov, NULL) && TrunkCurrent()))
         return;
-    Say(L"Обзорная карта и магистрали…", NULL);
+    Say(Tr(L"Обзорная карта и магистрали…"), NULL);
     s_totalKb = s_ovKb;
     if (!DiskHref("overview.zip", url, sizeof(url)) || !MapsInstall(url, data, "overview", MAPS_OVERVIEW))
         return;
@@ -561,7 +562,7 @@ static DWORD WINAPI GetThread(LPVOID p)
     Lock();
     MapsHave(s_reg, s_nReg);
     LeaveCriticalSection(&s_cs);
-    Say(ok ? L"«%s» записана" : s_cancel ? L"«%s»: загрузка остановлена" : L"«%s» не скачана: нет связи или нет места",
+    Say(ok ? Tr(L"«%s» записана") : s_cancel ? Tr(L"«%s»: загрузка остановлена") : Tr(L"«%s» не скачана: нет связи или нет места"),
         r.title);
     Log("maps: %s %s", r.name, ok ? "downloaded" : s_cancel ? "cancelled" : "failed");
     InterlockedExchange((LONG*)&s_busyRegion, -1);
@@ -585,7 +586,7 @@ static bool Start(LPTHREAD_START_ROUTINE fn, LPVOID arg)
 
 bool MapsList()   // the catalog, on its thread; false - busy
 {
-    Say(L"Каталог областей…", NULL);
+    Say(Tr(L"Каталог областей…"), NULL);
     return Start(ListThread, NULL);
 }
 

@@ -1,4 +1,5 @@
 ﻿#include "yamaps.h"
+#include "lang.h"
 
 // Search and route over OSM data on public servers (2026-10-26): Photon (komoot, HTTPS) finds places by text,
 // OSRM of FOSSGIS (routing.openstreetmap.de, plain HTTP) lays the car route. The user's choice was Valhalla, but
@@ -206,7 +207,7 @@ static void Ask(double fromLon, double fromLat, double course)
 {
     if (!Budget()) {
         s_state = s_np ? s_state : ROUTE_FAIL;
-        wcscpy(s_stateText, L"Лимит запросов на сегодня");
+        wcscpy(s_stateText, Tr(L"Лимит запросов на сегодня"));
         s_sig++;
         return;
     }
@@ -271,7 +272,7 @@ void RouteTo(const SearchHit* to, double fromLon, double fromLat, double course)
     s_plan.from.kind = course == -2 ? PL_PLACE : PL_GPS;
     s_plan.from.lon = fromLon;
     s_plan.from.lat = fromLat;
-    wcscpy(s_plan.from.name, L"Центр карты");
+    wcscpy(s_plan.from.name, Tr(L"Центр карты"));
     RouteStart(fromLon, fromLat, course < 0 ? -1 : course, true);
 }
 
@@ -425,19 +426,19 @@ static int Turn(const char* m, const char* type, const char* mod, bool stop)
 
 static const wchar_t* Side(const char* mod)   // "направо" / "налево" ... by OSRM's modifier
 {
-    if (!strcmp(mod, "right"))        return L"направо";
-    if (!strcmp(mod, "left"))         return L"налево";
-    if (!strcmp(mod, "slight right")) return L"плавно направо";
-    if (!strcmp(mod, "slight left"))  return L"плавно налево";
-    if (!strcmp(mod, "sharp right"))  return L"резко направо";
-    if (!strcmp(mod, "sharp left"))   return L"резко налево";
-    if (!strcmp(mod, "uturn"))        return L"на разворот";
-    return L"прямо";
+    if (!strcmp(mod, "right"))        return Tr(L"направо");
+    if (!strcmp(mod, "left"))         return Tr(L"налево");
+    if (!strcmp(mod, "slight right")) return Tr(L"плавно направо");
+    if (!strcmp(mod, "slight left"))  return Tr(L"плавно налево");
+    if (!strcmp(mod, "sharp right"))  return Tr(L"резко направо");
+    if (!strcmp(mod, "sharp left"))   return Tr(L"резко налево");
+    if (!strcmp(mod, "uturn"))        return Tr(L"на разворот");
+    return Tr(L"прямо");
 }
 
 static const wchar_t* Keep(const char* mod)   // "правее" / "левее" for forks and lanes
 {
-    return strstr(mod, "right") ? L"правее" : strstr(mod, "left") ? L"левее" : L"прямо";
+    return strstr(mod, "right") ? Tr(L"правее") : strstr(mod, "left") ? Tr(L"левее") : Tr(L"прямо");
 }
 
 // The instruction of a step, as a driver says it: what to do, then onto which road.
@@ -454,33 +455,33 @@ static void Instruction(const char* step, const char* m, const char* type, const
     road[119] = 0;
     wchar_t act[64];
     if (!strcmp(type, "depart"))
-        wcscpy(act, L"Начало маршрута");
+        wcscpy(act, Tr(L"Начало маршрута"));
     else if (!strcmp(type, "arrive"))
-        wcscpy(act, stop ? L"Промежуточная точка" : L"Вы у цели");
+        wcscpy(act, stop ? Tr(L"Промежуточная точка") : Tr(L"Вы у цели"));
     else if (!strcmp(type, "roundabout") || !strcmp(type, "rotary")) {
         int exit = (int)JNum(JKey(m, "exit"), 0);
         if (exit > 0)
-            _snwprintf(act, 64, L"На кольце %d-й съезд", exit);
+            _snwprintf(act, 64, Tr(L"На кольце %d-й съезд"), exit);
         else
-            wcscpy(act, L"Въезд на кольцо");
+            wcscpy(act, Tr(L"Въезд на кольцо"));
     } else if (!strcmp(type, "exit roundabout") || !strcmp(type, "exit rotary"))
-        wcscpy(act, L"Съезд с кольца");
+        wcscpy(act, Tr(L"Съезд с кольца"));
     else if (!strcmp(type, "fork") || !strcmp(type, "use lane"))
-        _snwprintf(act, 64, L"Держитесь %s", Keep(mod));
+        _snwprintf(act, 64, Tr(L"Держитесь %s"), Keep(mod));
     else if (!strcmp(type, "merge"))
-        _snwprintf(act, 64, L"Перестройтесь %s", Keep(mod));
+        _snwprintf(act, 64, Tr(L"Перестройтесь %s"), Keep(mod));
     else if (!strcmp(type, "on ramp"))
-        _snwprintf(act, 64, L"Въезд %s", Side(mod));
+        _snwprintf(act, 64, Tr(L"Въезд %s"), Side(mod));
     else if (!strcmp(type, "off ramp"))
-        _snwprintf(act, 64, L"Съезд %s", Side(mod));
+        _snwprintf(act, 64, Tr(L"Съезд %s"), Side(mod));
     else if (!strcmp(type, "end of road"))
-        _snwprintf(act, 64, L"В конце дороги %s", Side(mod));
+        _snwprintf(act, 64, Tr(L"В конце дороги %s"), Side(mod));
     else if (!strcmp(mod, "uturn"))
-        wcscpy(act, L"Развернитесь");
+        wcscpy(act, Tr(L"Развернитесь"));
     else if (!strcmp(mod, "straight") || !mod[0] || !strcmp(type, "new name"))
-        wcscpy(act, !strcmp(type, "new name") ? L"Продолжайте" : L"Прямо");
+        wcscpy(act, !strcmp(type, "new name") ? Tr(L"Продолжайте") : Tr(L"Прямо"));
     else
-        _snwprintf(act, 64, L"Поверните %s", Side(mod));
+        _snwprintf(act, 64, Tr(L"Поверните %s"), Side(mod));
     act[63] = 0;
     if (road[0] && strcmp(type, "arrive"))
         _snwprintf(out, cap, L"%s: %s", act, road);
@@ -531,7 +532,7 @@ static void OnRoute(const char* body, int k)
         Log("route: no route: %s", code);
         if (!s_np)
             s_state = ROUTE_FAIL;
-        wcscpy(s_stateText, L"Маршрут не найден");
+        wcscpy(s_stateText, Tr(L"Маршрут не найден"));
         return;
     }
     const char* legs = JKey(route, "legs");
@@ -648,8 +649,8 @@ bool OnApiResult(ApiResult* r)
             if (!s_np)
                 s_state = ROUTE_FAIL;
             // (the user 2026-10-29: Moscow - Samara, both regions on the card, no trunk roads: "no connection")
-            _snwprintf(s_stateText, 64, r->err == NET_OK ? L"Ошибка сервера %d" : OfflineHasTrunk() ?
-                       L"Нет связи с сервером" : L"Нет сети, а между областями нужны магистрали (КАРТЫ)",
+            _snwprintf(s_stateText, 64, r->err == NET_OK ? Tr(L"Ошибка сервера %d") : OfflineHasTrunk() ?
+                       Tr(L"Нет связи с сервером") : Tr(L"Нет сети, а между областями нужны магистрали (КАРТЫ)"),
                        r->httpStatus);
             s_stateText[63] = 0;
         }
@@ -751,11 +752,11 @@ void RouteGet(RouteInfo* o)
     o->state = s_state;
     o->text = s_stateText;
     if (s_state == ROUTE_BUSY && !s_stateText[0])
-        o->text = L"Расчёт маршрута…";
+        o->text = Tr(L"Расчёт маршрута…");
     else if (s_state == ROUTE_ARRIVED)
-        o->text = L"Вы приехали";
+        o->text = Tr(L"Вы приехали");
     else if (s_state == ROUTE_FAIL && !s_stateText[0])
-        o->text = L"Маршрут не построен";
+        o->text = Tr(L"Маршрут не построен");
     if (s_state != ROUTE_ON || !s_np)
         return;
     o->off = s_off;
@@ -777,7 +778,7 @@ void RouteGet(RouteInfo* o)
             break;
         }
     if (s_off)
-        o->text = L"Вне маршрута, перестраиваю…";
+        o->text = Tr(L"Вне маршрута, перестраиваю…");
 }
 
 int RoutePoints(const double** lonLat)

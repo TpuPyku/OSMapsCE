@@ -1,0 +1,253 @@
+#name English
+# OSMapsCE's interface. A line: the Russian text, a tab, the translation. A new language: a copy of this file
+# as <code>.txt with its own #name. %d, %s and the like must stay, in the same order, or the line is not used.
+Вс	Sun
+Пн	Mon
+Вт	Tue
+Ср	Wed
+Чт	Thu
+Пт	Fri
+Сб	Sat
+Яндекс	Yandex
+2ГИС	2GIS
+ЯНДЕКС	YANDEX
+© OpenStreetMap contributors, пробки © Яндекс	© OpenStreetMap contributors, traffic © Yandex
+© OpenStreetMap contributors, пробки © 2ГИС	© OpenStreetMap contributors, traffic © 2GIS
+OpenFreeMap © OpenMapTiles © OSM, пробки © Яндекс	OpenFreeMap © OpenMapTiles © OSM, traffic © Yandex
+OpenFreeMap © OpenMapTiles © OSM, пробки © 2ГИС	OpenFreeMap © OpenMapTiles © OSM, traffic © 2GIS
+%d ч %02d мин	%d h %02d min
+%d мин	%d min
+%d ч %02d	%d h %02d
+Моё местоположение	My location
+Последнее местоположение	Last known location
+Центр карты	Map center
+А	A
+Б	B
+пробки выключены	traffic is off
+пробок на пути не видно	no traffic seen on the way
+с пробками ~%s	with traffic ~%s
+с пробками %d–%d мин	with traffic %d–%d min
+с пробками %s – %s	with traffic %s – %s
+пробка %s · видно %d%% пути	jam %s · %d%% of the way seen
+пробка %s	jam %s
+без сильных пробок · видно %d%% пути	no heavy traffic · %d%% of the way seen
+без сильных пробок	no heavy traffic
+ПОЕХАЛИ	START
+Загрузка карты...	Loading the map...
+Нет карты этой области	No map for this area
+Авто	Auto
+Полная	Full
+Средняя	Medium
+Быстрая	Fast
+полная	full
+средняя	medium
+быстрая	fast
+как есть	as is
+выключен (gps=0)	off (gps=0)
+COM%d · %s · %d спутн.%s	COM%d · %s · %d sat.%s
+ · фикс	 · fix
+COM%d занят другой программой	COM%d is used by another program
+поиск: %s %lu…	searching: %s %lu…
+COM%d не открывается	COM%d does not open
+Настройки карты	Map settings
+растровая, тайлы OSM	raster, OSM tiles
+векторная · детализация: %s	vector · detail: %s
+векторная · детализация: авто (%s)	vector · detail: auto (%s)
+Карта	Map
+КАРТЫ	MAPS
+схема развязки: %s · платные: %s	junction diagram: %s · toll roads: %s
+вкл	on
+выкл	off
+объезжать	avoid
+можно	allow
+Маршрут	Route
+НАСТРОИТЬ	SET UP
+занято %ld МБ	%ld MB used
+занято ?	? used
+Кэш карт	Map cache
+%d ГБ	%d GB
+%d МБ	%d MB
+некуда писать: нет карты памяти	nowhere to write: no memory card
+OSMapsCE.log: выключен	OSMapsCE.log: off
+Журнал	Log
+Вкл	On
+Выкл	Off
+О программе	About
+ЗАПРОСЫ	REQUESTS
+Порт	Port
+Скорость порта	Port speed
+или как у оболочки	or as the shell has it
+не менять	keep
+NMEA %d (ошибок %d) · %.5f, %.5f	NMEA %d (errors %d) · %.5f, %.5f
+NMEA %d (ошибок %d) · координат пока нет	NMEA %d (errors %d) · no position yet
+Найден GPS: %s %lu, настройки сохранены	GPS found: %s %lu, settings saved
+GPS не найден на COM1…COM9	No GPS found on COM1…COM9
+Нет строк — не тот порт. Строки с ошибкой — не та скорость.	No lines: wrong port. Lines with errors: wrong speed.
+НАЙТИ GPS	FIND GPS
+ГОТОВО	DONE
+Схема развязки	Junction diagram
+перед съездом, развилкой, кольцом	before an exit, a fork, a roundabout
+Платные дороги	Toll roads
+объезд — по картам на флешке	avoiding needs the maps on the card
+Объезжать	Avoid
+Можно	Allow
+Без карт области и магистралей маршрут строит сервер — он платные не исключает.	Without the region and main road maps the server builds the route, and it does not avoid toll roads.
+Завершить OSMapsCE?	Close OSMapsCE?
+Карта и маршрут закроются, GPS освободится для других программ.	The map and the route will close, and GPS will be free for other programs.
+ОТМЕНА	CANCEL
+ЗАВЕРШИТЬ	CLOSE
+Запросы за день	Requests today
+Пробки Яндекса: %d из %d	Yandex traffic: %d of %d
+Пробки 2ГИС: %d из %d	2GIS traffic: %d of %d
+Плитки OSM: %d	OSM tiles: %d
+Поиск и маршрут: %d из %d	Search and routes: %d of %d
+не найдена	not found
+есть новее	update available
+последняя версия	up to date
+ЗАГРУЗИТЬ	DOWNLOAD
+ОБНОВИТЬ	UPDATE
+ОК	OK
+%d,%d МБ · %s	%d.%d MB · %s
+ТОЧНО?	SURE?
+%s %d,%d из %d,%d МБ	%s %d.%d of %d.%d MB
+Вид	Type
+векторная, OpenFreeMap	vector, OpenFreeMap
+Вектор	Vector
+Растр	Raster
+меньше деталей — быстрее рисуется	less detail draws faster
+по скорости устройства: сейчас %s	by the device's speed: now %s
+Детализация	Detail
+Пробки	Traffic
+только на проложенном маршруте	only on the current route
+на карте и на маршруте	on the map and the route
+Везде	Everywhere
+Карты областей	Region maps
+маршрут и поиск без интернета	routes and search without internet
+СКАЧАТЬ	DOWNLOAD MAPS
+%d м	%d m
+%d,%d км	%d.%d km
+%d км	%d km
+затем — %s	then: %s
+прибытие	arrival
+в пути	on the way
+с пробками %d–%d	with traffic %d–%d
+осталось	left
+км/ч	km/h
+Избранное	Favorites
+Короткое имя: Дом, Работа…	Short name: Home, Work…
+Адрес или место	Address or place
+Избранного нет	No favorites
+Поиск…	Searching…
+Нет связи с сервером поиска	Cannot reach the search server
+Ничего не найдено	Nothing found
+долгое нажатие на карте → «В избранное»	long press on the map → “Add to favorites”
+Удалить «%s»?	Delete “%s”?
+ещё раз ✕ — удалить	press ✕ again to delete
+Избранного нет: долгое нажатие на карте → В ИЗБРАННОЕ	No favorites: long press on the map → Add to favorites
+ПРОБЕЛ	SPACE
+СТЕРЕТЬ	DELETE
+НАЙТИ	FIND
+СОХРАНИТЬ	SAVE
+ИЗБРАННОЕ	FAVORITES
+Точка на карте (%.5f, %.5f)	Point on the map (%.5f, %.5f)
+Выберите, куда ехать	Choose where to go
+Куда	To
+Откуда	From
+Заехать %d	Stop %d
+Заехать	Stop
+не выбрано	not chosen
+Найти адрес	Find an address
+Точка на карте	Point on the map
+Отмена	Cancel
++ Заехать	+ Add a stop
+Избранное · %s от вас	Favorites · %s from you
+Маршрут сюда	Route here
+Изменить	Edit
+Имя	Name
+Точно?	Sure?
+Удалить	Delete
+Готово	Done
+%s%s от вас	%s%s from you
+Куда едем?	Where to?
+Заехать сюда	Stop here
+уже три «Заехать»	three stops already
+В избранное	Add to favorites
+«Откуда»	“From”
+«Заехать 1»	“Stop 1”
+«Заехать 2»	“Stop 2”
+«Заехать 3»	“Stop 3”
+«Куда»	“To”
+Нажмите на карту: точка для %s	Tap the map: a point for %s
+«Заехать %d»	“Stop %d”
+УБРАТЬ ТОЧКУ	REMOVE
+РАНЬШЕ	EARLIER
+GPS выкл.	GPS off
+GPS: поиск порта	GPS: looking for the port
+GPS: порт %s занят	GPS: port %s is busy
+GPS: нет порта %s	GPS: no port %s
+GPS: нет данных	GPS: no data
+GPS: поиск · %d	GPS: searching · %d
+Лимит запросов!	Request limit!
+Ошибка HTTP %d	HTTP error %d
+Ошибка: %s	Error: %s
+Загрузка…	Loading…
+Пробки выкл.	Traffic off
+Пробки · на маршруте	Traffic · on the route
+Пробки · %s · нет данных	Traffic · %s · no data
+Пробки · %s · %d мин	Traffic · %s · %d min
+ДОМОЙ	HOME
+ПРОБКИ	TRAFFIC
+ДЕНЬ	DAY
+НОЧЬ	NIGHT
+НАСТРОЙКИ	SETTINGS
+ПОИСК	SEARCH
+СБРОС	RESET
+Карта OSM	OSM map
+нет сети (DNS)	no network (DNS)
+нет соединения	no connection
+таймаут	timeout
+ошибка сервера	server error
+битая картинка	broken image
+мало памяти	low memory
+ошибка HTTPS	HTTPS error
+Областей: %d	Regions: %d
+Каталог не получен (нет связи с GitHub?)	Could not get the catalog (no connection to GitHub?)
+Обзорная карта и магистрали…	Overview map and main roads…
+«%s» записана	“%s” saved
+«%s»: загрузка остановлена	“%s”: download stopped
+«%s» не скачана: нет связи или нет места	“%s” not downloaded: no connection or no space
+Каталог областей…	Region catalog…
+Лимит запросов на сегодня	Request limit for today
+направо	right
+налево	left
+плавно направо	slightly right
+плавно налево	slightly left
+резко направо	sharply right
+резко налево	sharply left
+на разворот	around
+прямо	straight
+правее	right
+левее	left
+Начало маршрута	Start of the route
+Промежуточная точка	Stop on the way
+Вы у цели	You are at the destination
+На кольце %d-й съезд	At the roundabout, exit %d
+Въезд на кольцо	Enter the roundabout
+Съезд с кольца	Leave the roundabout
+Держитесь %s	Keep %s
+Перестройтесь %s	Merge %s
+Въезд %s	Enter %s
+Съезд %s	Exit %s
+В конце дороги %s	At the end of the road, %s
+Развернитесь	Turn around
+Продолжайте	Continue
+Прямо	Straight on
+Поверните %s	Turn %s
+Маршрут не найден	Route not found
+Ошибка сервера %d	Server error %d
+Нет связи с сервером	Cannot reach the server
+Нет сети, а между областями нужны магистрали (КАРТЫ)	No network, and routes between regions need the main roads (MAPS)
+Расчёт маршрута…	Calculating the route…
+Вы приехали	You have arrived
+Маршрут не построен	No route built
+Вне маршрута, перестраиваю…	Off the route, recalculating…

@@ -14,7 +14,7 @@ set BAD=0
 if "%1"=="vtile" goto vtile
 
 :offline
-set CPP=fling.cpp zoomanim.cpp trafshade.cpp offline.cpp offsearch.cpp offdata.cpp vpack.cpp offmaps.cpp
+set CPP=fling.cpp zoomanim.cpp trafshade.cpp offline.cpp offsearch.cpp offdata.cpp vpack.cpp offmaps.cpp lang.cpp
 set PY=..\offline\make_graph.py ..\offline\make_search.py ..\offline\make_region.py ..\offline\make_tiles.py ..\offline\pmextract.py ^
   ..\offline\release_regions.py ..\offline\maps_app.py ..\offline\make_outlines.py
 set COVER=1

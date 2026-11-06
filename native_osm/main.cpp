@@ -6,6 +6,8 @@
 #include "vfavs.h"     // VestaCore: the favourite places (VestaHome reads them too)
 #include "vversion.h"   // VestaCore: the version "major.minor.YYMMDD" (the date: this file's build)
 #include "vhap.h"      // VestaCore: VestaHome's add-ons' protocol
+#include "lang.h"      // the interface's languages
+#include "startpt.h"   // where a route starts
 #include "vnav.h"      // VestaCore: the next manoeuvre as VestaHome is told it, its sign
 #include "vfont.h"     // VestaCore: the fonts
 static const wchar_t* const kRelease = L"2.0";   // raise by hand: minor - significant changes, major - big releases
@@ -265,7 +267,7 @@ static const int   kSetCacheCount = sizeof(kSetCacheMb) / sizeof(kSetCacheMb[0])
 // (VestaHome's windows: full width, the main action right, in the accent), a tap beside it closes it.
 // Rows at kSetRow0 + i * kSetRowH (the maps' screen has the same rows).
 enum { S_MAPS, S_ROUTE, S_CACHE_PREV, S_CACHE_NEXT, S_LOG_PREV, S_LOG_NEXT, S_GPS,
-       S_INFO, S_EXIT, S_BACK, S_PAGE_END,
+       S_INFO, S_LANG_PREV, S_LANG_NEXT, S_EXIT, S_BACK, S_PAGE_END,
        S_PORT_PREV = S_PAGE_END, S_PORT_NEXT, S_BAUD_PREV, S_BAUD_NEXT, S_SCAN, S_GPS_DONE, S_GPS_END,
        S_INFO_DONE = S_GPS_END, S_INFO_END,
        S_JUNC_PREV = S_INFO_END, S_JUNC_NEXT, S_TOLL_PREV, S_TOLL_NEXT, S_ROUTE_DONE, S_ROUTE_END,
@@ -279,6 +281,7 @@ static const RECT kSetCtl[S_COUNT] = {
     { 512, 229, 560, 273 }, { 712, 229, 760, 273 },
     { 576, 279, 760, 323 },                            // GPS: its sheet
     { 576, 329, 760, 373 },                            // the requests: their sheet
+    { 444, 416, 492, 468 }, { 644, 416, 692, 468 },   // the language: below the panel
     { 716, 416, 784, 468 },                            // exit the program (its sign; asked in a sheet)
     { 8, 412, 80, 480 },                               // back: VestaHome's, at the bottom left
     { 512, 259, 560, 303 }, { 712, 259, 760, 303 },   // the GPS sheet: the port, the speed
@@ -340,6 +343,10 @@ static void GpsTake()
 {
     GpsGet(&s_fix);
     s_gps = s_fix;
+    if (s_gps.valid) {   // (saved with the view, each 5 minutes: StartFrom)
+        g_cfg.lastLon = s_gps.lon;
+        g_cfg.lastLat = s_gps.lat;
+    }
 }
 
 // The car between the fixes (the user 2026-10-31: the map jerked, a frame a second; 2026-11-02: the prediction slowed
@@ -390,6 +397,18 @@ static bool GlideApply()
     s_gps.lat = s_showLat;
     s_gps.course = s_showCourse;
     return true;
+}
+
+// Where "my location" is now for a route (startpt.h), and what to call it
+static StartPoint StartNow()
+{
+    return StartFrom(s_gps.valid != 0, s_gps.lon, s_gps.lat, g_cfg.lastLon, g_cfg.lastLat, g_cfg.lon, g_cfg.lat);
+}
+
+static const wchar_t* MyPlaceName()
+{
+    int source = StartNow().source;
+    return source == START_CAR ? L"Моё местоположение" : source == START_LAST ? L"Последнее местоположение" : L"Центр карты";
 }
 
 static void FollowGps()
@@ -977,6 +996,13 @@ static void OnSettingsCtl(int id)
     case S_ROUTE:      s_setSheet = SHEET_ROUTE; break;
     case S_LOG_PREV:
     case S_LOG_NEXT:   g_cfg.log = !g_cfg.log; LogEnable(g_cfg.log != 0); ConfigSave(); break;
+    case S_LANG_PREV:
+    case S_LANG_NEXT:
+        LangStep(id == S_LANG_NEXT ? 1 : -1);
+        strncpy(g_cfg.lang, LangCode(), sizeof(g_cfg.lang) - 1);
+        g_cfg.lang[sizeof(g_cfg.lang) - 1] = 0;
+        ConfigSave();
+        break;
     case S_GPS:        s_setSheet = SHEET_GPS; break;
     case S_INFO:       s_setSheet = SHEET_INFO; break;
     case S_GPS_DONE:
@@ -1533,6 +1559,7 @@ static void Blit(HDC dc, const Image* im, int x, int y)
 
 static void Text(HDC dc, HFONT font, COLORREF color, int l, int t, int r, int b, UINT align, const wchar_t* s)
 {
+    s = Tr(s);
     RECT rc = { l, t, r, b };
     SelectObject(dc, font);
     SetTextColor(dc, color);
@@ -2193,7 +2220,7 @@ static void DrawAttribution(HDC dc, RECT mr)
           L"OpenFreeMap © OpenMapTiles © OSM, пробки © 2ГИС" } };
     wchar_t s[96];   // the view's zoom first (the user 2026-10-29: as small, in this line)
     _snwprintf(s, 96, L"z%d · %s", g_cfg.z,
-               kCredit[g_cfg.vector ? 1 : 0][!g_cfg.traffic ? 0 : g_cfg.trafficSrc == TRF_2GIS ? 2 : 1]);
+               Tr(kCredit[g_cfg.vector ? 1 : 0][!g_cfg.traffic ? 0 : g_cfg.trafficSrc == TRF_2GIS ? 2 : 1]));
     s[95] = 0;
     SelectObject(dc, s_fontTiny);
     RECT rc = { 0, 0, 0, 0 };
@@ -2410,16 +2437,16 @@ static void FmtMin(wchar_t* s, int cap, int sec)
 {
     int m = (sec + 59) / 60;
     if (m >= 60)
-        _snwprintf(s, cap, L"%d ч %02d мин", m / 60, m % 60);
+        _snwprintf(s, cap, Tr(L"%d ч %02d мин"), m / 60, m % 60);
     else
-        _snwprintf(s, cap, L"%d мин", m);
+        _snwprintf(s, cap, Tr(L"%d мин"), m);
     s[cap - 1] = 0;
 }
 
 static void DrawEnds(HDC dc)   // the panel's top: from (А) and to (Б)
 {
     const RoutePlan* p = RoutePlanGet();
-    const wchar_t* from = p->from.kind == PL_GPS ? L"Моё местоположение" : p->from.name;
+    const wchar_t* from = p->from.kind == PL_GPS ? MyPlaceName() : p->from.name;
     RouteMarker(dc, 42, 86, RGB(40, 150, 70), L"А");
     RouteMarker(dc, 42, 128, RGB(30, 50, 110), L"Б");
     Text(dc, s_fontLabel, kText, 66, 70, 324, 102, DT_LEFT, from);
@@ -2481,11 +2508,11 @@ static COLORREF AltRange(const AltEst& e, double timeS, wchar_t* line)   // the 
     FmtMin(a, 24, e.minS);
     FmtMin(b, 24, e.maxS);
     if (e.maxS - e.minS < 120)
-        _snwprintf(line, 96, L"с пробками ~%s", a);
+        _snwprintf(line, 96, Tr(L"с пробками ~%s"), a);
     else if (e.maxS < 3600)
-        _snwprintf(line, 96, L"с пробками %d–%d мин", (e.minS + 59) / 60, (e.maxS + 59) / 60);
+        _snwprintf(line, 96, Tr(L"с пробками %d–%d мин"), (e.minS + 59) / 60, (e.maxS + 59) / 60);
     else
-        _snwprintf(line, 96, L"с пробками %s – %s", a, b);
+        _snwprintf(line, 96, Tr(L"с пробками %s – %s"), a, b);
     line[95] = 0;
     return e.jamM > 300 ? kTextErr : e.maxS > timeS * 1.3 ? kOrange : RGB(120, 220, 120);
 }
@@ -2497,9 +2524,9 @@ static bool AltJam(const AltEst& e, wchar_t* line)   // the worst jam on it (non
     wchar_t d[24];
     FmtDist(d, 24, e.jamM);
     if (e.jamM > 300)
-        _snwprintf(line, 96, e.seenPct < 90 ? L"пробка %s · видно %d%% пути" : L"пробка %s", d, e.seenPct);
+        _snwprintf(line, 96, e.seenPct < 90 ? Tr(L"пробка %s · видно %d%% пути") : Tr(L"пробка %s"), d, e.seenPct);
     else
-        _snwprintf(line, 96, e.seenPct < 90 ? L"без сильных пробок · видно %d%% пути" : L"без сильных пробок",
+        _snwprintf(line, 96, e.seenPct < 90 ? Tr(L"без сильных пробок · видно %d%% пути") : Tr(L"без сильных пробок"),
                    e.seenPct);
     line[95] = 0;
     return true;
@@ -3156,17 +3183,17 @@ static void GpsLine(wchar_t* s, int cap)
     if (kSetBauds[s_setBaud])
         _snwprintf(baud, 16, L"%lu", kSetBauds[s_setBaud]);
     else
-        wcscpy(baud, L"как есть");
+        wcscpy(baud, Tr(L"как есть"));
     if (!s_gpsRunning)
-        _snwprintf(s, cap, L"выключен (gps=0)");
+        _snwprintf(s, cap, Tr(L"выключен (gps=0)"));
     else if (s_gps.status == GPS_OPEN)
-        _snwprintf(s, cap, L"COM%d · %s · %d спутн.%s", s_setPort, baud, s_gps.sats, s_gps.valid ? L" · фикс" : L"");
+        _snwprintf(s, cap, Tr(L"COM%d · %s · %d спутн.%s"), s_setPort, baud, s_gps.sats, s_gps.valid ? Tr(L" · фикс") : L"");
     else if (s_gps.status == GPS_BUSY)
-        _snwprintf(s, cap, L"COM%d занят другой программой", s_setPort);
+        _snwprintf(s, cap, Tr(L"COM%d занят другой программой"), s_setPort);
     else if (s_gps.status == GPS_SCANNING)
-        _snwprintf(s, cap, L"поиск: %s %lu…", s_gps.port, s_gps.baud);
+        _snwprintf(s, cap, Tr(L"поиск: %s %lu…"), s_gps.port, s_gps.baud);
     else
-        _snwprintf(s, cap, L"COM%d не открывается", s_setPort);
+        _snwprintf(s, cap, Tr(L"COM%d не открывается"), s_setPort);
     s[cap - 1] = 0;
 }
 
@@ -3191,22 +3218,22 @@ static void DrawSettings(HDC dc)
     if (!g_cfg.vector)
         wcscpy(s, L"растровая, тайлы OSM");
     else if (g_cfg.detail)
-        _snwprintf(s, 160, L"векторная · детализация: %s", kDetailLow[g_cfg.detail - 1]);
+        _snwprintf(s, 160, Tr(L"векторная · детализация: %s"), Tr(kDetailLow[g_cfg.detail - 1]));
     else
-        _snwprintf(s, 160, L"векторная · детализация: авто (%s)", kDetailLow[VTileDetail()]);
+        _snwprintf(s, 160, Tr(L"векторная · детализация: авто (%s)"), Tr(kDetailLow[VTileDetail()]));
     SetRow(dc, kSetRow0, L"Карта", s, true);
     DrawCtl(dc, kSetCtl[S_MAPS], s_setPressed == S_MAPS, s_fontLabel, L"КАРТЫ");
-    _snwprintf(s, 160, L"схема развязки: %s · платные: %s", g_cfg.junction ? L"вкл" : L"выкл",
-               g_cfg.noToll ? L"объезжать" : L"можно");
+    _snwprintf(s, 160, Tr(L"схема развязки: %s · платные: %s"), g_cfg.junction ? Tr(L"вкл") : Tr(L"выкл"),
+               g_cfg.noToll ? Tr(L"объезжать") : Tr(L"можно"));
     SetRow(dc, kSetRow0 + kSetRowH, L"Маршрут", s, true);
     DrawCtl(dc, kSetCtl[S_ROUTE], s_setPressed == S_ROUTE, s_fontLabel, L"НАСТРОИТЬ");
     if (g_cfg.cacheKb >= 0)
-        _snwprintf(s, 160, L"занято %ld МБ", g_cfg.cacheKb / 1024);
+        _snwprintf(s, 160, Tr(L"занято %ld МБ"), g_cfg.cacheKb / 1024);
     else
         wcscpy(s, L"занято ?");
     SetRow(dc, kSetRow0 + 2 * kSetRowH, L"Кэш карт", s, true);
     int mb = kSetCacheMb[s_setCache];
-    _snwprintf(s, 160, mb >= 1000 ? L"%d ГБ" : L"%d МБ", mb >= 1000 ? mb / 1000 : mb);
+    _snwprintf(s, 160, mb >= 1000 ? Tr(L"%d ГБ") : Tr(L"%d МБ"), mb >= 1000 ? mb / 1000 : mb);
     Stepper(dc, S_CACHE_PREV, S_CACHE_NEXT, s);
     // where it is written (the user 2026-10-29: "pressed, no log" - which card, which folder)
     wchar_t path[MAX_PATH];
@@ -3222,6 +3249,8 @@ static void DrawSettings(HDC dc)
     _snwprintf(s, 160, L"OSMapsCE %s", AppVersion(kRelease));   // VestaCore vversion.h
     SetRow(dc, kSetRow0 + 5 * kSetRowH, L"О программе", s, false);
     DrawCtl(dc, kSetCtl[S_INFO], s_setPressed == S_INFO, s_fontLabel, L"ЗАПРОСЫ");
+    Text(dc, s_fontLabel, kText, 100, 416, 436, 468, DT_LEFT, L"Язык / Language");   // (in both: found by who needs it)
+    Stepper(dc, S_LANG_PREV, S_LANG_NEXT, LangName());
     DrawCtl(dc, kSetCtl[S_EXIT], s_setPressed == S_EXIT, s_fontLabel, L"");
     PowerSign(dc, kSetCtl[S_EXIT], s_setPressed == S_EXIT ? kInk : kText);
     if (s_setSheet == SHEET_GPS)
@@ -3258,14 +3287,14 @@ static void DrawGpsSheet(HDC dc)
         wcscpy(s, L"не менять");
     Stepper(dc, S_BAUD_PREV, S_BAUD_NEXT, s);
     if (s_gps.valid)
-        _snwprintf(s, 160, L"NMEA %d (ошибок %d) · %.5f, %.5f", s_gps.lines, s_gps.badLines, s_gps.lat, s_gps.lon);
+        _snwprintf(s, 160, Tr(L"NMEA %d (ошибок %d) · %.5f, %.5f"), s_gps.lines, s_gps.badLines, s_gps.lat, s_gps.lon);
     else
-        _snwprintf(s, 160, L"NMEA %d (ошибок %d) · координат пока нет", s_gps.lines, s_gps.badLines);
+        _snwprintf(s, 160, Tr(L"NMEA %d (ошибок %d) · координат пока нет"), s_gps.lines, s_gps.badLines);
     s[159] = 0;
     Text(dc, s_fontSmall, s_gps.valid ? kText : kTextDim, 36, 358, s_cw - 36, 380, DT_LEFT, s);
     COLORREF c = kTextDim;
     if (s_gps.found == 1) {
-        _snwprintf(s, 160, L"Найден GPS: %s %lu, настройки сохранены", s_gps.port, s_gps.baud);
+        _snwprintf(s, 160, Tr(L"Найден GPS: %s %lu, настройки сохранены"), s_gps.port, s_gps.baud);
         c = RGB(120, 220, 120);
     } else if (s_gps.found == -1) {
         wcscpy(s, L"GPS не найден на COM1…COM9");
@@ -3321,10 +3350,10 @@ static void DrawInfoSheet(HDC dc)
 {
     Sheet(dc, L"Запросы за день");
     wchar_t s[4][96];
-    _snwprintf(s[0], 96, L"Пробки Яндекса: %d из %d", *Counter(SRC_YANDEX), Limit(SRC_YANDEX));
-    _snwprintf(s[1], 96, L"Пробки 2ГИС: %d из %d", *Counter(SRC_2GIS), Limit(SRC_2GIS));
-    _snwprintf(s[2], 96, L"Плитки OSM: %d", g_cfg.osmCount);
-    _snwprintf(s[3], 96, L"Поиск и маршрут: %d из %d", g_cfg.apiCount, g_cfg.apiLimit);
+    _snwprintf(s[0], 96, Tr(L"Пробки Яндекса: %d из %d"), *Counter(SRC_YANDEX), Limit(SRC_YANDEX));
+    _snwprintf(s[1], 96, Tr(L"Пробки 2ГИС: %d из %d"), *Counter(SRC_2GIS), Limit(SRC_2GIS));
+    _snwprintf(s[2], 96, Tr(L"Плитки OSM: %d"), g_cfg.osmCount);
+    _snwprintf(s[3], 96, Tr(L"Поиск и маршрут: %d из %d"), g_cfg.apiCount, g_cfg.apiLimit);
     for (int i = 0; i < 4; i++)
         Text(dc, s_fontLabel, kText, 36, 262 + i * 36, s_cw - 36, 296 + i * 36, DT_LEFT, s[i]);
     DoneButton(dc, S_INFO_DONE);
@@ -3341,7 +3370,7 @@ static void MapsRow(HDC dc, int r, int i, const MapRegion& m)
     t[95] = 0;
     int st = MapState(m);
     int kb = m.fullKb ? m.fullKb : m.sizeKb;   // (whole from the disk: with its tiles)
-    _snwprintf(sub, 64, L"%d,%d МБ · %s", kb / 1024, kb % 1024 * 10 / 1024, kState[st]);
+    _snwprintf(sub, 64, Tr(L"%d,%d МБ · %s"), kb / 1024, kb % 1024 * 10 / 1024, kState[st]);
     sub[63] = 0;
     SetRow(dc, kSetRow0 + r * kSetRowH, t, sub, r < kMapsRows - 1);
     const RECT& b = kRegCtl[R_ROW0 + r];
@@ -3410,7 +3439,7 @@ static void MapsLine(HDC dc)   // the job's line, with the download's progress w
     int got, total;
     bool busy = MapsJob(text, 128, &got, &total) == MAPS_BUSY;
     if (busy && total > 0)
-        _snwprintf(s, 192, L"%s %d,%d из %d,%d МБ", text, got / 1024, got % 1024 * 10 / 1024, total / 1024,
+        _snwprintf(s, 192, Tr(L"%s %d,%d из %d,%d МБ"), text, got / 1024, got % 1024 * 10 / 1024, total / 1024,
                    total % 1024 * 10 / 1024);
     else
         wcscpy(s, text);
@@ -3428,7 +3457,7 @@ static void MapsLook(HDC dc)
     if (g_cfg.detail)
         wcscpy(s, L"меньше деталей — быстрее рисуется");
     else
-        _snwprintf(s, 64, L"по скорости устройства: сейчас %s", kDetailLow[VTileDetail()]);
+        _snwprintf(s, 64, Tr(L"по скорости устройства: сейчас %s"), Tr(kDetailLow[VTileDetail()]));
     SetRow(dc, kSetRow0 + kSetRowH, L"Детализация", s, true);
     StepperAt(dc, kMapsCtl[M_DETAIL_PREV], kMapsCtl[M_DETAIL_NEXT], s_mapsPressed - M_DETAIL_PREV,
               kDetailNames[g_cfg.detail]);
@@ -3485,13 +3514,13 @@ static void DrawMaps(HDC dc)
 static void FmtDist(wchar_t* s, int cap, int m)
 {
     if (m < 100)
-        _snwprintf(s, cap, L"%d м", m / 10 * 10);
+        _snwprintf(s, cap, Tr(L"%d м"), m / 10 * 10);
     else if (m < 1000)
-        _snwprintf(s, cap, L"%d м", m / 50 * 50);
+        _snwprintf(s, cap, Tr(L"%d м"), m / 50 * 50);
     else if (m < 10000)
-        _snwprintf(s, cap, L"%d,%d км", m / 1000, m % 1000 / 100);
+        _snwprintf(s, cap, Tr(L"%d,%d км"), m / 1000, m % 1000 / 100);
     else
-        _snwprintf(s, cap, L"%d км", (m + 500) / 1000);
+        _snwprintf(s, cap, Tr(L"%d км"), (m + 500) / 1000);
     s[cap - 1] = 0;
 }
 
@@ -3705,7 +3734,7 @@ static void DrawGuideCard(HDC dc, int dx, int dy, const RouteInfo& ri)
         FillRect(dc, &l, b);
         DeleteObject(b);
         wchar_t t[128];
-        _snwprintf(t, 128, L"затем — %s", ri.thenText);
+        _snwprintf(t, 128, Tr(L"затем — %s"), ri.thenText);
         t[127] = 0;
         Text(dc, s_fontTiny, kTextDim, 28 + dx, 192 + dy, 258 + dx, 216 + dy, DT_LEFT, t);
     }
@@ -3775,9 +3804,9 @@ static void DrawTripColumns(HDC dc, const RouteInfo& ri, int cx0, int step, int 
     wcscpy(under[0], L"прибытие");
     int mins = (ri.leftS + 59) / 60;
     if (mins >= 60)
-        _snwprintf(big[1], 24, L"%d ч %02d", mins / 60, mins % 60);
+        _snwprintf(big[1], 24, Tr(L"%d ч %02d"), mins / 60, mins % 60);
     else
-        _snwprintf(big[1], 24, L"%d мин", mins);
+        _snwprintf(big[1], 24, Tr(L"%d мин"), mins);
     wcscpy(under[1], L"в пути");
     const double* ll;
     int np = RoutePoints(&ll);
@@ -3789,7 +3818,7 @@ static void DrawTripColumns(HDC dc, const RouteInfo& ri, int cx0, int step, int 
             EstimateLine(ll + ri.seg * 2, np - ri.seg, ri.leftS, s_estCur);
         }
         if (s_estCur.seenPct && s_estCur.maxS - s_estCur.minS >= 120)
-            _snwprintf(under[1], 40, L"с пробками %d–%d", (s_estCur.minS + 59) / 60, (s_estCur.maxS + 59) / 60);
+            _snwprintf(under[1], 40, Tr(L"с пробками %d–%d"), (s_estCur.minS + 59) / 60, (s_estCur.maxS + 59) / 60);
     }
     FmtDist(big[2], 24, ri.leftM);
     wcscpy(under[2], L"осталось");
@@ -3991,22 +4020,21 @@ static void SearchClose()   // a tap beside the found places' panel
     FitBack(true);
 }
 
-// The point the search is near and the route starts at: the car, or the map's center without a fix.
+// The point the search is near: the car, or the map's center without a fix.
 static void SearchFrom(double* lon, double* lat)
 {
     *lon = s_gps.valid ? s_gps.lon : g_cfg.lon;
     *lat = s_gps.valid ? s_gps.lat : g_cfg.lat;
 }
 
-// The route to a place: from the car (or the map's centre without a fix: the map then shows where it goes)
+// The route to a place: from StartNow() (without a fix the map shows where it goes)
 static void FitBack(bool restore);
 
 static void RouteToHit(const SearchHit* h)
 {
-    double lon, lat;
     FitBack(false);
-    SearchFrom(&lon, &lat);
-    RouteTo(h, lon, lat, !s_gps.valid ? -2 : s_gps.speedKmh > 10 ? s_gps.course : -1);
+    StartPoint st = StartNow();
+    RouteTo(h, st.lon, st.lat, st.source == START_CENTER ? -2 : st.source == START_CAR && s_gps.speedKmh > 10 ? s_gps.course : -1);
     s_search = false;
     if (!s_gps.valid) {
         g_cfg.follow = FOLLOW_OFF;
@@ -4195,7 +4223,7 @@ static void DrawHitRow(HDC dc, int i, const SearchHit& h, double lon, double lat
     double dx = (h.lon - lon) * 111320 * cos(lat * M_PI / 180), dy = (h.lat - lat) * 110540;
     wchar_t d[32], name[100];
     FmtDist(d, 32, (int)sqrt(dx * dx + dy * dy));
-    _snwprintf(name, 100, sure ? L"Удалить «%s»?" : L"%s", h.name);
+    _snwprintf(name, 100, sure ? Tr(L"Удалить «%s»?") : L"%s", h.name);
     name[99] = 0;
     int right = sure ? r.right - 4 : r.right - 64;   // (asked "delete?": the whole row, no distance)
     Text(dc, s_fontLabel, sure ? kTextErr : kText, r.left + 44, r.top + 6, right, r.top + 34, DT_LEFT, name);
@@ -4424,7 +4452,7 @@ static RoutePlace MapPlace(double lon, double lat)
     if (PlaceNamed(lon, lat, &h))
         wcscpy(p.name, h.name);
     else
-        _snwprintf(p.name, 80, L"Точка на карте (%.5f, %.5f)", lat, lon);
+        _snwprintf(p.name, 80, Tr(L"Точка на карте (%.5f, %.5f)"), lat, lon);
     p.name[79] = 0;
     p.lon = lon;
     p.lat = lat;
@@ -4500,15 +4528,30 @@ static void StopOut(int i)   // the plan's stop i out, the later ones up
 }
 
 // The plan's route started (the editor's "go", a stop's menu); a plan not complete: why, in the editor
+// The plan's start when it is "my location": lon, lat, course of StartNow(); with nothing known of the car the start
+// becomes the map's centre, a place of its own.
+static void PlanStart(RoutePlan* p, double* lon, double* lat, double* course)
+{
+    StartPoint st = StartNow();
+    if (p->from.kind == PL_GPS && st.source == START_CENTER) {
+        p->from.kind = PL_PLACE;
+        p->from.lon = st.lon;
+        p->from.lat = st.lat;
+        wcscpy(p->from.name, Tr(L"Центр карты"));
+    }
+    *lon = st.lon;
+    *lat = st.lat;
+    *course = st.source == START_CAR && s_gps.speedKmh > 10 ? s_gps.course : -1;
+}
+
 static void PlanGo()
 {
     RoutePlan* p = RoutePlanGet();
-    bool gps = s_gps.valid != 0;
+    double lon, lat, course;
+    PlanStart(p, &lon, &lat, &course);
     if (p->to.kind != PL_PLACE)
         s_planMsg = L"Выберите, куда ехать";
-    else if (!RouteStart(s_gps.lon, s_gps.lat, gps && s_gps.speedKmh > 10 ? s_gps.course : -1, gps))
-        s_planMsg = L"Нет GPS: выберите «Откуда»";
-    else {
+    else if (RouteStart(lon, lat, course, true)) {
         s_plan = false;
         if (p->from.kind == PL_PLACE) {   // a planned route: show its start
             g_cfg.follow = FOLLOW_OFF;
@@ -4571,7 +4614,7 @@ static void SlotLabel(int slot, wchar_t* label)   // "Откуда", "Заеха
     if (slot == 0 || slot == 4)
         wcscpy(label, slot ? L"Куда" : L"Откуда");
     else if (RoutePlanGet()->nvia > 1)   // (the user's word 2026-10-26)
-        _snwprintf(label, 16, L"Заехать %d", slot);
+        _snwprintf(label, 16, Tr(L"Заехать %d"), slot);
     else
         wcscpy(label, L"Заехать");
 }
@@ -4579,7 +4622,7 @@ static void SlotLabel(int slot, wchar_t* label)   // "Откуда", "Заеха
 static const wchar_t* SlotValue(const RoutePlace* pl)
 {
     if (pl->kind == PL_GPS)
-        return s_gps.valid ? L"Моё местоположение" : L"Моё местоположение (нет GPS)";
+        return MyPlaceName();
     return pl->kind == PL_PLACE ? pl->name : L"не выбрано";
 }
 
@@ -4640,9 +4683,9 @@ static void PlanDels(HDC dc)   // the stops' "x"
     }
 }
 
-static bool PlanReady(const RoutePlan* p)   // where to and where from (the car: with a fix)
+static bool PlanReady(const RoutePlan* p)   // where to and where from
 {
-    return p->to.kind == PL_PLACE && (p->from.kind == PL_PLACE || (p->from.kind == PL_GPS && s_gps.valid));
+    return p->to.kind == PL_PLACE && p->from.kind != PL_NONE;
 }
 
 static void PlanBottom(HDC dc)   // why it cannot go (or "+ Заехать"), "ПОЕХАЛИ" - in the accent when it can
@@ -4867,8 +4910,9 @@ static void OnOverMap(int id)
     } else if (id == M_VIA) {
         RoutePlace p = MapPlace(s_lpLon, s_lpLat);
         PlaceLookup(p);
-        bool gps = s_gps.valid != 0;
-        RouteAddVia(p, s_gps.lon, s_gps.lat, gps && s_gps.speedKmh > 10 ? s_gps.course : -1, gps);
+        double lon, lat, course;
+        PlanStart(RoutePlanGet(), &lon, &lat, &course);
+        RouteAddVia(p, lon, lat, course, true);
         s_lpMenu = false;
     } else if (id == M_NEW) {
         s_lpMenu = false;
@@ -4924,7 +4968,7 @@ static void DrawFavMenu(HDC dc)
         double dx = (f.lon - s_gps.lon) * 111320 * cos(f.lat * M_PI / 180), dy = (f.lat - s_gps.lat) * 110540;
         wchar_t d[32];
         FmtDist(d, 32, (int)sqrt(dx * dx + dy * dy));
-        _snwprintf(sub, 64, L"Избранное · %s от вас", d);
+        _snwprintf(sub, 64, Tr(L"Избранное · %s от вас"), d);
     }
     Text(dc, s_fontSmall, kTextDim, box.left + 20, box.top + 48, box.right - 20, box.top + 72, DT_LEFT, sub);
     FavRect(F_GO, &r);
@@ -4984,7 +5028,7 @@ static void LpAddress(wchar_t* title, wchar_t* sub)   // the long press's point:
         wchar_t d[32];
         FmtDist(d, 32, (int)sqrt(dx * dx + dy * dy));
         int n = (int)wcslen(sub);
-        _snwprintf(sub + n, 140 - n, L"%s%s от вас", n ? L" · " : L"", d);
+        _snwprintf(sub + n, 140 - n, Tr(L"%s%s от вас"), n ? L" · " : L"", d);
     }
     sub[139] = 0;
 }
@@ -5060,7 +5104,7 @@ static void DrawOverMap(HDC dc)
         Outline(dc, bar, kOrange, 12);   // (a mode: the map picks a point)
         static const wchar_t* kWhat[5] = { L"«Откуда»", L"«Заехать 1»", L"«Заехать 2»", L"«Заехать 3»", L"«Куда»" };
         wchar_t s[96];
-        _snwprintf(s, 96, L"Нажмите на карту: точка для %s", kWhat[s_pickSlot]);
+        _snwprintf(s, 96, Tr(L"Нажмите на карту: точка для %s"), Tr(kWhat[s_pickSlot]));
         s[95] = 0;
         Text(dc, s_fontLabel, kText, bar.left + 16, bar.top, r.left - 8, bar.bottom, DT_LEFT, s);
         DrawCtl(dc, r, s_planPressed == P_PICK_CANCEL, s_fontLabel, L"ОТМЕНА");
@@ -5070,7 +5114,7 @@ static void DrawOverMap(HDC dc)
         RECT box = { 204, 288 - 40, 596, 300 + n * 58 + 4 };
         Card(dc, box, 20);
         wchar_t t[32];
-        _snwprintf(t, 32, L"«Заехать %d»", s_lpStop + 1);
+        _snwprintf(t, 32, Tr(L"«Заехать %d»"), s_lpStop + 1);
         Text(dc, s_fontLabel, kText, box.left, box.top + 4, box.right, box.top + 48, DT_CENTER, t);
         static const wchar_t* kStop[3] = { L"УБРАТЬ ТОЧКУ", L"РАНЬШЕ", L"ОТМЕНА" };
         for (int id = M_STOP_OUT; id <= M_STOP_CANCEL; id++)
@@ -5137,11 +5181,11 @@ static void DrawStatus(HDC dc)
     } else if (s_gps.status == GPS_SCANNING) {
         wcscpy(s, L"GPS: поиск порта");
     } else if (s_gps.status == GPS_BUSY) {
-        _snwprintf(s, 96, L"GPS: порт %s занят", s_gps.port);
+        _snwprintf(s, 96, Tr(L"GPS: порт %s занят"), s_gps.port);
         fg = kTextErr;
         bg = errBg;
     } else if (s_gps.status != GPS_OPEN) {
-        _snwprintf(s, 96, L"GPS: нет порта %s", s_gps.port);
+        _snwprintf(s, 96, Tr(L"GPS: нет порта %s"), s_gps.port);
         fg = kTextErr;
         bg = errBg;
     } else if (!s_gps.lines) {
@@ -5149,7 +5193,7 @@ static void DrawStatus(HDC dc)
         fg = kTextErr;
         bg = errBg;
     } else if (!s_gps.valid) {
-        _snwprintf(s, 96, L"GPS: поиск · %d", s_gps.sats);
+        _snwprintf(s, 96, Tr(L"GPS: поиск · %d"), s_gps.sats);
     } else {
         _snwprintf(s, 96, L"GPS · %d", s_gps.sats);
         fg = okFg;
@@ -5167,9 +5211,9 @@ static void DrawStatus(HDC dc)
         bg = errBg;
     } else if (s_lastErr && GetTickCount() - s_lastErrTick < 60000) {
         if (s_lastErr == NET_HTTP)
-            _snwprintf(s, 96, L"Ошибка HTTP %d", s_lastHttp);
+            _snwprintf(s, 96, Tr(L"Ошибка HTTP %d"), s_lastHttp);
         else
-            _snwprintf(s, 96, L"Ошибка: %s", NetErrorText(s_lastErr));
+            _snwprintf(s, 96, Tr(L"Ошибка: %s"), Tr(NetErrorText(s_lastErr)));
         fg = kTextErr;
         bg = errBg;
     } else if (s_inflight) {
@@ -5182,9 +5226,9 @@ static void DrawStatus(HDC dc)
         MapRequest keys[kMaxKeys];
         CacheEntry* e = NeededKeys(TrafficSource(), keys, kMaxKeys) ? CacheFind(keys[0], false) : NULL;
         if (!e)
-            _snwprintf(s, 96, L"Пробки · %s · нет данных", kTrafficTitle[g_cfg.trafficSrc]);
+            _snwprintf(s, 96, Tr(L"Пробки · %s · нет данных"), Tr(kTrafficTitle[g_cfg.trafficSrc]));
         else
-            _snwprintf(s, 96, L"Пробки · %s · %d мин", kTrafficTitle[g_cfg.trafficSrc],
+            _snwprintf(s, 96, Tr(L"Пробки · %s · %d мин"), Tr(kTrafficTitle[g_cfg.trafficSrc]),
                        (int)((GetTickCount() - e->fetchTick) / 60000));
     }
     s[95] = 0;
@@ -5540,7 +5584,7 @@ static int VhReceive(const wchar_t* cmd)   // 2 = a button taken (VestaHome leav
     }
     if (!wcsncmp(cmd, L"welcome", 7)) {
         s_vhNavSent[0] = 0;
-        VhSend(L"widget\tid=map\ttitle=Карта OSM\ticon=map\tsize=2x2\timage=1");
+        VhSend(L"widget\tid=map\ttitle=%s\ticon=map\tsize=2x2\timage=1", Tr(L"Карта OSM"));
         VhSend(L"subscribe\twhat=keys");
     } else if (!wcsncmp(cmd, L"widget.size", 11)) {
         VhFree();
@@ -6071,6 +6115,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR cmdLine, int)
     }
 
     bool cfg = ConfigLoad();
+    LangInit(g_cfg.lang);
     VTileSetDetail(g_cfg.detail - 1);
     s_detailShown = VTileDetail();
     LogInit();   // (after the settings: the log only when asked for)

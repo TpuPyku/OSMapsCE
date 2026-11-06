@@ -30,6 +30,8 @@ enum { TRF_YANDEX = 0, TRF_2GIS, TRF_COUNT };
 
 struct Config {
     double  lon, lat;       // view center
+    double  lastLon, lastLat;   // the last place the GPS told (0, 0: none yet)
+    char    lang[8];        // the interface: Lang\<lang>.txt ("": Russian)
     int     z;
     int     traffic;        // traffic overlay on/off
     int     trafficSrc;     // TRF_*
