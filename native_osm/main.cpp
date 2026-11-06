@@ -10,7 +10,7 @@
 #include "startpt.h"   // where a route starts
 #include "vnav.h"      // VestaCore: the next manoeuvre as VestaHome is told it, its sign
 #include "vfont.h"     // VestaCore: the fonts
-static const wchar_t* const kRelease = L"2.1";   // raise by hand: minor - significant changes, major - big releases
+static const wchar_t* const kRelease = L"2.0";   // raise by hand: minor - significant changes, major - big releases
 
 // ---------------------------------------------------------------- UI layout
 // 800x480 in the VestaHome style (mockup VestaHome/skin/maps-skin-v2.pdf): the map over the whole screen, a
