@@ -10,7 +10,7 @@
 #include "startpt.h"   // where a route starts
 #include "vnav.h"      // VestaCore: the next manoeuvre as VestaHome is told it, its sign
 #include "vfont.h"     // VestaCore: the fonts
-static const wchar_t* const kRelease = L"2.0";   // raise by hand: minor - significant changes, major - big releases
+static const wchar_t* const kRelease = L"2.1";   // raise by hand: minor - significant changes, major - big releases
 
 // ---------------------------------------------------------------- UI layout
 // 800x480 in the VestaHome style (mockup VestaHome/skin/maps-skin-v2.pdf): the map over the whole screen, a
@@ -4814,7 +4814,7 @@ static bool WhereShown()
 
 static bool WhereRect(int id, RECT* r)
 {
-    if (!WhereShown() || (id > W_FAV && id < W_BOX && id - W_FAV >= s_favs.n))
+    if (!WhereShown() || (id >= W_FAV && id < W_BOX && id - W_FAV >= s_favs.n))
         return false;
     if (id == W_BOX)
         SetRect(r, 16, 56, 380, s_favs.n ? 190 : 124);
