@@ -6,6 +6,7 @@
 #include "vfavs.h"     // VestaCore: the favourite places (VestaHome reads them too)
 #include "vversion.h"   // VestaCore: the version "major.minor.YYMMDD" (the date: this file's build)
 #include "vhap.h"      // VestaCore: VestaHome's add-ons' protocol
+#include "vnav.h"      // VestaCore: the next manoeuvre as VestaHome is told it, its sign
 #include "vfont.h"     // VestaCore: the fonts
 static const wchar_t* const kRelease = L"1.03";   // raise by hand: minor - significant changes, major - big releases
 
@@ -3494,66 +3495,9 @@ static void FmtDist(wchar_t* s, int cap, int m)
     s[cap - 1] = 0;
 }
 
-// The next turn's sign in r: a stem from below and the arrow the way of the turn; the destination - a ring with
-// a dot, a roundabout - a ring with the way out up.
 static void DrawTurn(HDC dc, const RECT& r, int turn, COLORREF col = kText)
 {
-    // drawn for a 76 px box; a smaller one: everything scaled (Q: the length times the box over 76)
-    int q = r.right - r.left;
-#define Q(v) ((v) * q / 76)
-    int cx = (r.left + r.right) / 2, cy = (r.top + r.bottom) / 2 + Q(4);
-    HPEN pen = CreatePen(PS_SOLID, Q(7) < 3 ? 3 : Q(7), col);
-    HBRUSH br = CreateSolidBrush(col);
-    HGDIOBJ op = SelectObject(dc, pen), ob = SelectObject(dc, br);
-    if (turn == 999) {
-        SelectObject(dc, GetStockObject(NULL_BRUSH));
-        Ellipse(dc, cx - Q(20), cy - Q(24), cx + Q(20), cy + Q(16));
-        SelectObject(dc, br);
-        Ellipse(dc, cx - Q(6), cy - Q(10), cx + Q(6), cy + Q(2));
-    } else {
-        double a;
-        int hx, hy;
-        if (turn == 998) {
-            SelectObject(dc, GetStockObject(NULL_BRUSH));
-            Ellipse(dc, cx - Q(14), cy - Q(8), cx + Q(14), cy + Q(20));
-            POINT st[2] = { { cx, cy - Q(8) }, { cx, cy - Q(26) } };
-            Polyline(dc, st, 2);
-            SelectObject(dc, br);
-            a = 0;
-            hx = cx;
-            hy = cy - Q(26);
-        } else if (turn >= 170 || turn <= -170) {   // U-turn: up and back down on the turn's side
-            int k = turn > 0 ? 1 : -1;
-            POINT u[4] = { { cx - Q(12) * k, r.bottom - Q(10) }, { cx - Q(12) * k, r.top + Q(20) },
-                           { cx + Q(12) * k, r.top + Q(20) }, { cx + Q(12) * k, cy + Q(4) } };
-            Polyline(dc, u, 4);
-            a = M_PI;
-            hx = cx + Q(12) * k;
-            hy = cy + Q(4);
-        } else {
-            a = turn * M_PI / 180.0;
-            POINT st[3] = { { cx, r.bottom - Q(10) }, { cx, cy },
-                            { cx + (int)(sin(a) * Q(22)), cy - (int)(cos(a) * Q(22)) } };
-            Polyline(dc, st, 3);
-            hx = st[2].x;
-            hy = st[2].y;
-        }
-        // the head: a triangle pointing along a
-        double c = cos(a), sn = sin(a);
-        POINT h[3] = { { hx + (int)(sn * Q(14)), hy - (int)(c * Q(14)) },
-                       { hx + (int)(c * Q(12) - sn * Q(4)), hy + (int)(sn * Q(12) + c * Q(4)) },
-                       { hx - (int)(c * Q(12) + sn * Q(4)), hy - (int)(sn * Q(12) - c * Q(4)) } };
-        HPEN thin = CreatePen(PS_SOLID, 1, col);
-        SelectObject(dc, thin);
-        Polygon(dc, h, 3);
-        SelectObject(dc, pen);
-        DeleteObject(thin);
-    }
-    SelectObject(dc, ob);
-    SelectObject(dc, op);
-    DeleteObject(br);
-    DeleteObject(pen);
-#undef Q
+    VNavDrawTurn(dc, r, turn, col);
 }
 
 // The turn (the user 2026-10-26): the big card only before it - 300 m or 20 s at the speed, whichever is more -
@@ -3715,6 +3659,58 @@ static void DrawJunction(HDC dc, int top)
     }
 }
 
+// The big card of the next manoeuvre at its place moved by (dx, dy): the sign, the distance, what to do, the street
+static void DrawGuideCard(HDC dc, int dx, int dy, const RouteInfo& ri)
+{
+    wchar_t d[32], num[16];
+    FmtDist(d, 32, ri.nextM);
+    const wchar_t* unit = wcsrchr(d, L' ');
+    int n = unit ? (int)(unit - d) : (int)wcslen(d);
+    wcsncpy(num, d, n);
+    num[n] = 0;
+    RECT p = { 16 + dx, 56 + dy, 266 + dx, (ri.thenText ? 222 : 188) + dy };
+    Card(dc, p, 22);
+    RECT sq = { 28 + dx, 68 + dy, 96 + dx, 136 + dy };
+    Tile(dc, sq, kOrange, kOrange, 32);
+    DrawTurn(dc, sq, ri.turn, kInk);
+    SelectObject(dc, s_fontHuge);
+    SIZE sz;
+    GetTextExtentPoint32(dc, num, n, &sz);
+    Text(dc, s_fontHuge, kText, 108 + dx, 62 + dy, 266 + dx, 116 + dy, DT_LEFT, num);
+    if (unit)
+        Text(dc, s_fontKm, kTextDim, 108 + dx + sz.cx + 5, 76 + dy, 266 + dx, 114 + dy, DT_LEFT, unit + 1);
+    wchar_t verb[112], street[112];
+    VNavSplit(ri.text, verb, street, 112);
+    Text(dc, s_fontSmall, kTextDim, 108 + dx, 114 + dy, 262 + dx, 138 + dy, DT_LEFT, verb);
+    // the street big; a longer one smaller, the longest in two lines
+    SelectObject(dc, s_fontStreet);
+    GetTextExtentPoint32(dc, street, (int)wcslen(street), &sz);
+    HFONT sf = s_fontStreet;
+    if (sz.cx > 226) {
+        SelectObject(dc, s_fontLabel);
+        GetTextExtentPoint32(dc, street, (int)wcslen(street), &sz);
+        sf = sz.cx > 226 ? NULL : s_fontLabel;
+    }
+    if (sf) {
+        Text(dc, sf, kText, 28 + dx, 144 + dy, 258 + dx, 180 + dy, DT_LEFT, street);
+    } else {
+        RECT sr = { 28 + dx, 142 + dy, 258 + dx, 184 + dy };
+        SelectObject(dc, s_fontSmall);
+        SetTextColor(dc, kText);
+        DrawText(dc, street, -1, &sr, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);
+    }
+    if (ri.thenText) {
+        RECT l = { 28 + dx, 188 + dy, 254 + dx, 189 + dy };
+        HBRUSH b = CreateSolidBrush(kLine);
+        FillRect(dc, &l, b);
+        DeleteObject(b);
+        wchar_t t[128];
+        _snwprintf(t, 128, L"затем — %s", ri.thenText);
+        t[127] = 0;
+        Text(dc, s_fontTiny, kTextDim, 28 + dx, 192 + dy, 258 + dx, 216 + dy, DT_LEFT, t);
+    }
+}
+
 static void DrawGuide(HDC dc)
 {
     RouteInfo ri;
@@ -3730,15 +3726,11 @@ static void DrawGuide(HDC dc)
              DT_LEFT, ri.text);
         return;
     }
-    wchar_t d[32], num[16];
-    FmtDist(d, 32, ri.nextM);
-    const wchar_t* unit = wcsrchr(d, L' ');
-    int n = unit ? (int)(unit - d) : (int)wcslen(d);
-    wcsncpy(num, d, n);
-    num[n] = 0;
     double soonM = s_gps.speedKmh / 3.6 * 20;
     bool big = !ri.off && ri.nextM <= (soonM > 300 ? soonM : 300);
     if (!big) {   // compact: the sign in the accent's square and the distance
+        wchar_t d[32];
+        FmtDist(d, 32, ri.nextM);
         JunctionFree();
         RECT p = { 16, 56, ri.off ? 330 : 182, 112 };
         Card(dc, p, 18);
@@ -3749,62 +3741,8 @@ static void DrawGuide(HDC dc)
              ri.off ? ri.text : d);
         return;
     }
-    // big: 250 px wide
-    RECT p = { 16, 56, 266, ri.thenText ? 222 : 188 };
-    DrawJunction(dc, p.bottom + 8);   // (under the card: its own pixels first, the card's GDI after)
-    Card(dc, p, 22);
-    RECT sq = { 28, 68, 96, 136 };
-    Tile(dc, sq, kOrange, kOrange, 32);
-    DrawTurn(dc, sq, ri.turn, kInk);
-    SelectObject(dc, s_fontHuge);
-    SIZE sz;
-    GetTextExtentPoint32(dc, num, n, &sz);
-    Text(dc, s_fontHuge, kText, 108, 62, 266, 116, DT_LEFT, num);
-    if (unit)
-        Text(dc, s_fontKm, kTextDim, 108 + sz.cx + 5, 76, 266, 114, DT_LEFT, unit + 1);
-    // "Поверните направо: Московская улица" -> what to do under the distance, the street in the line below
-    wchar_t act[112], street[112] = L"";
-    wcsncpy(act, ri.text, 111);
-    act[111] = 0;
-    wchar_t* colon = wcsstr(act, L": ");
-    if (colon) {
-        wcscpy(street, colon + 2);
-        *colon = 0;
-    } else {
-        wcscpy(street, act);
-        act[0] = 0;
-    }
-    const wchar_t* verb = act;   // "Поверните направо" -> "направо": the sign says the rest
-    if (!wcsncmp(act, L"Поверните ", 10))
-        verb = act + 10;
-    Text(dc, s_fontSmall, kTextDim, 108, 114, 262, 138, DT_LEFT, verb);
-    // the street big; a longer one smaller, the longest in two lines
-    SelectObject(dc, s_fontStreet);
-    GetTextExtentPoint32(dc, street, (int)wcslen(street), &sz);
-    HFONT sf = s_fontStreet;
-    if (sz.cx > 226) {
-        SelectObject(dc, s_fontLabel);
-        GetTextExtentPoint32(dc, street, (int)wcslen(street), &sz);
-        sf = sz.cx > 226 ? NULL : s_fontLabel;
-    }
-    if (sf) {
-        Text(dc, sf, kText, 28, 144, 258, 180, DT_LEFT, street);
-    } else {
-        RECT sr = { 28, 142, 258, 184 };
-        SelectObject(dc, s_fontSmall);
-        SetTextColor(dc, kText);
-        DrawText(dc, street, -1, &sr, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);
-    }
-    if (ri.thenText) {
-        RECT l = { 28, 188, 254, 189 };
-        HBRUSH b = CreateSolidBrush(kLine);
-        FillRect(dc, &l, b);
-        DeleteObject(b);
-        wchar_t t[128];
-        _snwprintf(t, 128, L"затем — %s", ri.thenText);
-        t[127] = 0;
-        Text(dc, s_fontTiny, kTextDim, 28, 192, 258, 216, DT_LEFT, t);
-    }
+    DrawJunction(dc, (ri.thenText ? 222 : 188) + 8);   // (under the card: its own pixels first, the card's GDI after)
+    DrawGuideCard(dc, 0, 0, ri);
 }
 
 // The trip at the bottom (design v3): the arrival, the minutes (with the range by the traffic seen), the km, and
@@ -3818,27 +3756,22 @@ static bool TripShown()
     return ri.state == ROUTE_ON && !s_dockShown && RouteAlts() < 2 && s_pickSlot < 0 && !s_lpMenu && s_lpStop < 0;
 }
 
-static void DrawTrip(HDC dc)
+// The arrival by the clock: "14:41"
+static void FmtArrival(wchar_t* s, int cap, int leftS)
 {
-    RouteInfo ri;
-    RouteGet(&ri);
-    if (s_gps.valid && !s_dockShown && RouteAlts() < 2) {   // the speed, bottom left
-        RECT c = { 20, 394, 94, 468 };
-        Card(dc, c, 37);
-        wchar_t v[8];
-        _snwprintf(v, 8, L"%d", (int)(s_gps.speedKmh + 0.5));
-        Text(dc, s_fontSpeed, kText, c.left, c.top + 8, c.right, c.top + 46, DT_CENTER, v);
-        Text(dc, s_fontCap, kTextDim, c.left, c.top + 44, c.right, c.top + 62, DT_CENTER, L"км/ч");
-    }
-    if (!TripShown())
-        return;
-    RECT p = { 196, 400, 604, 466 };
-    Card(dc, p, 33);
     SYSTEMTIME t;
     GetLocalTime(&t);
-    int at = (t.wHour * 60 + t.wMinute + (ri.leftS + 59) / 60) % (24 * 60);
+    int at = (t.wHour * 60 + t.wMinute + (leftS + 59) / 60) % (24 * 60);
+    _snwprintf(s, cap, L"%02d:%02d", at / 60, at % 60);
+    s[cap - 1] = 0;
+}
+
+// The trip's three columns: the arrival, the minutes (with the range by the traffic seen), the km; the first one's
+// middle at cx0, the next `step` on; from `top` down.
+static void DrawTripColumns(HDC dc, const RouteInfo& ri, int cx0, int step, int top)
+{
     wchar_t big[3][24], under[3][40];
-    _snwprintf(big[0], 24, L"%02d:%02d", at / 60, at % 60);
+    FmtArrival(big[0], 24, ri.leftS);
     wcscpy(under[0], L"прибытие");
     int mins = (ri.leftS + 59) / 60;
     if (mins >= 60)
@@ -3861,10 +3794,29 @@ static void DrawTrip(HDC dc)
     FmtDist(big[2], 24, ri.leftM);
     wcscpy(under[2], L"осталось");
     for (int i = 0; i < 3; i++) {
-        int cx = 262 + i * 120;
-        Text(dc, s_fontKm, kText, cx - 62, 406, cx + 62, 432, DT_CENTER, big[i]);
-        Text(dc, s_fontCap, kTextDim, cx - 62, 432, cx + 62, 452, DT_CENTER, under[i]);
+        int cx = cx0 + i * step;
+        Text(dc, s_fontKm, kText, cx - 62, top, cx + 62, top + 26, DT_CENTER, big[i]);
+        Text(dc, s_fontCap, kTextDim, cx - 62, top + 26, cx + 62, top + 46, DT_CENTER, under[i]);
     }
+}
+
+static void DrawTrip(HDC dc)
+{
+    RouteInfo ri;
+    RouteGet(&ri);
+    if (s_gps.valid && !s_dockShown && RouteAlts() < 2) {   // the speed, bottom left
+        RECT c = { 20, 394, 94, 468 };
+        Card(dc, c, 37);
+        wchar_t v[8];
+        _snwprintf(v, 8, L"%d", (int)(s_gps.speedKmh + 0.5));
+        Text(dc, s_fontSpeed, kText, c.left, c.top + 8, c.right, c.top + 46, DT_CENTER, v);
+        Text(dc, s_fontCap, kTextDim, c.left, c.top + 44, c.right, c.top + 62, DT_CENTER, L"км/ч");
+    }
+    if (!TripShown())
+        return;
+    RECT p = { 196, 400, 604, 466 };
+    Card(dc, p, 33);
+    DrawTripColumns(dc, ri, 262, 120, 406);
     RECT x = { 552, 413, 592, 453 };
     bool down = s_planPressed == P_TRIP_X;
     Tile(dc, x, down ? kOrange : kPanel2, down ? kOrange : kPanel2, 40);
@@ -5526,6 +5478,7 @@ static unsigned char* s_vhView;     // 16 bytes ('VHIM', w, h, frame number), th
 static int            s_vhW, s_vhH;
 static bool           s_vhShown;
 static DWORD          s_vhSeq, s_vhHelloTick;
+static wchar_t        s_vhNavSent[256];   // the last "nav" told (only a change is sent)
 
 static void VhSend(const wchar_t* fmt, ...)
 {
@@ -5586,6 +5539,7 @@ static int VhReceive(const wchar_t* cmd)   // 2 = a button taken (VestaHome leav
         return 1;
     }
     if (!wcsncmp(cmd, L"welcome", 7)) {
+        s_vhNavSent[0] = 0;
         VhSend(L"widget\tid=map\ttitle=Карта OSM\ticon=map\tsize=2x2\timage=1");
         VhSend(L"subscribe\twhat=keys");
     } else if (!wcsncmp(cmd, L"widget.size", 11)) {
@@ -5604,7 +5558,7 @@ static int VhReceive(const wchar_t* cmd)   // 2 = a button taken (VestaHome leav
     } else if (!wcsncmp(cmd, L"widget.show", 11)) {
         VhapField(cmd, L"value", v, 8);
         s_vhShown = v[0] == L'1';
-    } else if (!wcsncmp(cmd, L"widget.tap", 10)) {   // to the front, the whole screen
+    } else if (!wcsncmp(cmd, L"widget.tap", 10) || !wcsncmp(cmd, L"nav.tap", 7)) {   // to the front, the whole screen
         ShowWindow(s_wnd, SW_SHOW);
         SetForegroundWindow(s_wnd);
         InvalidateRect(s_wnd, NULL, FALSE);
@@ -5615,7 +5569,29 @@ static int VhReceive(const wchar_t* cmd)   // 2 = a button taken (VestaHome leav
     return 1;
 }
 
-// Each second: find VestaHome (again), and a frame for the widget while it is in sight.
+// The route's next manoeuvre to VestaHome (its top bar's chip), when it changes
+static void VhNavTick(const RouteInfo& ri)
+{
+    VNav n;
+    memset(&n, 0, sizeof(n));
+    n.on = ri.state == ROUTE_ON && !ri.off;
+    if (n.on) {
+        wchar_t verb[112], street[112];
+        VNavSplit(ri.text, verb, street, 112);
+        n.turn = ri.turn;
+        FmtDist(n.dist, 16, ri.nextM);
+        wcsncpy(n.street, street, 63);
+        FmtArrival(n.eta, 8, ri.leftS);
+    }
+    wchar_t cmd[256];
+    VNavFormat(n, cmd, 256);
+    if (wcscmp(cmd, s_vhNavSent)) {
+        wcscpy(s_vhNavSent, cmd);
+        VhSend(L"%s", cmd);
+    }
+}
+
+// Each second: find VestaHome (again), tell it the manoeuvre, and a frame for the widget while it is in sight.
 static void VhTick()
 {
     if (!s_vh || !IsWindow(s_vh)) {
@@ -5630,17 +5606,44 @@ static void VhTick()
             VhSend(L"hello\tid=OSMapsCE\tname=OSMapsCE\tver=1\tapi=1\thwnd=%08X", (unsigned)(UINT_PTR)s_wnd);
         return;
     }
+    RouteInfo ri;
+    RouteGet(&ri);
+    VhNavTick(ri);
     if (!s_vhShown || !s_vhView || !s_backBits || !s_back)
         return;
+    // On a route the widget is the way ahead (ideas 0.7): by the course, whatever the map's own mode (given back below),
+    // the car low in the picture, over the trip's line; the card of the manoeuvre and the trip on it.
+    bool guide = ri.state == ROUTE_ON && !ri.off;
+    int follow = g_cfg.follow;
+    if (guide) {
+        g_cfg.follow = FOLLOW_HEADING;
+        FollowGps();
+    }
     HDC wdc = GetDC(s_wnd);
     HDC dc = CreateCompatibleDC(wdc);
     ReleaseDC(s_wnd, wdc);
     HGDIOBJ ob = SelectObject(dc, s_back);
     SetBkMode(dc, TRANSPARENT);
     DrawMap(dc);   // (the next paint of our own window draws its frame anew)
+    int x0 = g_cfg.mapX + (g_cfg.mapW - s_vhW) / 2, y0 = g_cfg.mapY + (g_cfg.mapH - s_vhH) / 2, stride = BackStride();
+    if (guide) {
+        y0 += (int)(g_cfg.mapH * kCarAhead) + 90 - s_vhH / 2;   // the car 90 px above the picture's bottom, over the trip
+        RouteInfo card = ri;
+        card.thenText = NULL;   // (no room for the next one here)
+        DrawGuideCard(dc, x0 + 12 - 16, y0 + 12 - 56, card);
+        RECT trip = { x0 + 12, y0 + s_vhH - 60, x0 + s_vhW - 12, y0 + s_vhH - 8 };
+        Card(dc, trip, 26);
+        DrawTripColumns(dc, ri, x0 + s_vhW / 2 - 150, 150, trip.top + 3);
+    }
+#ifndef UNDER_CE
+    GdiFlush();
+#endif
     SelectObject(dc, ob);
     DeleteDC(dc);
-    int x0 = g_cfg.mapX + (g_cfg.mapW - s_vhW) / 2, y0 = g_cfg.mapY + (g_cfg.mapH - s_vhH) / 2, stride = BackStride();
+    if (guide) {
+        g_cfg.follow = follow;
+        FollowGps();
+    }
     unsigned short* dst = (unsigned short*)(s_vhView + 16);
     for (int y = 0; y < s_vhH; y++)   // the back buffer is bottom-up, the widget's rows top down
         memcpy(dst + y * s_vhW, s_backBits + (s_ch - 1 - (y0 + y)) * stride + x0, s_vhW * 2);
