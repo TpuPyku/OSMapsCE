@@ -6,7 +6,7 @@ A navigation app on [OpenStreetMap](https://www.openstreetmap.org) maps for Wind
 
 **The interface is in Russian for now.** English is planned.
 
-| Day | Night, 3D view | Route: traffic on the route only |
+| Day | Night, 3D view | Route: traffic on the route |
 |---|---|---|
 | ![Day map without traffic](docs/day.png) | ![Night map without traffic](docs/night.png) | ![Route with traffic on its line](docs/route.png) |
 
@@ -15,9 +15,9 @@ A navigation app on [OpenStreetMap](https://www.openstreetmap.org) maps for Wind
 - **Map:** raster (OSM tiles) or vector (OpenFreeMap) with day and night palettes, a 3D view, bridges, tunnels, house numbers, filling stations and car parks. Places you have viewed are cached.
 - **Routes:** search for addresses and places, turn guidance, rerouting when you leave the route, alternatives with time estimates, avoiding toll roads, a card for complex junctions.
 - **Route editor:** long press on the map, up to three stops, your own starting point. Favorite places show on the map.
-- **Traffic** from Yandex or 2GIS: updated every 10 minutes, with daily request limits. Dimmed at night and bright on the route. The "route only" mode shows traffic on the route line alone.
-- **GPS:** the car on the map, north-up and heading-up modes, smooth movement between fixes.
-- **On the Lada Vesta with VestaHome:** the theme color and a map widget. During a route the widget shows the road and the next maneuver, and other screens show the maneuver in the top bar.
+- **Traffic:** updated every 10 minutes. In the map settings, «Пробки: Маршрут» (traffic: route) shows it on the route line only.
+- **GPS:** the car on the map, north-up and heading-up modes.
+- **On the Lada Vesta with VestaHome:** the theme color and a map widget on the home screen. During a route the widget shows the road and the maneuver, and other screens show the maneuver in the top bar.
 
 ## Outside Russia and the CIS
 Online mode is not tied to a region: map tiles, search and routing use worldwide services, so it should work elsewhere, although it has not been tested there. Offline maps cover only Russia and the CIS. Traffic comes from Yandex and 2GIS, so coverage in other countries may be limited.
@@ -39,6 +39,7 @@ Maps are rebuilt every week.
 
 ## GPS
 The app only reads the GPS port and picks NMEA sentences from the stream. The default is `COM4:` at 115200. For another device, use Settings → Поиск GPS (GPS search), which tries COM1…COM9 and the common speeds, or set the port and speed by hand.
+Port errors:
 - The NMEA counter in the settings does not grow: wrong port.
 - Many lines with errors: wrong speed.
 
