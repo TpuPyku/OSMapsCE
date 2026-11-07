@@ -1,4 +1,5 @@
 ﻿#include "yamaps.h"
+#include "layers.h"
 #include "lang.h"
 #include "stb_image.h"   // (its zlib: the zips' deflated files; the implementation is image.cpp's)
 
@@ -204,14 +205,16 @@ static bool CopyStored(HANDLE f, const ZipEntry& e, const wchar_t* path)
     return ok;
 }
 
-static bool ZipFile(HANDLE f, const wchar_t* dir, const char* name)   // one entry into dir\name
+static bool ZipFile(HANDLE f, const wchar_t* dir, const char* name)   // one entry into dir\name; "?name": it may be missing
 {
     ZipEntry e;
     wchar_t path[MAX_PATH];
+    bool optional = name[0] == '?';
+    name += optional;
     _snwprintf(path, MAX_PATH, L"%s\\%S", dir, name);
     path[MAX_PATH - 1] = 0;
     if (!ZipFind(f, name, &e))
-        return false;
+        return optional;
     if (e.method == 0)
         return CopyStored(f, e, path);
     char* data = ZipData(f, e);
@@ -365,10 +368,10 @@ bool MapsFetch(const char* url, const wchar_t* file, int chunk)
 // pack (its map and the trunk roads) - through data\<name>.zip, removed after; region.txt last
 bool MapsInstall(const char* url, const wchar_t* data, const char* name, int kind)
 {
-    static const char* const kFiles[3][4] = { { "route.grf", "search.idx", "region.txt" },
-                                              { "route.grf", "search.idx", "tiles.vtp", "region.txt" },
+    static const char* const kFiles[3][5] = { { "route.grf", "search.idx", "?layers.lay", "region.txt" },   // (a region not
+                                              { "route.grf", "search.idx", "?layers.lay", "tiles.vtp", "region.txt" },   // rebuilt: no layers)
                                               { "overview.vtp", "trunk.grf", "region.txt" } };
-    static const int kCount[3] = { 3, 4, 3 };
+    static const int kCount[3] = { 4, 5, 3 };
     wchar_t zip[MAX_PATH], part[MAX_PATH], dir[MAX_PATH];
     CreateDirectory(data, NULL);
     _snwprintf(zip, MAX_PATH, L"%s\\%S.zip", data, name);
@@ -381,7 +384,9 @@ bool MapsInstall(const char* url, const wchar_t* data, const char* name, int kin
     if (ok) {   // (a route, the search let go of the files written over - and wait meanwhile: CE, Windows refuse them)
         OffUseScope use;
         OfflineDrop();
+        LayersPause(true);
         ok = ZipExtract(zip, dir, kFiles[kind], kCount[kind]);
+        LayersPause(false);
     }
     if (ok)
         DeleteFile(zip);

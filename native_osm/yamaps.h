@@ -36,6 +36,9 @@ struct Config {
     int     traffic;        // traffic overlay on/off
     int     trafficSrc;     // TRF_*
     int     trafficRoute;   // traffic on the route alone, not on the map (trafshade.h)
+    int     parking;        // car parks on the map, in turn with the traffic on one button (layers.h)
+    int     layerSignals;   // traffic lights on the map
+    int     layerBumps;     // speed bumps on the map, and the warning on the way
     int     follow;         // GPS mode: 0 off, 1 north-up, 2 heading-up
     int     night;          // dark map: lightness inverted, dimmed
     int     vector;         // the base map: 0 OSM raster tiles, 1 vector tiles (OpenFreeMap, vtile.cpp)

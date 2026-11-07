@@ -7,6 +7,7 @@ import os
 import pathlib
 import shutil
 import struct
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -14,6 +15,7 @@ import unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 import make_graph    # noqa: E402
+import make_layers   # noqa: E402
 import make_region   # noqa: E402
 import make_search   # noqa: E402
 import make_tiles    # noqa: E402
@@ -165,6 +167,96 @@ class Tools(unittest.TestCase):
         self.assertLess(make_graph.hilbert(0, 0, 4), make_graph.hilbert(0, 1, 4))
         self.assertEqual(sorted(make_graph.hilbert(x, y, 2) for x in range(4) for y in range(4)), list(range(16)))
         self.assertEqual([make_graph.hilbert(x, y, 1) for x, y in ((0, 0), (0, 1), (1, 1), (1, 0))], [0, 1, 2, 3])
+
+    def layers(self, path):
+        """As the unit reads layers.lay: the header, the sorted cells, each one's points."""
+        d = read(path)
+        magic, version, n_cells, n_points = struct.unpack_from(make_layers.HEADER, d, 0)
+        self.assertEqual((magic, version), (b'OSML', 1))
+        size = struct.calcsize(make_layers.HEADER)
+        cells = [struct.unpack_from('<II', d, size + i * 8) for i in range(n_cells)]
+        at = size + n_cells * 8
+        self.assertEqual(len(d), at + n_points * 12)
+        self.assertEqual([c[0] for c in cells], sorted(c[0] for c in cells))
+        out = {}
+        for i, (key, first) in enumerate(cells):
+            last = cells[i + 1][1] if i + 1 < n_cells else n_points
+            out[key] = [struct.unpack_from('<iiBBH', d, at + k * 12) for k in range(first, last)]
+        return out
+
+    def test_layers_what_is_kept(self):
+        """Traffic lights, speed bumps, car parks (the user 2026-11-06): where, what, is it paid; the others left out."""
+        self.assertEqual([make_layers.kind_of(t) for t in (
+            {'highway': 'traffic_signals'}, {'highway': 'crossing'}, {'traffic_calming': 'bump'}, {'traffic_calming': 'hump'},
+            {'traffic_calming': 'table'}, {'traffic_calming': 'cushion'}, {'traffic_calming': 'choker'}, {'traffic_calming': 'island'},
+            {'amenity': 'parking'}, {'amenity': 'parking', 'access': 'private'}, {'amenity': 'parking', 'access': 'no'},
+            {'amenity': 'parking', 'access': 'customers'}, {'amenity': 'fuel'}, {})],
+            [make_layers.SIGNAL, None, make_layers.BUMP, make_layers.BUMP, make_layers.BUMP, make_layers.BUMP, None, None,
+             make_layers.PARKING, None, None, make_layers.PARKING, None, None])
+        self.assertEqual([make_layers.fee_of(t) for t in (
+            {}, {'fee': 'yes'}, {'fee': 'no'}, {'fee': 'no', 'fee:conditional': 'yes @ (Mo-Fr 08:00-21:00)'},
+            {'fee:conditional': 'yes @ (Mo-Fr)'}, {'fee': 'interval'}, {'fee': '200 руб/час'})],
+            [make_layers.FEE_UNKNOWN, make_layers.FEE_PAID, make_layers.FEE_FREE, make_layers.FEE_PAID, make_layers.FEE_PAID,
+             make_layers.FEE_UNKNOWN, make_layers.FEE_PAID])
+        self.assertEqual([make_layers.places_of(t) for t in (
+            {}, {'capacity': '12'}, {'capacity': '~30'}, {'capacity': '70000'}, {'capacity': '-1'}, {'capacity': '0'})],
+            [0, 12, 0, 65535, 0, 0])
+
+    def test_layers_file(self):
+        osm = os.path.join(self.tmp, 'layers.osm')
+        with open(osm, 'w', encoding='utf-8') as f:
+            f.write('''<?xml version="1.0" encoding="UTF-8"?><osm version="0.6" generator="t">
+<node id="1" lat="53.0000" lon="50.0000" version="1"><tag k="highway" v="traffic_signals"/></node>
+<node id="2" lat="53.0050" lon="50.0050" version="1"><tag k="traffic_calming" v="bump"/></node>
+<node id="3" lat="53.0200" lon="50.0000" version="1"><tag k="amenity" v="parking"/><tag k="fee" v="yes"/><tag k="capacity" v="40"/></node>
+<node id="4" lat="53.0400" lon="50.0000" version="1"><tag k="amenity" v="fuel"/></node>
+<node id="5" lat="53.0400" lon="50.0400" version="1"/><node id="6" lat="53.0400" lon="50.0420" version="1"/>
+<node id="7" lat="53.0420" lon="50.0420" version="1"/><node id="8" lat="53.0420" lon="50.0400" version="1"/>
+<way id="1" version="1"><nd ref="5"/><nd ref="6"/><nd ref="7"/><nd ref="8"/><nd ref="5"/><tag k="amenity" v="parking"/><tag k="fee" v="no"/></way>
+<way id="2" version="1"><nd ref="5"/><nd ref="6"/><tag k="traffic_calming" v="hump"/></way>
+<way id="3" version="1"><nd ref="5"/><nd ref="7"/><tag k="highway" v="residential"/></way>
+</osm>''')
+        out = os.path.join(self.tmp, 'layers.lay')
+        make_layers.build(osm, out)
+        cells = self.layers(out)
+        key = make_layers.cell_of(53000000, 50000000)
+        self.assertEqual(key, (14300 << 16) | 23000)
+        self.assertEqual(sorted(cells[key]), [(53000000, 50000000, make_layers.SIGNAL, 0, 0),
+                                              (53005000, 50005000, make_layers.BUMP, 0, 0)])
+        self.assertEqual(cells[make_layers.cell_of(53020000, 50000000)],
+                         [(53020000, 50000000, make_layers.PARKING, make_layers.FEE_PAID, 40)])
+        pts = [p for c in cells.values() for p in c]
+        self.assertEqual(len(pts), 5)   # (the fuel station and the road not; the closed outline's first node once)
+        park = [p for p in pts if p[3] == make_layers.FEE_FREE]
+        self.assertEqual(len(park), 1)
+        self.assertEqual(park[0][:2], (53041000, 50041000))
+        self.assertIn((53040000, 50041000, make_layers.BUMP, 0, 0), pts)
+
+    def test_layers_empty_region(self):
+        osm = os.path.join(self.tmp, 'none.osm')
+        with open(osm, 'w', encoding='utf-8') as f:
+            f.write('<?xml version="1.0" encoding="UTF-8"?><osm version="0.6" generator="t"></osm>')
+        out = os.path.join(self.tmp, 'none.lay')
+        make_layers.build(osm, out)
+        self.assertEqual(self.layers(out), {})
+
+    def test_layers_format(self):
+        """What layers.h reads: the numbers are the file's, the cells' order holds whichever way the points lie."""
+        self.assertEqual((make_layers.SIGNAL, make_layers.BUMP, make_layers.PARKING), (1, 2, 3))
+        self.assertEqual((make_layers.FEE_UNKNOWN, make_layers.FEE_FREE, make_layers.FEE_PAID), (0, 1, 2))
+        self.assertEqual(make_layers.cell_of(53009999, 50009999), (14300 << 16) | 23000)
+        out = os.path.join(self.tmp, 'order.lay')
+        make_layers.write([(53020000, 50000000, 1, 0, 0), (53000000, 50020000, 1, 0, 0), (53000100, 50010000, 1, 0, 0),
+                           (53000200, 50000000, 1, 0, 0)], out)
+        self.assertEqual(len(self.layers(out)), 4)
+
+    def test_layers_command(self):
+        """The line make_region's steps and test_offline.bat run."""
+        script = os.path.join(HERE, '..', 'make_layers.py')
+        osm, out = os.path.join(HERE, 'layers.osm'), os.path.join(self.tmp, 'cmd.lay')
+        self.assertEqual(subprocess.run([sys.executable, script, osm, out]).returncode, 0)
+        self.assertEqual(sum(len(c) for c in self.layers(out).values()), 7)
+        self.assertNotEqual(subprocess.run([sys.executable, script, osm], stderr=subprocess.DEVNULL).returncode, 0)
 
     def test_graph_barriers(self):
         """The barriers on roads (the user 2026-10-29: a route through a hospital's grounds, closed by gates): a gate

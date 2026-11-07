@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The layers on the test map (tiny.osm's box): native_osm/test_offline.cpp. A cell is 0.01 degree: on the first row two cells, west and east, then a row of one point and a row of two (past the map's roads). -->
+<osm version="0.6" generator="hand">
+  <node id="1" lat="53.0005" lon="50.001" version="1"><tag k="highway" v="traffic_signals"/></node>
+  <node id="2" lat="53.000" lon="50.005" version="1"><tag k="traffic_calming" v="bump"/></node>
+  <node id="3" lat="53.001" lon="50.003" version="1"><tag k="amenity" v="parking"/><tag k="fee" v="yes"/><tag k="capacity" v="40"/></node>
+  <node id="4" lat="53.0012" lon="50.012" version="1"><tag k="amenity" v="parking"/><tag k="fee" v="no"/></node>
+  <node id="5" lat="53.0105" lon="50.001" version="1"><tag k="highway" v="traffic_signals"/></node>
+  <node id="6" lat="53.0205" lon="50.001" version="1"><tag k="traffic_calming" v="bump"/></node>
+  <node id="7" lat="53.0206" lon="50.002" version="1"><tag k="amenity" v="parking"/><tag k="fee" v="no"/></node>
+</osm>

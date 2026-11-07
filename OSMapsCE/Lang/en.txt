@@ -252,3 +252,12 @@ GPS: поиск · %d	GPS: searching · %d
 Вы приехали	You have arrived
 Маршрут не построен	No route built
 Вне маршрута, перестраиваю…	Off the route, recalculating…
+Светофоры	Traffic lights
+значки на карте, из скачанной области	signs on the map, of a downloaded region
+Неровности	Speed bumps
+значки и предупреждение в пути	signs and a warning on the way
+Неровность · %d м	Speed bump · %d m
+Парковки	Car parks
+Парковки · приблизьте карту	Car parks · zoom in
+Парковки · нет в этом месте	Car parks · none here
+ПАРКОВКИ	PARKING

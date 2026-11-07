@@ -14,6 +14,7 @@ A navigation app on [OpenStreetMap](https://www.openstreetmap.org) maps for Wind
 - **Routes:** search for addresses and places, turn guidance, rerouting when you leave the route, alternatives with time estimates, avoiding toll roads, a card for complex junctions.
 - **Route editor:** long press on the map, up to three stops, your own starting point. Without a GPS signal, a route starts from the last known location, or from the map center if GPS has not worked yet. Favorite places show on the map.
 - **Traffic:** updated every 10 minutes. In the map settings, "Traffic: Route" shows it on the route line only.
+- **OSM layers:** one button cycles traffic, car parks, neither; paid car parks are red, free ones green, unknown ones grey. Traffic lights and speed bumps have their own switches in the map settings, and a caption warns of a bump ahead. They need a region package built with these layers.
 - **GPS:** the car on the map, north-up and heading-up modes.
 - **Interface language:** Russian or English, in Настройки → Язык / Language (Settings → Language). Map labels and region names stay in Russian or the local language. For another language, add a file to the `Lang` folder: a copy of `en.txt` with your translation.
 - **On the Lada Vesta with VestaHome:** the theme color and a map widget on the home screen. During a route the widget shows the road and the maneuver, and other screens show the maneuver in the top bar.

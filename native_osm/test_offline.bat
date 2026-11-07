@@ -16,6 +16,7 @@ if not exist %MAP% mkdir %MAP%
 if not "%1"=="build" (
   python ..\offline\make_graph.py ..\offline\test\tiny.osm %MAP%\route.grf >nul || exit /b 1
   python ..\offline\make_search.py ..\offline\test\tiny.osm %MAP%\search.idx >nul || exit /b 1
+  python ..\offline\make_layers.py ..\offline\test\layers.osm %MAP%\layers.lay >nul || exit /b 1
   rem the trunk roads (4b): tiny's primary and tertiary streets (the residential ones only the region's)
   if not exist obj\test\OSMapsData\trunk mkdir obj\test\OSMapsData\trunk
   python ..\offline\test\make_test_trunk.py ..\offline\test\tiny.osm obj\test\OSMapsData\trunk\trunk.grf >nul || exit /b 1
@@ -36,7 +37,7 @@ if not "%1"=="build" (
 )
 set OPT=/O2
 if "%COVER%"=="1" set OPT=/Od /Zi
-"%VC%\bin\cl.exe" /nologo %OPT% /W3 /MT /TP test_offline.cpp fling.cpp zoomanim.cpp trafshade.cpp offline.cpp offsearch.cpp offdata.cpp vpack.cpp offmaps.cpp lang.cpp "%CORE%\vjson.cpp" image.cpp /Foobj\test\ /Fdobj\test\ ^
+"%VC%\bin\cl.exe" /nologo %OPT% /W3 /MT /TP test_offline.cpp fling.cpp zoomanim.cpp trafshade.cpp layers.cpp offline.cpp offsearch.cpp offdata.cpp vpack.cpp offmaps.cpp lang.cpp "%CORE%\vjson.cpp" image.cpp /Foobj\test\ /Fdobj\test\ ^
   /Feobj\test\test_offline.exe /DUNICODE /D_UNICODE /DWIN32 /DNDEBUG /D_CRT_SECURE_NO_WARNINGS ^
   /I"%CORE%" /I"%VC%\include" /I"%VC%\PlatformSDK\Include" /link /DEBUG /LIBPATH:"%VC%\lib" ^
   /LIBPATH:"%VC%\PlatformSDK\Lib" kernel32.lib user32.lib gdi32.lib >obj\test\build.log

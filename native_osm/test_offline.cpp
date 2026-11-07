@@ -6,6 +6,7 @@
 #include "fling.h"
 #include "zoomanim.h"
 #include "trafshade.h"
+#include "layers.h"
 
 Config  g_cfg;
 wchar_t g_dir[MAX_PATH];
@@ -595,6 +596,12 @@ static void MapsChecks()
     Check(FileIs(L"..\\unzip\\region.txt", "name=zipped\ndate=2026-10-29\n", 28), "maps: region.txt", NULL);
     static const char* kMissing[1] = { "nope.bin" };
     Check(!ZipExtract(zip, dir, kMissing, 1), "maps: a file the zip has not - false", NULL);
+    static const char* kMaybe[2] = { "?nope.bin", "region.txt" };
+    Check(ZipExtract(zip, dir, kMaybe, 2), "maps: \"?\" - it may be missing, the rest goes on", NULL);
+    static const char* kLayers[1] = { "?layers.lay" };
+    wchar_t full[MAX_PATH];
+    PathInDir(full, L"..\\full.zip");
+    Check(ZipExtract(full, dir, kLayers, 1) && FileIs(L"..\\unzip\\layers.lay", "LAYLAYLAYLAY", 12), "maps: \"?\" - there: unpacked", NULL);
 }
 
 static bool Writable(const wchar_t* name)   // the data folder's file can be opened for writing (nothing holds it)
@@ -779,6 +786,169 @@ static void DropChecks()
     free(r);
 }
 
+static void PutFile(const wchar_t* name, const void* data, DWORD n)
+{
+    wchar_t path[MAX_PATH];
+    PathInDir(path, name);
+    HANDLE f = CreateFile(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
+    DWORD wr;
+    WriteFile(f, data, n, &wr, NULL);
+    CloseHandle(f);
+}
+
+static int ReadBad(const void* data, DWORD n)
+{
+    wchar_t path[MAX_PATH];
+    PathInDir(path, L"..\\bad.lay");
+    PutFile(L"..\\bad.lay", data, n);
+    int box[4] = { 53000000, 50000000, 53001000, 50001000 };
+    LayerPoint p[4];
+    int got = LayersRead(path, box, p, 4);
+    DeleteFile(path);
+    return got;
+}
+
+static void LayerFileChecks()   // layers.lay as make_layers.py writes it
+{
+    wchar_t path[MAX_PATH];
+    PathInDir(path, L"..\\OSMapsData\\tiny\\layers.lay");
+    LayerPoint p[8];
+    int west[4] = { 53000000, 50000000, 53002000, 50004000 }, both[4] = { 53000000, 50000000, 53002000, 50015000 };
+    int n = LayersRead(path, west, p, 8);
+    Check(sizeof(LayerPoint) == 12, "layers: a point is 12 bytes", NULL);
+    Check(n == 3, "layers: the box's cells whole, the next cell not", NULL);
+    Check(LayersRead(path, both, p, 8) == 4, "layers: two cells", NULL);
+    int kinds = 0, paid = 0;
+    for (int i = 0; i < 4; i++) {
+        kinds |= 1 << p[i].kind;
+        if (p[i].fee == FEE_PAID)
+            paid = p[i].places;
+    }
+    Check(kinds == (1 << LAY_SIGNAL | 1 << LAY_BUMP | 1 << LAY_PARKING), "layers: the kinds", NULL);
+    Check(paid == 40, "layers: a paid car park's places", NULL);
+    Check(LayersRead(path, both, p, 2) == 2, "layers: no more than asked", NULL);
+    int north[4] = { 53030000, 50000000, 53040000, 50015000 }, east[4] = { 53000000, 50020000, 53002000, 50030000 };
+    Check(LayersRead(path, north, p, 8) == 0 && LayersRead(path, east, p, 8) == 0, "layers: no cells there - none", NULL);
+    int cellEnd[4] = { 53000000, 50000000, 53009999, 50009999 };
+    Check(LayersRead(path, cellEnd, p, 8) == 3, "layers: a box up to a cell's last - not the next rows, not the next cell", NULL);
+    int rows[4] = { 53000000, 50000000, 53015000, 50009999 };
+    Check(LayersRead(path, rows, p, 8) == 4 && p[0].lat == 53000000 && p[3].lat == 53010500, "layers: a second row after the first, the right points", NULL);
+    int later[4] = { 53010000, 50000000, 53025000, 50009999 };
+    p[2].lat = -1;
+    Check(LayersRead(path, later, p, 2) == 2 && p[1].lat == 53020500 && p[2].lat == -1, "layers: the second row - only what room is left", NULL);
+    int last[4] = { 53020000, 50000000, 53025000, 50009999 };
+    Check(LayersRead(path, last, p, 8) == 2, "layers: the file's last cell - up to its last point", NULL);
+    Check(LayersRead(L"nope\\layers.lay", both, p, 8) == -1, "layers: no file", NULL);
+    unsigned head[6] = { 0x4C4D534F, 1, 1, 0, 0, 0 };   // 'OSML', version, cells, points; a cell
+    Check(ReadBad("OSM", 3) == -1, "layers: cut short", NULL);
+    Check(ReadBad(head, 20) == -1, "layers: a cell's bytes past what it tells", NULL);
+    Check(ReadBad(head, 24) == 0, "layers: exactly the cells' bytes read", NULL);
+    head[2] = 0;
+    Check(ReadBad(head, 16) == 0, "layers: an empty region's file", NULL);
+    head[1] = 2;
+    Check(ReadBad(head, 16) == -1, "layers: another version", NULL);
+    head[1] = 1;
+    head[0] = 0;
+    Check(ReadBad(head, 16) == -1, "layers: another file", NULL);
+    head[0] = 0x4C4D534F;
+    head[3] = 1;
+    Check(ReadBad(head, 16) == -1, "layers: points told, none there", NULL);
+}
+
+static void LayerBoxChecks()   // any side of the box to another cell: read anew
+{
+    int n = -1;
+    int both[4] = { 53000000, 50000000, 53002000, 50015000 }, eastOnly[4] = { 53000000, 50010000, 53002000, 50015000 };
+    LayersIn(both, &n);
+    LayersIn(eastOnly, &n);
+    Check(n == 1, "layers: its west side moved", NULL);
+    int low[4] = { 52990000, 50000000, 53009999, 50015000 }, high[4] = { 52990000, 50000000, 53010500, 50015000 };
+    LayersIn(low, &n);
+    Check(n == 4, "layers: a box wider than the points", NULL);
+    LayersIn(high, &n);
+    Check(n == 5, "layers: its north side moved", NULL);
+    int south[4] = { 53010000, 50000000, 53010500, 50015000 };
+    LayersIn(south, &n);
+    Check(n < 5, "layers: its south side moved", NULL);
+}
+
+static void LayerRegionChecks()   // the region's under the box, kept
+{
+    LayersDrop();
+    int n = -1;
+    int west[4] = { 53000000, 50000000, 53002000, 50004000 }, both[4] = { 53000000, 50000000, 53002000, 50015000 };
+    const LayerPoint* p = LayersIn(west, &n);
+    Check(p && n == 3, "layers: the region's under the box", NULL);
+    int same[4] = { 53001000, 50001000, 53003000, 50005000 };
+    wchar_t path[MAX_PATH], kept[MAX_PATH];
+    PathInDir(path, L"..\\OSMapsData\\tiny\\layers.lay");
+    PathInDir(kept, L"..\\OSMapsData\\tiny\\layers.keep");
+    Check(MoveFile(path, kept) != 0, "layers: nothing held open between the calls (a download can write over it)", NULL);
+    LayersIn(same, &n);
+    Check(n == 3, "layers: the same cells - kept, not read", NULL);
+    LayersIn(both, &n);
+    Check(n == 0, "layers: the file gone, other cells - none", NULL);
+    MoveFile(kept, path);
+    LayersDrop();
+    LayersIn(both, &n);
+    Check(n == 4, "layers: dropped - read anew", NULL);
+    LayersPause(true);
+    LayersIn(west, &n);
+    Check(n == 4, "layers: a region being written - the points in hand stay", NULL);
+    LayersPause(false);
+    LayersIn(both, &n);
+    Check(n == 4, "layers: after it", NULL);
+    LayersIn(west, &n);
+    Check(n == 3, "layers: after it, other cells read", NULL);
+    int nowhere[4] = { 10000000, 10000000, 10001000, 10001000 };
+    LayersIn(nowhere, &n);
+    Check(n == 0, "layers: no region there - none", NULL);
+    LayersIn(west, &n);
+    Check(n == 3, "layers: back in the region, not held off by the failed try", NULL);
+    LayersPause(true);
+    LayersIn(west, &n);
+    MoveFile(path, kept);
+    LayersPause(false);
+    LayersIn(west, &n);
+    Check(n == 0, "layers: after a region was written - the same cells read anew", NULL);
+    MoveFile(kept, path);
+    LayersPause(true);
+    LayersDrop();
+    LayersIn(west, &n);
+    Check(n == 0, "layers: dropped while a region is written - none in hand", NULL);
+    LayersPause(false);
+    LayerBoxChecks();
+    LayersDrop();
+}
+
+static void LayerAheadChecks()
+{
+    LayerPoint p[3] = { { 53000000, 50005000, LAY_BUMP, 0, 0 }, { 53000000, 50004000, LAY_SIGNAL, 0, 0 }, { 53000000, 50007000, LAY_BUMP, 0, 0 } };
+    int d = 0;
+    Check(LayerAhead(p, 3, LAY_BUMP, 53000000, 50003000, 90, 200, &d) && d > 125 && d < 142, "ahead: east, the nearest of its kind", NULL);
+    Check(LayerAhead(p, 3, LAY_SIGNAL, 53000000, 50003000, 90, 200, &d) && d > 60 && d < 75, "ahead: another kind", NULL);
+    Check(!LayerAhead(p, 3, LAY_BUMP, 53000000, 50003000, 90, 100, &d), "ahead: too far yet", NULL);
+    Check(!LayerAhead(p, 3, LAY_BUMP, 53000000, 50003000, 270, 200, &d), "ahead: behind", NULL);
+    Check(!LayerAhead(p, 3, LAY_BUMP, 53000000, 50003000, 0, 200, &d), "ahead: to the side", NULL);
+    Check(!LayerAhead(p, 3, LAY_BUMP, 53000400, 50003000, 90, 200, &d), "ahead: on the next street (44 m off the line)", NULL);
+    Check(LayerAhead(p, 3, LAY_BUMP, 53000100, 50003000, 90, 200, &d), "ahead: a little off the line (GPS)", NULL);
+    Check(LayerAhead(p, 3, LAY_BUMP, 53000000, 50006000, 90, 200, &d) && d > 60 && d < 75, "ahead: the one passed no more", NULL);
+    Check(LayerAhead(p, 3, LAY_BUMP, 53000000, 50006000, 270, 200, &d) && d > 60 && d < 75, "ahead: the other way - the other one", NULL);
+    Check(!LayerAhead(p, 0, LAY_BUMP, 53000000, 50003000, 90, 200, &d), "ahead: no points", NULL);
+    Check(LayerAhead(p, 3, LAY_BUMP, 53000000, 50005000, 90, 200, &d) && d == 0, "ahead: right on it", NULL);
+    LayerPoint distant = { 52999784, 50014944, LAY_BUMP, 0, 0 };   // (1000 m east, 24 m south: the degrees' metres at this latitude)
+    Check(LayerAhead(&distant, 1, LAY_BUMP, 53000000, 50000000, 90, 2000, &d) && d >= 999 && d <= 1001, "ahead: far on, the line's edge, the distance exact", NULL);
+    LayerPoint ne = { 53000636, 50001057, LAY_BUMP, 0, 0 };    // (100 m north-east)
+    Check(LayerAhead(&ne, 1, LAY_BUMP, 53000000, 50000000, 45, 200, &d) && d >= 99 && d <= 101, "ahead: a diagonal course", NULL);
+    int t = 1, c = 0;
+    OverlayNext(&t, &c);
+    Check(!t && c, "overlay: traffic -> car parks", NULL);
+    OverlayNext(&t, &c);
+    Check(!t && !c, "overlay: car parks -> neither", NULL);
+    OverlayNext(&t, &c);
+    Check(t && !c, "overlay: neither -> traffic", NULL);
+}
+
 static void TrafficLookChecks()   // how the traffic is shown (trafshade.cpp)
 {
     TrafficLook t = TrafficLookOf(true, false, false, true);
@@ -815,6 +985,9 @@ int main()
     FlingChecks();
     ZoomChecks();
     TrafficLookChecks();
+    LayerFileChecks();
+    LayerRegionChecks();
+    LayerAheadChecks();
 
     // along the main street, west to east: ~400 m, no turn on the way
     char* b = Route("50.000,53.000;50.006,53.000");

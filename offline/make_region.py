@@ -23,6 +23,7 @@ import urllib.request
 import osmium
 
 import make_graph
+import make_layers
 import make_search
 import make_tiles
 
@@ -182,7 +183,7 @@ def build(name, url, work=WORK, data=DATA, run=subprocess.check_call):
     os.makedirs(out, exist_ok=True)
     urls = [url] if isinstance(url, str) else url
     pbf, parts, new = extract(name, urls, work)
-    steps = [(make_graph.build, 'route.grf'), (make_search.build, 'search.idx')]
+    steps = [(make_graph.build, 'route.grf'), (make_search.build, 'search.idx'), (make_layers.build, 'layers.lay')]
     tiles = tile_builder(work, run)
     if tiles:
         steps.append((tiles, 'tiles.vtp'))

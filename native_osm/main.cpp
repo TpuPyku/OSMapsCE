@@ -2,6 +2,7 @@
 #include "fling.h"
 #include "zoomanim.h"
 #include "trafshade.h"
+#include "layers.h"
 #include "vkeys.h"     // VestaCore: the keyboard's text and cursor (VestaHome's)
 #include "vfavs.h"     // VestaCore: the favourite places (VestaHome reads them too)
 #include "vversion.h"   // VestaCore: the version "major.minor.YYMMDD" (the date: this file's build)
@@ -303,12 +304,15 @@ static int s_setSheet;   // SHEET_*
 // 2026-10-29: the graphs for the routes and the search without the internet) - the release's catalog by its titles,
 // kMapsRows a page, a row's button downloads it (the trunk roads after the first one), "ОТМЕНА" while it goes;
 // "ЗАГРУЗИТЬ" and "ОК" (the same again) asked "ТОЧНО?"
-enum { M_KIND_PREV, M_KIND_NEXT, M_DETAIL_PREV, M_DETAIL_NEXT, M_TRF_PREV, M_TRF_NEXT, M_REGIONS, M_BACK, M_COUNT };
+enum { M_KIND_PREV, M_KIND_NEXT, M_DETAIL_PREV, M_DETAIL_NEXT, M_TRF_PREV, M_TRF_NEXT, M_SIGNAL_PREV, M_SIGNAL_NEXT, M_BUMP_PREV,
+       M_BUMP_NEXT, M_REGIONS, M_BACK, M_COUNT };
 static const RECT kMapsCtl[M_COUNT] = {
     { 512, 79, 560, 123 }, { 712, 79, 760, 123 },     // the steppers: the kind, the detail
     { 512, 129, 560, 173 }, { 712, 129, 760, 173 },
     { 512, 179, 560, 223 }, { 712, 179, 760, 223 },   // the traffic: on the map / on the route alone
-    { 576, 229, 760, 273 },                            // the regions' page
+    { 512, 229, 560, 273 }, { 712, 229, 760, 273 },   // the layers of a downloaded region: traffic lights, speed bumps
+    { 512, 279, 560, 323 }, { 712, 279, 760, 323 },
+    { 576, 329, 760, 373 },                            // the regions' page
     { 8, 412, 80, 480 },                               // back to the settings
 };
 enum { kMapsRows = 6 };
@@ -1080,6 +1084,10 @@ static void OnMapsCtl(int id)
         ConfigSave();
         Ensure(REQ_AUTO);   // (the route alone, none: no requests)
         break;
+    case M_SIGNAL_PREV:
+    case M_SIGNAL_NEXT: g_cfg.layerSignals = !g_cfg.layerSignals; ConfigSave(); break;
+    case M_BUMP_PREV:
+    case M_BUMP_NEXT:   g_cfg.layerBumps = !g_cfg.layerBumps; ConfigSave(); break;
     case M_BACK:        s_maps = false; break;
     case M_REGIONS:
         s_regions = true;
@@ -1321,7 +1329,7 @@ static void OnButton(int b)
         NightShare(g_cfg.night != 0);   // VestaHome follows (VestaCore vnight)
         return;
     case B_EXIT:   DestroyWindow(s_wnd); return;
-    case B_TRF:    g_cfg.traffic = !g_cfg.traffic; break;
+    case B_TRF:    OverlayNext(&g_cfg.traffic, &g_cfg.parking); break;
     case B_TSRC:   g_cfg.trafficSrc = (g_cfg.trafficSrc + 1) % TRF_COUNT; s_limitHit = false; break;
     case B_GPS:    NextFollowMode(); break;
     case B_LEFT:   PanBy(-g_cfg.mapW / 3.0, 0); break;
@@ -2971,6 +2979,138 @@ static void DrawFavMarks(HDC dc, double cx, double cy, double vx, double vy, dou
     }
 }
 
+// ---- the layers of a downloaded region (layers.h): traffic lights, speed bumps, car parks
+
+enum { kLayerZ = 15, kParkingZ = 14, kLayerViewPx = 900, kLayerCarDeg = 4000, kWarnKmh = 15, kWarnMinM = 100, kWarnSec = 10 };
+static const LayerPoint* s_layer;
+static int s_layerN, s_layerParks;
+
+// What is wanted of the region now: the view's points when they are shown; else, for the warning, those around the car
+static bool LayerBox(int* box, double vx, double vy)
+{
+    bool shown = (g_cfg.parking && !g_cfg.traffic && g_cfg.z >= kParkingZ) || ((g_cfg.layerSignals || g_cfg.layerBumps) && g_cfg.z >= kLayerZ);
+    if (shown) {
+        double lon0, lat0, lon1, lat1;
+        WorldToGeo(vx - kLayerViewPx, vy - kLayerViewPx, g_cfg.z, &lon0, &lat1);
+        WorldToGeo(vx + kLayerViewPx, vy + kLayerViewPx, g_cfg.z, &lon1, &lat0);
+        box[0] = (int)(lat0 * 1e6);
+        box[1] = (int)(lon0 * 1e6);
+        box[2] = (int)(lat1 * 1e6);
+        box[3] = (int)(lon1 * 1e6);
+        return true;
+    }
+    if (!g_cfg.layerBumps || !s_gps.valid)
+        return false;
+    int lat = (int)(s_gps.lat * 1e6), lon = (int)(s_gps.lon * 1e6);
+    box[0] = lat - kLayerCarDeg;
+    box[1] = lon - kLayerCarDeg;
+    box[2] = lat + kLayerCarDeg;
+    box[3] = lon + kLayerCarDeg;
+    return true;
+}
+
+static void SignalMark(HDC dc, int x, int y)   // a dark box of three lights
+{
+    static const COLORREF kLights[3] = { RGB(230, 60, 50), RGB(245, 190, 40), RGB(60, 190, 90) };
+    HBRUSH box = CreateSolidBrush(RGB(30, 34, 40));
+    HGDIOBJ ob = SelectObject(dc, box), op = SelectObject(dc, GetStockObject(WHITE_PEN));
+    RoundRect(dc, x - 6, y - 12, x + 7, y + 13, 5, 5);
+    SelectObject(dc, GetStockObject(NULL_PEN));
+    for (int i = 0; i < 3; i++) {
+        HBRUSH b = CreateSolidBrush(kLights[i]);
+        SelectObject(dc, b);
+        Ellipse(dc, x - 3, y - 10 + i * 7, x + 5, y - 2 + i * 7);
+        SelectObject(dc, box);
+        DeleteObject(b);
+    }
+    SelectObject(dc, op);
+    SelectObject(dc, ob);
+    DeleteObject(box);
+}
+
+static void BumpSign(HDC dc, int x, int y)   // the road sign's look: a warning triangle with the bump in it
+{
+    POINT tri[3] = { { x, y - 12 }, { x + 13, y + 10 }, { x - 13, y + 10 } };
+    POINT hump[5] = { { x - 7, y + 7 }, { x - 3, y + 1 }, { x + 3, y + 1 }, { x + 7, y + 7 }, { x - 7, y + 7 } };
+    HBRUSH y1 = CreateSolidBrush(RGB(250, 205, 50)), ink = CreateSolidBrush(RGB(25, 25, 25));
+    HPEN pen = CreatePen(PS_SOLID, 2, RGB(190, 40, 40));
+    HGDIOBJ ob = SelectObject(dc, y1), op = SelectObject(dc, pen);
+    Polygon(dc, tri, 3);
+    SelectObject(dc, ink);
+    SelectObject(dc, GetStockObject(NULL_PEN));
+    Polygon(dc, hump, 5);
+    SelectObject(dc, op);
+    SelectObject(dc, ob);
+    DeleteObject(pen);
+    DeleteObject(ink);
+    DeleteObject(y1);
+}
+
+static void ParkingMark(HDC dc, int x, int y, int fee)   // red paid, green free, grey: not told (never as free: a fine)
+{
+    COLORREF c = fee == FEE_PAID ? RGB(205, 60, 50) : fee == FEE_FREE ? RGB(40, 150, 75) : RGB(110, 120, 130);
+    HBRUSH b = CreateSolidBrush(c);
+    HGDIOBJ ob = SelectObject(dc, b), op = SelectObject(dc, GetStockObject(WHITE_PEN));
+    RoundRect(dc, x - 11, y - 11, x + 12, y + 12, 7, 7);
+    SelectObject(dc, op);
+    SelectObject(dc, ob);
+    DeleteObject(b);
+    FavSign(dc, VFAV_PARKING, x, y, 8, RGB(255, 255, 255), c);
+}
+
+static void LayerMark(HDC dc, const LayerPoint& p, int x, int y)
+{
+    if (p.kind == LAY_PARKING)
+        ParkingMark(dc, x, y, p.fee);
+    else if (p.kind == LAY_BUMP)
+        BumpSign(dc, x, y);
+    else
+        SignalMark(dc, x, y);
+}
+
+static bool LayerShown(const LayerPoint& p)
+{
+    if (p.kind == LAY_PARKING)
+        return g_cfg.parking && !g_cfg.traffic && g_cfg.z >= kParkingZ;
+    return (p.kind == LAY_BUMP ? g_cfg.layerBumps : g_cfg.layerSignals) && g_cfg.z >= kLayerZ;
+}
+
+static void DrawLayers(HDC dc, double cx, double cy, double vx, double vy, double angle)
+{
+    int box[4];
+    s_layerN = s_layerParks = 0;
+    if (!LayerBox(box, vx, vy))
+        return;
+    s_layer = LayersIn(box, &s_layerN);
+    for (int i = 0; i < s_layerN; i++) {
+        const LayerPoint& p = s_layer[i];
+        s_layerParks += p.kind == LAY_PARKING;
+        double gx, gy, sx, sy;
+        if (!LayerShown(p))
+            continue;
+        GeoToWorld(p.lon * 1e-6, p.lat * 1e-6, g_cfg.z, &gx, &gy);
+        if (ScreenOf(gx, gy, vx, vy, cx, cy, angle, &sx, &sy) && (!s_dockShown || sy + 16 <= kDockY + s_dockOff))
+            LayerMark(dc, p, Round(sx), Round(sy));
+    }
+}
+
+// A speed bump on the way ahead (the user 2026-11-06: with a warning): at 10 s of the speed, at least 100 m
+static void DrawBumpWarning(HDC dc)
+{
+    double m = s_gps.speedKmh / 3.6 * kWarnSec;
+    int d;
+    if (!g_cfg.layerBumps || !s_gps.valid || s_gps.speedKmh < kWarnKmh ||
+        !LayerAhead(s_layer, s_layerN, LAY_BUMP, (int)(s_gps.lat * 1e6), (int)(s_gps.lon * 1e6), s_gps.course, m > kWarnMinM ? (int)m : kWarnMinM, &d))
+        return;
+    RECT r = { 470, 56, 712, 104 };
+    Card(dc, r, 16);
+    BumpSign(dc, r.left + 26, r.top + 24);
+    wchar_t s[48];
+    _snwprintf(s, 48, Tr(L"Неровность · %d м"), d);
+    s[47] = 0;
+    Text(dc, s_fontLabel, kText, r.left + 46, r.top, r.right - 8, r.bottom, DT_LEFT, s);
+}
+
 static int FavAt(int x, int y)   // the mark under the finger (the nearest within 26 px), -1: none
 {
     int best = -1, bd = 26 * 26;
@@ -3116,6 +3256,7 @@ static void DrawMap(HDC dc)
     }
     PartLap(PT_LABELS);
     DrawAttribution(dc, mr);
+    DrawLayers(dc, cx, cy, vx, vy, angle);
     DrawRoute(dc, cx, cy, vx, vy, angle);
     DrawFavMarks(dc, cx, cy, vx, vy, angle);
     ZoomKeep(dc, mr);
@@ -3488,7 +3629,11 @@ static void MapsLook(HDC dc)
                                                                    : L"на карте и на маршруте", true);
     StepperAt(dc, kMapsCtl[M_TRF_PREV], kMapsCtl[M_TRF_NEXT], s_mapsPressed - M_TRF_PREV,
               g_cfg.trafficRoute ? L"Маршрут" : L"Везде");
-    SetRow(dc, kSetRow0 + 3 * kSetRowH, L"Карты областей", L"маршрут и поиск без интернета", false);
+    SetRow(dc, kSetRow0 + 3 * kSetRowH, L"Светофоры", L"значки на карте, из скачанной области", true);
+    StepperAt(dc, kMapsCtl[M_SIGNAL_PREV], kMapsCtl[M_SIGNAL_NEXT], s_mapsPressed - M_SIGNAL_PREV, g_cfg.layerSignals ? L"Вкл" : L"Выкл");
+    SetRow(dc, kSetRow0 + 4 * kSetRowH, L"Неровности", L"значки и предупреждение в пути", true);
+    StepperAt(dc, kMapsCtl[M_BUMP_PREV], kMapsCtl[M_BUMP_NEXT], s_mapsPressed - M_BUMP_PREV, g_cfg.layerBumps ? L"Вкл" : L"Выкл");
+    SetRow(dc, kSetRow0 + 5 * kSetRowH, L"Карты областей", L"маршрут и поиск без интернета", false);
     DrawCtl(dc, kMapsCtl[M_REGIONS], s_mapsPressed == M_REGIONS, s_fontLabel, L"СКАЧАТЬ");
 }
 
@@ -3525,7 +3670,7 @@ static void DrawMaps(HDC dc)
     _snwprintf(s, 32, L"%02d:%02d", t.wHour, t.wMinute);
     Text(dc, s_fontClock, kText, s_cw - 160, 0, s_cw - 16, 56, DT_RIGHT, s);
     BackDisc(dc, s_mapsPressed == (s_regions ? R_BACK : M_BACK));
-    RECT panel = { 16, 64, s_cw - 16, s_regions ? 412 : 276 };
+    RECT panel = { 16, 64, s_cw - 16, s_regions ? 412 : 376 };
     Tile(dc, panel, kPanel, kPanel, 32);
     if (s_regions)
         DrawRegions(dc);
@@ -5241,6 +5386,8 @@ static void DrawStatus(HDC dc)
         bg = errBg;
     } else if (s_inflight) {
         wcscpy(s, L"Загрузка…");
+    } else if (g_cfg.parking && !g_cfg.traffic) {
+        wcscpy(s, g_cfg.z < kParkingZ ? L"Парковки · приблизьте карту" : s_layerParks ? L"Парковки" : L"Парковки · нет в этом месте");
     } else if (!g_cfg.traffic) {
         wcscpy(s, L"Пробки выкл.");
     } else if (!TrafficWanted()) {   // (on the route alone, no route)
@@ -5262,7 +5409,9 @@ static void DrawStatus(HDC dc)
 static void DrawSign(HDC dc, int b, const RECT& r, int pressed)
 {
     const Overlay* ov = s_btn[b].ov[ButtonState(b)][pressed];
-    if (ov)
+    if (b == B_TRF && g_cfg.parking && !g_cfg.traffic)
+        FavSign(dc, VFAV_PARKING, (r.left + r.right) / 2, (r.top + r.bottom) / 2, 13, pressed ? kInk : kOrange, kPanel);
+    else if (ov)
         BlendSign(dc, ov, (r.left + r.right - ov->w) / 2, (r.top + r.bottom - ov->h) / 2);
     else
         Text(dc, s_fontSmall, kText, r.left, r.top, r.right, r.bottom, DT_CENTER, s_btn[b].name[0] + 1);
@@ -5273,7 +5422,7 @@ static const wchar_t* DockCaption(int b)
 {
     switch (b) {
     case B_HOME:     return L"ДОМОЙ";
-    case B_TRF:      return L"ПРОБКИ";
+    case B_TRF:      return g_cfg.parking && !g_cfg.traffic ? L"ПАРКОВКИ" : L"ПРОБКИ";
     case B_TSRC:     return g_cfg.trafficSrc == TRF_2GIS ? L"2ГИС" : L"ЯНДЕКС";
     case B_NIGHT:    return g_cfg.night ? L"ДЕНЬ" : L"НОЧЬ";   // as VestaHome: what a tap turns on
     case B_SETTINGS: return L"НАСТРОЙКИ";
@@ -5326,7 +5475,7 @@ static void DrawButtons(HDC dc)
         // bold caption under it
         RECT ic = { r.left, r.top - 2, r.right, r.top + 42 };
         DrawSign(dc, i, ic, pressed);
-        bool on = i == B_TRF && g_cfg.traffic;
+        bool on = i == B_TRF && (g_cfg.traffic || g_cfg.parking);
         Text(dc, s_fontCap, pressed ? kInk : on ? kOrange : kTextDim, r.left, r.top + 39, r.right, r.bottom,
              DT_CENTER, DockCaption(i));
     }
@@ -5363,6 +5512,7 @@ static void Paint(HDC hdc)
         DrawStatus(dc);
         if (s_pickSlot < 0 && RouteAlts() < 2)   // (not over the alternatives' panel)
             DrawGuide(dc);
+        DrawBumpWarning(dc);
         AltFit();
         DrawTrip(dc);
         DrawButtons(dc);
