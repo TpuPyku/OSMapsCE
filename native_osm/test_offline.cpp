@@ -366,6 +366,7 @@ static void DiskChecks()
     free(tiles);
     Check(same && FileIs(L"OSMapsData\\zz\\search.idx", "IDXIDXIDXIDXIDXIDXIDXIDXIDXIDX", 30),
           "disk: the region whole - its tiles too, unpacked piece by piece", NULL);
+    Check(FileIs(L"OSMapsData\\zz\\parking.lay", "PARKPARKPARK", 12), "disk: Moscow's park lines come with its region", NULL);
     char* ovb = FileBytes(L"OSMapsData\\overview\\overview.vtp", &n);
     Check(n == 800 && !memcmp(ovb, "OVERVIEW", 8), "disk: the overview after it", NULL);
     free(ovb);
@@ -921,6 +922,57 @@ static void LayerRegionChecks()   // the region's under the box, kept
     LayersDrop();
 }
 
+static void ParkLineChecks()   // Moscow's paid street parking as make_parklines.py writes it (parking.lay)
+{
+    wchar_t path[MAX_PATH], kept[MAX_PATH], other[MAX_PATH];
+    PathInDir(path, L"..\\OSMapsData\\tiny\\parking.lay");
+    PathInDir(kept, L"..\\OSMapsData\\tiny\\parking.keep");
+    PathInDir(other, L"..\\OSMapsData\\tiny\\layers.lay");
+    ParkLine l[8];
+    LayerPoint p[8];
+    int west[4] = { 53000000, 50000000, 53002000, 50004000 }, both[4] = { 53000000, 50000000, 53002000, 50015000 };
+    Check(sizeof(ParkLine) == 20, "park lines: a piece is 20 bytes", NULL);
+    Check(ParkLinesRead(path, west, l, 8) == 1 && l[0].lat == 53000500 && l[0].lon == 50001000 && l[0].dLat == 0 && l[0].dLon == 1000, "park lines: a cell's piece, where", NULL);
+    Check(l[0].price[0] == 4 && l[0].price[1] == 4 && l[0].price[3] == 0, "park lines: its prices", NULL);
+    Check(ParkLinesRead(path, both, l, 8) == 3 && l[2].dLat == 200 && l[2].dLon == 500 && l[2].price[1] == 38 && l[2].price[4] == 45, "park lines: two cells, in the file's order", NULL);
+    Check(ParkLinesRead(other, both, l, 8) == -1 && LayersRead(path, both, p, 8) == -1, "park lines and layers: the one's reader refuses the other's file", NULL);
+    LayersDrop();
+    int n = -1;
+    const ParkLine* in = ParkLinesIn(both, &n);
+    Check(in && n == 3 && in[0].lat == 53000500, "park lines: the region's under the box", NULL);
+    MoveFile(path, kept);
+    ParkLinesIn(both, &n);
+    Check(n == 3, "park lines: the same cells - kept, the file not held", NULL);
+    ParkLinesIn(west, &n);
+    Check(n == 0, "park lines: a region without them (all but Moscow's) - none", NULL);
+    MoveFile(kept, path);
+    LayersDrop();
+    ParkLinesIn(west, &n);
+    Check(n == 1, "park lines: dropped - read anew", NULL);
+    LayersPause(true);
+    ParkLinesIn(both, &n);
+    Check(n == 1, "park lines: a region being written - those in hand stay", NULL);
+    MoveFile(path, kept);
+    LayersPause(false);
+    ParkLinesIn(west, &n);
+    Check(n == 0, "park lines: after a region was written - read anew", NULL);
+    MoveFile(kept, path);
+    LayersDrop();
+}
+
+static void ParkPriceChecks()   // Sunday 0: as GetLocalTime tells
+{
+    ParkLine l = { 0, 0, 0, 0, { 6, 8, 7, 1, 2, 3 } };
+    Check(ParkPrice(l, 1, 0) == 60 && ParkPrice(l, 1, 7) == 60, "park price: a weekday before 8", NULL);
+    Check(ParkPrice(l, 1, 8) == 80 && ParkPrice(l, 5, 20) == 80, "park price: Monday to Friday, 8 to 21", NULL);
+    Check(ParkPrice(l, 1, 21) == 70 && ParkPrice(l, 5, 23) == 70, "park price: a weekday from 21", NULL);
+    Check(ParkPrice(l, 6, 7) == 10 && ParkPrice(l, 0, 0) == 10, "park price: the weekend before 8", NULL);
+    Check(ParkPrice(l, 6, 8) == 20 && ParkPrice(l, 0, 20) == 20, "park price: Saturday, Sunday, 8 to 21", NULL);
+    Check(ParkPrice(l, 6, 21) == 30 && ParkPrice(l, 0, 23) == 30, "park price: the weekend from 21", NULL);
+    ParkLine top = { 0, 0, 0, 0, { 255, 0, 0, 0, 0, 0 } };
+    Check(ParkPrice(top, 1, 0) == 2550, "park price: up to the byte's whole", NULL);
+}
+
 static void LayerAheadChecks()
 {
     LayerPoint p[3] = { { 53000000, 50005000, LAY_BUMP, 0, 0 }, { 53000000, 50004000, LAY_SIGNAL, 0, 0 }, { 53000000, 50007000, LAY_BUMP, 0, 0 } };
@@ -987,6 +1039,8 @@ int main()
     TrafficLookChecks();
     LayerFileChecks();
     LayerRegionChecks();
+    ParkLineChecks();
+    ParkPriceChecks();
     LayerAheadChecks();
 
     // along the main street, west to east: ~400 m, no turn on the way

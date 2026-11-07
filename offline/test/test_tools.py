@@ -2,6 +2,9 @@
 
     python -m unittest discover -s offline/test      (quality.bat runs it under coverage)
 """
+import gzip
+import io
+import json
 import math
 import os
 import pathlib
@@ -11,11 +14,14 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
+from urllib.parse import parse_qs, urlsplit
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 import make_graph    # noqa: E402
 import make_layers   # noqa: E402
+import make_parklines   # noqa: E402
 import make_region   # noqa: E402
 import make_search   # noqa: E402
 import make_tiles    # noqa: E402
@@ -249,6 +255,98 @@ class Tools(unittest.TestCase):
         make_layers.write([(53020000, 50000000, 1, 0, 0), (53000000, 50020000, 1, 0, 0), (53000100, 50010000, 1, 0, 0),
                            (53000200, 50000000, 1, 0, 0)], out)
         self.assertEqual(len(self.layers(out)), 4)
+
+    def test_parklines_prices(self):
+        """A car's rubles an hour, in tens: weekdays, the weekend x before 8, 8-21, after 21. The other vehicles and the
+        holidays not read; a differentiated tariff by its price after the first minutes; of two rates the higher (never
+        less than it may cost); a price not in tens up."""
+        kCar = 'Легковой автомобиль'
+        def row(period, hours, price=None, rest=None, car=kCar):
+            return {'TariffPeriod': period, 'TimeRange': hours, 'HourPrice': price, 'RestOfTheDayPrice': rest, 'VehicleTypeForThisTariff': car}
+        self.assertEqual(make_parklines.prices_of([]), (0, 0, 0, 0, 0, 0))
+        self.assertEqual(make_parklines.prices_of([row('будни', 'круглосуточно', 40), row('выходные дни', 'круглосуточно', 0)]), (4, 4, 4, 0, 0, 0))
+        self.assertEqual(make_parklines.prices_of([row('будни', '00:00-08:00', 60), row('будни', '08:00-21:00', 80), row('будни', '21:00-23:59', 70),
+                                                   row('выходные дни', '00:00-08:00', 10), row('выходные дни', '08:00-21:00', 20), row('выходные дни', '21:00-23:59', 30)]),
+                         (6, 8, 7, 1, 2, 3))
+        self.assertEqual(make_parklines.prices_of([row('будни', '08:00-21:00', None, 150)]), (0, 15, 0, 0, 0, 0))
+        self.assertEqual(make_parklines.prices_of([row('будни', '08:00-21:00', 380), row('будни', '08:00-21:00', 450), row('будни', '08:00-21:00', 200)]), (0, 45, 0, 0, 0, 0))
+        self.assertEqual(make_parklines.prices_of([row('будни', '08:00-21:00', 41)]), (0, 5, 0, 0, 0, 0))
+        self.assertEqual(make_parklines.prices_of([row('будни', '08:00-21:00', 9999)]), (0, 255, 0, 0, 0, 0))
+        self.assertEqual(make_parklines.prices_of([row('будни', '08:00-21:00', None, None)]), (0, 0, 0, 0, 0, 0))
+        self.assertEqual(make_parklines.prices_of([row('будни', 'круглосуточно', 600, None, 'Мотоцикл'), row('праздничные дни', 'круглосуточно', 900)]), (0, 0, 0, 0, 0, 0))
+
+    def test_parklines_file(self):
+        """The test feed: a line of two points, of three, one with an empty piece beside a real one; the bytes as layers.cpp reads them."""
+        with open(os.path.join(HERE, 'parklines.json'), encoding='utf-8') as f:
+            features = json.load(f)
+        segs = make_parklines.segments_of(features)
+        self.assertEqual(segs, [(53000500, 50001000, 0, 1000, 4, 4, 4, 0, 0, 0),
+                                (53001000, 50011000, 0, 1000, 20, 38, 20, 0, 45, 0),
+                                (53001000, 50012000, 200, 500, 20, 38, 20, 0, 45, 0),
+                                (53010500, 50001000, 0, 1000, 0, 15, 0, 0, 0, 0)])
+        out = os.path.join(self.tmp, 'parking.lay')
+        make_parklines.write(segs, out)
+        d = read(out)
+        self.assertEqual(struct.unpack_from(make_layers.HEADER, d, 0), (b'OSMP', 1, 3, 4))   # (the two east pieces in one cell)
+        cells = [struct.unpack_from('<II', d, 16 + i * 8) for i in range(3)]
+        self.assertEqual(cells, [((14300 << 16) | 23000, 0), ((14300 << 16) | 23001, 1), ((14301 << 16) | 23000, 3)])
+        at = 16 + 3 * 8
+        self.assertEqual(len(d), at + 4 * 20)
+        self.assertEqual(struct.unpack_from('<iihh6B2x', d, at), segs[0])
+
+    def test_parklines_cell_by_the_middle(self):
+        """A piece goes to the cell of its middle: cell_of of the point half way, whichever way it runs."""
+        self.assertEqual(make_parklines.cell_key((53009000, 50000000, 2000, 0)), make_layers.cell_of(53010000, 50000000))
+        self.assertEqual(make_parklines.cell_key((53000000, 50000000, 0, 2000)), make_layers.cell_of(53000000, 50001000))
+        self.assertEqual(make_parklines.cell_key((53010000, 50001000, -2000, -2000)), make_layers.cell_of(53009000, 50000000))
+
+    def test_parklines_download(self):
+        """All the feed's pages, up to an empty one; a page again (the server's end) stops it, each once."""
+        pages = {0: [{'id': 1}, {'id': 2}], 2: [{'id': 3}], 3: []}
+        self.assertEqual(make_parklines.download(lambda skip: pages[skip]), [{'id': 1}, {'id': 2}, {'id': 3}])
+        self.assertEqual(make_parklines.download(lambda skip: [{'id': 1}]), [{'id': 1}])
+
+    def test_parklines_portal(self):
+        """The key from .mosapi, a page by its offset, gzip or not; a failure never shows the url (the key is in it)."""
+        class Reply(io.BytesIO):
+            headers = {}
+
+        class Zipped(Reply):
+            headers = {'Content-Encoding': 'gzip'}
+
+        class Refused(OSError):
+            code = 403
+        asked = []
+
+        def portal(request, timeout):
+            asked.append((request, timeout))
+            return Zipped(gzip.compress(b'{"features": [{"id": 1}]}')) if len(asked) == 1 else Reply(b'{"features": []}')
+        pathlib.Path(self.tmp, '.mosapi').write_text('KEY\n', encoding='utf-8')
+        with mock.patch.object(make_parklines, 'HERE', os.path.join(self.tmp, 'offline')), mock.patch('urllib.request.urlopen', portal):
+            self.assertEqual(make_parklines.features_from(['make_parklines.py', 'out.lay']), [{'id': 1}])
+        request, timeout = asked[1]
+        self.assertTrue(request.full_url.startswith(make_parklines.kUrl))
+        self.assertEqual(parse_qs(urlsplit(request.full_url).query), {'$top': ['1000'], '$skip': ['1'], 'api_key': ['KEY']})
+        self.assertEqual((request.get_header('Accept-encoding'), timeout), ('gzip', 300))
+        with mock.patch('urllib.request.urlopen', side_effect=Refused), self.assertRaises(SystemExit) as failed:
+            make_parklines.mos_page('KEY')(7)
+        self.assertEqual(str(failed.exception), 'data.mos.ru: Refused 403 at 7')
+
+    def test_parklines_command(self):
+        """On a copy of the feed: the tool's arguments confused must not write over the test's source."""
+        script = os.path.join(HERE, '..', 'make_parklines.py')
+        src, out = os.path.join(self.tmp, 'feed.json'), os.path.join(self.tmp, 'cmd.lay')
+        shutil.copy(os.path.join(HERE, 'parklines.json'), src)
+        self.assertEqual(subprocess.run([sys.executable, script, out, src], stdout=subprocess.DEVNULL).returncode, 0)
+        self.assertEqual(struct.unpack_from(make_layers.HEADER, read(out), 0)[3], 4)
+        self.assertNotEqual(subprocess.run([sys.executable, script], stderr=subprocess.DEVNULL).returncode, 0)
+        # without a feed it goes to the portal: here a copy of the tool with no .mosapi above it
+        tool = os.path.join(self.tmp, 'tool')
+        os.mkdir(tool)
+        shutil.copy(script, tool)
+        run = subprocess.run([sys.executable, os.path.join(tool, 'make_parklines.py'), out], capture_output=True, text=True,
+                             env=dict(os.environ, PYTHONPATH=os.path.dirname(script)))
+        self.assertIn('FileNotFoundError', run.stderr)
 
     def test_layers_command(self):
         """The line make_region's steps and test_offline.bat run."""

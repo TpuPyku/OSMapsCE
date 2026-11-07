@@ -19,6 +19,14 @@ void LayersDrop();
 // *dist - its metres
 bool LayerAhead(const LayerPoint* p, int n, int kind, int lat, int lon, double course, int maxM, int* dist);
 
+// Moscow's paid street parking as lines (parking.lay of the region, offline/make_parklines.py; the user 2026-11-07): a piece
+// of a line, its price in tens of rubles an hour, weekdays and the weekend x before 8, from 8 to 21, from 21. Read, kept,
+// paused and dropped with the points.
+struct ParkLine { int lat, lon; short dLat, dLon; unsigned char price[6]; };   // (20 bytes, as in the file)
+int ParkLinesRead(const wchar_t* path, const int* box, ParkLine* out, int cap);
+const ParkLine* ParkLinesIn(const int* box, int* n);
+int ParkPrice(const ParkLine& l, int weekday, int hour);   // a car's rubles an hour then; weekday 0: Sunday. Holidays not known
+
 // One button: traffic, car parks, neither (the user 2026-11-07: Moscow's car parks are lines, they do not go with traffic)
 void OverlayNext(int* traffic, int* parking);
 

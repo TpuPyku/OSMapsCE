@@ -1,0 +1,18 @@
+[
+{"geometry": {"type": "MultiLineString", "coordinates": [[[50.001, 53.0005], [50.002, 53.0005]]]},
+ "properties": {"attributes": {"Tariffs": [
+  {"TariffPeriod": "будни", "TimeRange": "круглосуточно", "HourPrice": 40, "RestOfTheDayPrice": null, "VehicleTypeForThisTariff": "Легковой автомобиль"},
+  {"TariffPeriod": "будни", "TimeRange": "круглосуточно", "HourPrice": 600, "RestOfTheDayPrice": null, "VehicleTypeForThisTariff": "Грузовой автомобиль"},
+  {"TariffPeriod": "выходные дни", "TimeRange": "круглосуточно", "HourPrice": 0, "RestOfTheDayPrice": null, "VehicleTypeForThisTariff": "Легковой автомобиль"},
+  {"TariffPeriod": "праздничные дни", "TimeRange": "круглосуточно", "HourPrice": 900, "RestOfTheDayPrice": null, "VehicleTypeForThisTariff": "Легковой автомобиль"}]}}},
+{"geometry": {"type": "MultiLineString", "coordinates": [[[50.011, 53.001], [50.012, 53.001], [50.0125, 53.0012]]]},
+ "properties": {"attributes": {"Tariffs": [
+  {"TariffPeriod": "будни", "TimeRange": "00:00-08:00", "HourPrice": 200, "RestOfTheDayPrice": null, "VehicleTypeForThisTariff": "Легковой автомобиль"},
+  {"TariffPeriod": "будни", "TimeRange": "08:00-21:00", "HourPrice": 380, "RestOfTheDayPrice": null, "VehicleTypeForThisTariff": "Легковой автомобиль"},
+  {"TariffPeriod": "будни", "TimeRange": "21:00-23:59", "HourPrice": 200, "RestOfTheDayPrice": null, "VehicleTypeForThisTariff": "Легковой автомобиль"},
+  {"TariffPeriod": "выходные дни", "TimeRange": "08:00-21:00", "HourPrice": 450, "RestOfTheDayPrice": null, "VehicleTypeForThisTariff": "Легковой автомобиль"}]}}},
+{"geometry": {"type": "MultiLineString", "coordinates": [[[50.001, 53.0105], [50.001, 53.0105]], [[50.001, 53.0105], [50.002, 53.0105]]]},
+ "properties": {"attributes": {"Tariffs": [
+  {"TariffPeriod": "будни", "TimeRange": "08:00-21:00", "HourPrice": null, "RestOfTheDayPrice": 150, "VehicleTypeForThisTariff": "Легковой автомобиль"},
+  {"TariffPeriod": "будни", "TimeRange": "08:00-21:00", "HourPrice": 80, "RestOfTheDayPrice": null, "VehicleTypeForThisTariff": "Легковой автомобиль"}]}}}
+]

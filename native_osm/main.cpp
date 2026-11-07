@@ -2706,18 +2706,25 @@ static void DrawPin(HDC dc, int x, int y)
 }
 
 // A round marker with a letter or a digit (the start, the stops).
-static void RouteMarker(HDC dc, int x, int y, COLORREF fill, const wchar_t* t)
+// A filled shape with a white edge and white text in it (t may be NULL). round: the corners' size
+static void Badge(HDC dc, HFONT font, COLORREF fill, int edge, const RECT& r, int round, const wchar_t* t)
 {
-    HPEN pen = CreatePen(PS_SOLID, 3, RGB(255, 255, 255));
+    HPEN pen = CreatePen(PS_SOLID, edge, RGB(255, 255, 255));
     HBRUSH br = CreateSolidBrush(fill);
     HGDIOBJ op = SelectObject(dc, pen), ob = SelectObject(dc, br);
-    Ellipse(dc, x - 13, y - 13, x + 14, y + 14);
+    RoundRect(dc, r.left, r.top, r.right, r.bottom, round, round);
     SelectObject(dc, ob);
     SelectObject(dc, op);
     DeleteObject(br);
     DeleteObject(pen);
     if (t)
-        Text(dc, s_fontCap, RGB(255, 255, 255), x - 13, y - 13, x + 14, y + 14, DT_CENTER, t);
+        Text(dc, font, RGB(255, 255, 255), r.left, r.top, r.right, r.bottom, DT_CENTER, t);
+}
+
+static void RouteMarker(HDC dc, int x, int y, COLORREF fill, const wchar_t* t)
+{
+    RECT r = { x - 13, y - 13, x + 14, y + 14 };
+    Badge(dc, s_fontCap, fill, 3, r, 27, t);
 }
 
 // Where the line starts (the user 2026-11-03: a long tail stayed behind the car): the car shown - a fix late - on
@@ -2981,9 +2988,11 @@ static void DrawFavMarks(HDC dc, double cx, double cy, double vx, double vy, dou
 
 // ---- the layers of a downloaded region (layers.h): traffic lights, speed bumps, car parks
 
+enum { kParkPriceZ = 16, kParkPriceMinPx = 48, kParkCullPx = 480 };
 enum { kLayerZ = 15, kParkingZ = 14, kLayerViewPx = 900, kLayerCarDeg = 4000, kWarnKmh = 15, kWarnMinM = 100, kWarnSec = 10 };
 static const LayerPoint* s_layer;
-static int s_layerN, s_layerParks;
+static int s_layerN, s_layerParks, s_parkLines;
+static const COLORREF kParkPaid = RGB(205, 60, 50), kParkFree = RGB(40, 150, 75);
 
 // What is wanted of the region now: the view's points when they are shown; else, for the warning, those around the car
 static bool LayerBox(int* box, double vx, double vy)
@@ -3048,7 +3057,7 @@ static void BumpSign(HDC dc, int x, int y)   // the road sign's look: a warning 
 
 static void ParkingMark(HDC dc, int x, int y, int fee)   // red paid, green free, grey: not told (never as free: a fine)
 {
-    COLORREF c = fee == FEE_PAID ? RGB(205, 60, 50) : fee == FEE_FREE ? RGB(40, 150, 75) : RGB(110, 120, 130);
+    COLORREF c = fee == FEE_PAID ? kParkPaid : fee == FEE_FREE ? kParkFree : RGB(110, 120, 130);
     HBRUSH b = CreateSolidBrush(c);
     HGDIOBJ ob = SelectObject(dc, b), op = SelectObject(dc, GetStockObject(WHITE_PEN));
     RoundRect(dc, x - 11, y - 11, x + 12, y + 12, 7, 7);
@@ -3075,12 +3084,103 @@ static bool LayerShown(const LayerPoint& p)
     return (p.kind == LAY_BUMP ? g_cfg.layerBumps : g_cfg.layerSignals) && g_cfg.z >= kLayerZ;
 }
 
+static void ParkPriceTag(HDC dc, int x, int y, int rub)
+{
+    wchar_t s[8];
+    _snwprintf(s, 8, L"%d", rub);
+    s[7] = 0;
+    RECT r = { x - 17, y - 9, x + 18, y + 10 };
+    Badge(dc, s_fontTiny, kParkPaid, 1, r, 6, s);
+}
+
+// The world around the box's middle is linear enough (under a pixel over the box), and the unit has no FPU: no logarithm a piece
+struct ParkView {
+    int lat0, lon0;
+    double gx0, gy0, kx, ky, rc, rs, cx, cy;
+    const Tilt* tilt;
+};
+
+static void ParkViewOf(ParkView* v, const int* box, double cx, double cy, double vx, double vy, double angle)
+{
+    double gx1, gy1, ra = angle * M_PI / 180.0;
+    v->lat0 = box[0] / 2 + box[2] / 2;
+    v->lon0 = box[1] / 2 + box[3] / 2;
+    GeoToWorld(v->lon0 * 1e-6, v->lat0 * 1e-6, g_cfg.z, &v->gx0, &v->gy0);
+    GeoToWorld(v->lon0 * 1e-6 + 0.01, v->lat0 * 1e-6 + 0.01, g_cfg.z, &gx1, &gy1);
+    v->kx = (gx1 - v->gx0) * 1e-4;
+    v->ky = (gy1 - v->gy0) * 1e-4;
+    v->gx0 -= vx;
+    v->gy0 -= vy;
+    v->rc = cos(ra);
+    v->rs = sin(ra);
+    v->cx = cx;
+    v->cy = cy;
+    v->tilt = ViewTilt();
+}
+
+static void ParkEnd(const ParkView& v, int lat, int lon, double* x, double* y)
+{
+    double dx = v.gx0 + (lon - v.lon0) * v.kx, dy = v.gy0 + (lat - v.lat0) * v.ky;
+    *x = dx * v.rc + dy * v.rs;
+    *y = -dx * v.rs + dy * v.rc;
+}
+
+// One piece on the screen: false - not to be seen
+static bool ParkPiece(const ParkView& v, const ParkLine& l, POINT* seg)
+{
+    double ax, ay, bx, by;
+    ParkEnd(v, l.lat, l.lon, &ax, &ay);
+    ParkEnd(v, l.lat + l.dLat, l.lon + l.dLon, &bx, &by);
+    if (!v.tilt && ((ax < -kParkCullPx && bx < -kParkCullPx) || (ax > kParkCullPx && bx > kParkCullPx) ||
+                   (ay < -kParkCullPx && by < -kParkCullPx) || (ay > kParkCullPx && by > kParkCullPx)))
+        return false;
+    bool cut;
+    if (!LiftSeg(v.tilt, &ax, &ay, &bx, &by, &cut))
+        return false;
+    seg[0].x = Round(ax + v.cx);
+    seg[0].y = Round(ay + v.cy);
+    seg[1].x = Round(bx + v.cx);
+    seg[1].y = Round(by + v.cy);
+    return true;
+}
+
+// Moscow's paid street parking (the user 2026-11-07: lines): by what it costs now, red or green; its price from z16
+static void DrawParkLines(HDC dc, const int* box, double cx, double cy, double vx, double vy, double angle)
+{
+    const ParkLine* l = ParkLinesIn(box, &s_parkLines);
+    if (!s_parkLines)
+        return;
+    ParkView v;
+    ParkViewOf(&v, box, cx, cy, vx, vy, angle);
+    SYSTEMTIME now;
+    GetLocalTime(&now);
+    HPEN paid = CreatePen(PS_SOLID, 4, kParkPaid), none = CreatePen(PS_SOLID, 4, kParkFree);
+    HGDIOBJ op = SelectObject(dc, paid);
+    for (int i = 0; i < s_parkLines; i++) {
+        POINT seg[2];
+        if (!ParkPiece(v, l[i], seg))
+            continue;
+        int rub = ParkPrice(l[i], now.wDayOfWeek, now.wHour);
+        SelectObject(dc, rub ? paid : none);
+        Polyline(dc, seg, 2);
+        if (rub && g_cfg.z >= kParkPriceZ && abs(seg[1].x - seg[0].x) + abs(seg[1].y - seg[0].y) >= kParkPriceMinPx) {
+            ParkPriceTag(dc, (seg[0].x + seg[1].x) / 2, (seg[0].y + seg[1].y) / 2, rub);
+            SelectObject(dc, paid);
+        }
+    }
+    SelectObject(dc, op);
+    DeleteObject(paid);
+    DeleteObject(none);
+}
+
 static void DrawLayers(HDC dc, double cx, double cy, double vx, double vy, double angle)
 {
     int box[4];
-    s_layerN = s_layerParks = 0;
+    s_layerN = s_layerParks = s_parkLines = 0;
     if (!LayerBox(box, vx, vy))
         return;
+    if (g_cfg.parking && !g_cfg.traffic && g_cfg.z >= kLayerZ)
+        DrawParkLines(dc, box, cx, cy, vx, vy, angle);
     s_layer = LayersIn(box, &s_layerN);
     for (int i = 0; i < s_layerN; i++) {
         const LayerPoint& p = s_layer[i];
@@ -5387,7 +5487,7 @@ static void DrawStatus(HDC dc)
     } else if (s_inflight) {
         wcscpy(s, L"Загрузка…");
     } else if (g_cfg.parking && !g_cfg.traffic) {
-        wcscpy(s, g_cfg.z < kParkingZ ? L"Парковки · приблизьте карту" : s_layerParks ? L"Парковки" : L"Парковки · нет в этом месте");
+        wcscpy(s, g_cfg.z < kParkingZ ? L"Парковки · приблизьте карту" : s_parkLines ? L"Парковки · data.mos.ru" : s_layerParks ? L"Парковки" : L"Парковки · нет в этом месте");
     } else if (!g_cfg.traffic) {
         wcscpy(s, L"Пробки выкл.");
     } else if (!TrafficWanted()) {   // (on the route alone, no route)

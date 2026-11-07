@@ -72,19 +72,24 @@ class Reader(osmium.SimpleHandler):
             self.add(w.tags, sum(p[0] for p in pts.values()) / len(pts), sum(p[1] for p in pts.values()) / len(pts))
 
 
-def write(points, out):
-    points = sorted(points, key=lambda p: (cell_of(p[0], p[1]), p))
+def write_cells(out, magic, version, items, key_of, pack):
+    """The header, the sorted cells, the items (make_parklines.py's too)."""
+    items = sorted(items, key=lambda p: (key_of(p), p))
     cells = []
-    for i, p in enumerate(points):
-        key = cell_of(p[0], p[1])
+    for i, p in enumerate(items):
+        key = key_of(p)
         if not cells or cells[-1][0] != key:
             cells.append((key, i))
     with open(out, 'wb') as f:
-        f.write(struct.pack(HEADER, b'OSML', VERSION, len(cells), len(points)))
+        f.write(struct.pack(HEADER, magic, version, len(cells), len(items)))
         for c in cells:
             f.write(struct.pack('<II', *c))
-        for p in points:
-            f.write(struct.pack('<iiBBH', *p))
+        for p in items:
+            f.write(pack(p))
+
+
+def write(points, out):
+    write_cells(out, b'OSML', VERSION, points, lambda p: cell_of(p[0], p[1]), lambda p: struct.pack('<iiBBH', *p))
 
 
 def build(src, out):

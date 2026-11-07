@@ -368,10 +368,10 @@ bool MapsFetch(const char* url, const wchar_t* file, int chunk)
 // pack (its map and the trunk roads) - through data\<name>.zip, removed after; region.txt last
 bool MapsInstall(const char* url, const wchar_t* data, const char* name, int kind)
 {
-    static const char* const kFiles[3][5] = { { "route.grf", "search.idx", "?layers.lay", "region.txt" },   // (a region not
-                                              { "route.grf", "search.idx", "?layers.lay", "tiles.vtp", "region.txt" },   // rebuilt: no layers)
-                                              { "overview.vtp", "trunk.grf", "region.txt" } };
-    static const int kCount[3] = { 4, 5, 3 };
+    static const char* const kFiles[3][6] = { { "route.grf", "search.idx", "?layers.lay", "?parking.lay", "region.txt" },   // (a region not
+                                              { "route.grf", "search.idx", "?layers.lay", "?parking.lay", "tiles.vtp", "region.txt" },   // rebuilt: no
+                                              { "overview.vtp", "trunk.grf", "region.txt" } };   // layers; parking.lay: Moscow's alone)
+    static const int kCount[3] = { 5, 6, 3 };
     wchar_t zip[MAX_PATH], part[MAX_PATH], dir[MAX_PATH];
     CreateDirectory(data, NULL);
     _snwprintf(zip, MAX_PATH, L"%s\\%S.zip", data, name);

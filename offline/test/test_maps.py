@@ -17,6 +17,7 @@ import zipfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 sys.path.insert(0, HERE)
+import make_region       # noqa: E402
 import maps_app          # noqa: E402
 import release_regions   # noqa: E402
 from test_tools import TINY, make_pmtiles, mvt, mvt_kinds, pack_tiles, read   # noqa: E402
@@ -210,6 +211,30 @@ class Maps(unittest.TestCase):
         self.assertEqual(maps_app.load_catalog(get), {'regions': []})
         self.assertEqual(maps_app.pmextract.latest_build(get), maps_app.pmextract.SERVER + 'c.pmtiles')   # the newest
         self.assertEqual(asked, [release_regions.ASSETS + 'catalog.json', maps_app.pmextract.BUILDS])
+
+    def test_moscow_parking_in_its_region_only(self):
+        """The set kept in the repo (make_parklines.py) goes into Moscow's region: both zips, the drive; others none."""
+        kept = make_region.PARKING['moscow_oblast']
+        self.assertEqual(read(kept)[:4], b'OSMP')
+        parking = os.path.join(self.tmp, 'parking.src')
+        with open(parking, 'wb') as f:
+            f.write(b'PARK')
+        was = make_region.PARKING
+        make_region.PARKING = {'tiny': parking}
+        try:
+            entry = self.release_tiny()
+        finally:
+            make_region.PARKING = was
+        with zipfile.ZipFile(os.path.join(self.dist, 'tiny.zip')) as z:
+            self.assertEqual(z.read('parking.lay'), b'PARK')
+        folder = os.path.join(self.tmp, 'work', 'data', 'tiny')
+        up = []
+        disk = type('D', (), {'upload': lambda self, path, file: up.append(read(file))})()
+        release_regions.build_full(entry, folder, self.dist, self.planet(), '20261030', disk)
+        with zipfile.ZipFile(io.BytesIO(up[0])) as z:
+            self.assertEqual(z.read('parking.lay'), b'PARK')
+            self.assertEqual(z.getinfo('parking.lay').compress_type, zipfile.ZIP_STORED)
+        self.assertIn('parking.lay', release_regions.FILES)
 
     def test_app_takes_a_zip_of_before_the_layers(self):
         """A region not rebuilt keeps its old zip in the catalog: the region goes in, only without the layers."""

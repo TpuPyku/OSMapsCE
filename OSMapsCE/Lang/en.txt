@@ -258,6 +258,7 @@ GPS: поиск · %d	GPS: searching · %d
 значки и предупреждение в пути	signs and a warning on the way
 Неровность · %d м	Speed bump · %d m
 Парковки	Car parks
+Парковки · data.mos.ru	Car parks · data.mos.ru
 Парковки · приблизьте карту	Car parks · zoom in
 Парковки · нет в этом месте	Car parks · none here
 ПАРКОВКИ	PARKING
