@@ -36,8 +36,10 @@ kCls = {c: i for i, (c, _) in enumerate(kClasses)}
 kSignalS = 8   # a traffic light's wait, seconds (on average: half the time it is red)
 # The barriers on roads (the user 2026-10-29: a route through a hospital's grounds, closed by gates): a gate with no
 # access tag - kGateS more (a way through avoided, a place inside still reached), the passed ones - nothing, any
-# other (a block, a bollard, a gate closed by its access tag) - the road cut there
+# other (a block, a bollard) - the road cut there. A gate closed by its access tag (private, no...) - kLockedGates gates'
+# worth (the user 2026-11-08: a place behind one - the route ended at the gate): a way into it, never one through it
 kGateS = 600
+kLockedGates = 3
 kGates = {'gate', 'swing_gate', 'sliding_gate', 'hampshire_gate', 'wicket_gate',
           'lift_gate'}   # (2026-10-31: grounds behind lift gates - into them, not across)
 kPassed = {'toll_booth', 'cattle_grid', 'border_control', 'entrance', 'no', 'height_restrictor', 'kerb',
@@ -92,13 +94,14 @@ def oneway_of(tags, rb):
 
 
 def barrier_of(tags):
-    """A node's barrier for cars: None (none, or passed), 'gate' (passed, kGateS more), 'block' (no way past)."""
+    """A node's barrier for cars: None (none, or passed), 'gate' (passed, kGateS more), 'locked' (a gate closed by
+    its access tag: kLockedGates gates' worth), 'block' (no way past)."""
     b = tags.get('barrier')
     if not b:
         return None
     access = [tags.get(k) for k in kAccessKeys if tags.get(k)]
     if any(a in kNoAccess for a in access):
-        return 'block'
+        return 'locked' if b in kGates else 'block'
     if access or b in kPassed:
         return None
     return 'gate' if b in kGates else 'block'
@@ -151,6 +154,7 @@ class Locs(osmium.SimpleHandler):
         self.signals = set()
         self.gates = set()     # barriers passed for kGateS more
         self.blocks = set()    # barriers no car passes: the road cut there
+        self.locked = set()    # gates closed by their access tags: kLockedGates gates' worth
 
     def node(self, n):
         if n.id in self.want and (self.west is None or n.location.lon * 1e6 >= self.west):
@@ -159,7 +163,7 @@ class Locs(osmium.SimpleHandler):
                 self.signals.add(n.id)
             kind = barrier_of(n.tags)
             if kind:
-                (self.gates if kind == 'gate' else self.blocks).add(n.id)
+                {'gate': self.gates, 'locked': self.locked}.get(kind, self.blocks).add(n.id)
 
 
 def dist_m(a, b):
@@ -232,8 +236,8 @@ def segments(ids, junction):
             start = i
 
 
-Barriers = namedtuple('Barriers', 'gates blocks')
-NONE = Barriers(frozenset(), frozenset())
+Barriers = namedtuple('Barriers', 'gates blocks locked')
+NONE = Barriers(frozenset(), frozenset(), frozenset())
 
 
 def make_piece(w, seg, nm, loc, signals, nodes, tol_m=0, bars=NONE):
@@ -245,7 +249,7 @@ def make_piece(w, seg, nm, loc, signals, nodes, tol_m=0, bars=NONE):
     sig = sum(1 for n in seg[1:] if n in signals)
     end = lambda n: nodes.alone(n) if n in bars.blocks else nodes.index(n)   # noqa: E731
     return Piece(end(seg[0]), end(seg[-1]), simplify(pts, tol_m)[1:-1], length, w.cls, w.oneway, w.rb,
-                 w.speed, nm, sig, sum(1 for n in seg if n in bars.gates), w.toll)
+                 w.speed, nm, sig, sum(1 if n in bars.gates else kLockedGates if n in bars.locked else 0 for n in seg), w.toll)
 
 
 def make_pieces(ways, loc, signals, junction, tol_m=0, bars=NONE):
@@ -455,7 +459,7 @@ def build(src, out, classes=None, simplify_m=0, cell=kCell, west=None, max_cells
     locs.apply_file(src)
     junction = {n for n, c in w.uses.items() if c > 1} | locs.blocks   # shared by ways, a way's end, a block
     nodes, names, pieces = make_pieces(w.ways, locs.loc, locs.signals, junction, simplify_m,
-                                       Barriers(locs.gates, locs.blocks))
+                                       Barriers(locs.gates, locs.blocks, locs.locked))
     nodes, pieces = main_network(nodes, pieces)
     edges, geom = directed(pieces, len(nodes))
     first, flat, piece_edge = flatten(edges)

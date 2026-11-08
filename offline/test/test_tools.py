@@ -366,12 +366,17 @@ class Tools(unittest.TestCase):
             {'barrier': 'lift_gate'}, {'barrier': 'block'}, {'barrier': 'bollard'}, {'barrier': 'toll_booth'},
             {'barrier': 'cattle_grid'}, {'barrier': 'entrance'}, {'barrier': 'lift_gate', 'motor_vehicle': 'no'},
             {'barrier': 'lift_gate', 'access': 'yes'})],
-            [None, 'gate', 'block', None, 'gate', 'block', 'block', None, None, None, 'block', None])
+            [None, 'gate', 'locked', None, 'gate', 'block', 'block', None, None, None, 'locked', None])
+        # a gate closed by its access tag: passed for much more (the user 2026-11-08: a place behind one - the route
+        # ended at it); a block, a bollard closed so: still no way past
+        self.assertEqual(make_graph.barrier_of({'barrier': 'bollard', 'access': 'no'}), 'block')
         osm = os.path.join(self.tmp, 'barriers.osm')
         nodes = {1: (53.1, 50.000), 2: (53.1, 50.002), 3: (53.1, 50.004), 4: (53.1, 50.006),
-                 5: (53.101, 50.002), 6: (53.102, 50.002), 7: (53.101, 50.004), 8: (53.102, 50.004)}
-        tags = {5: {'barrier': 'gate'}, 7: {'barrier': 'block'}}
-        ways = [([1, 2, 3, 4], 'Главная'), ([2, 5, 6], 'Воротная'), ([3, 7, 8], 'Блочная'), ([6, 8], 'Верхняя')]
+                 5: (53.101, 50.002), 6: (53.102, 50.002), 7: (53.101, 50.004), 8: (53.102, 50.004),
+                 9: (53.1, 50.008), 10: (53.101, 50.008), 11: (53.102, 50.008)}
+        tags = {5: {'barrier': 'gate'}, 7: {'barrier': 'block'}, 10: {'barrier': 'gate', 'access': 'private'}}
+        ways = [([1, 2, 3, 4, 9], 'Главная'), ([2, 5, 6], 'Воротная'), ([3, 7, 8], 'Блочная'), ([6, 8], 'Верхняя'),
+                ([9, 10, 11], 'Дачная')]
         with open(osm, 'w', encoding='utf-8') as f:
             f.write('<?xml version="1.0" encoding="UTF-8"?>\n<osm version="0.6">\n')
             for i, (la, lo) in nodes.items():
@@ -388,6 +393,9 @@ class Tools(unittest.TestCase):
         plain = [ds for a, b, dm, ds, n in edges if n == 'Блочная']
         self.assertEqual(len(gate), 2)
         self.assertTrue(all(ds > 6000 for ds in gate) and all(ds < 1000 for ds in plain), (gate, plain))
+        locked = [ds for a, b, dm, ds, n in edges if n == 'Дачная']
+        self.assertEqual(len(locked), 2)                            # passed both ways, not cut
+        self.assertTrue(all(ds > 3 * 6000 for ds in locked), locked)   # three gates' worth: never a way through
         at7 = (53101000, 50004000)
         self.assertEqual(got.count(at7), 2)                         # the block: each side's own end there
         self.assertFalse([1 for a, b, _, _, n in edges if n == 'Блочная' and a == at7 and b == at7])
