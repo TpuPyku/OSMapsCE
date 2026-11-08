@@ -89,10 +89,11 @@ GPS не найден на COM1…COM9	No GPS found on COM1…COM9
 Схема развязки	Junction diagram
 перед съездом, развилкой, кольцом	before an exit, a fork, a roundabout
 Платные дороги	Toll roads
-объезд — по картам на флешке	avoiding needs the maps on the card
+объезд — только по картам на флешке	avoided only with the maps on the card
 Объезжать	Avoid
 Можно	Allow
-Без карт области и магистралей маршрут строит сервер — он платные не исключает.	Without the region and main road maps the server builds the route, and it does not avoid toll roads.
+Голосовые подсказки	Voice prompts
+на языке программы	in the program's language
 Завершить OSMapsCE?	Close OSMapsCE?
 Карта и маршрут закроются, GPS освободится для других программ.	The map and the route will close, and GPS will be free for other programs.
 ОТМЕНА	CANCEL

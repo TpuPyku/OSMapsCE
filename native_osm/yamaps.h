@@ -44,6 +44,7 @@ struct Config {
     int     vector;         // the base map: 0 OSM raster tiles, 1 vector tiles (OpenFreeMap, vtile.cpp)
     int     junction;       // the junction card before complex maneuvers (junction.cpp; the user 2026-10-28: off by default)
     int     noToll;         // routes keep off toll roads (the user 2026-10-29; the unit's graphs only - OSRM cannot)
+    int     voice;          // the voice prompts on the route (voice.cpp, say.cpp; users 2026-11-07)
     int     detail;         // the vector map's detail: 0 auto, 1 full, 2 medium, 3 fast (VTileSetDetail(detail - 1))
     int     log;            // OSMapsCE.log kept (the user 2026-10-29: off by default)
     int     tilt;           // the third person's view (its button: heading-up from z15; tilt.cpp, ring.cpp)
@@ -257,6 +258,11 @@ struct RouteInfo {
     int            seg;         // the line's segment the car is on (the rest of the line: from it)
     bool           complex;     // the next maneuver a fork, a ramp, a roundabout, a merge (the junction card)
     int            shape;       // its point on the line (RoutePoints)
+    int            man;         // its number on the route (the voice prompts: voice.h)
+    int            act;         // what it asks (VA_*), thenAct - the one after it when close behind (kThenM)
+    int            thenAct;
+    int            serial;      // the route's number: a new one for each answer of the router
+    int            vias;        // the stops left on the way
 };
 void SearchStart(const wchar_t* q, double lon, double lat);
 int  SearchState();
@@ -287,6 +293,15 @@ void RouteGet(RouteInfo* out);
 int  RoutePoints(const double** lonLat);   // the line: lon, lat pairs
 bool RouteDest(double* lon, double* lat);
 DWORD RouteSig();                   // changes when what is drawn of the route changes
+
+// say.cpp - the voice prompts spoken (voice.h decides what and when)
+enum { TIMER_VOICE = 9 };            // (main.cpp's timers: 1..8)
+void SayInit(HWND wnd);
+void SayTick(int kmh);               // each GPS fix: the route's prompt due, said (g_cfg.voice)
+void SayDone();                      // MM_WOM_DONE
+void SayTimer();                     // TIMER_VOICE
+void SayStop();                      // the program ends
+bool VoiceChannel(bool on);          // main.cpp: the radio down for a prompt (the shell, VestaHome); false - no one to ask
 bool OnApiResult(ApiResult* r);     // frees it; true = redraw
 
 // vtile.cpp - vector tiles drawn into TILE x TILE images; their .pbf on disk as Cache\<VEC_ZBASE + z>\...

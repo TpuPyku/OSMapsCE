@@ -1,5 +1,6 @@
 ﻿#include "yamaps.h"
 #include "lang.h"
+#include "voice.h"
 
 // Search and route over OSM data on public servers (2026-10-26): Photon (komoot, HTTPS) finds places by text,
 // OSRM of FOSSGIS (routing.openstreetmap.de, plain HTTP) lays the car route. The user's choice was Valhalla, but
@@ -18,6 +19,7 @@ static const DWORD  kRerouteMs    = 15000;  // a new route not more often
 static const double kArriveM      = 30;     // the destination this close: arrived
 static const DWORD  kArrivedMs    = 10000;  // "Вы приехали" this long, then the route gone (the user 2026-11-03)
 static DWORD        s_arriveTick;
+static int          s_serial;       // the router's answers taken (RouteInfo::serial)
 
 
 // ---------------------------------------------------------------- requests
@@ -131,6 +133,7 @@ struct Maneuver {
     int     shape;          // its point on the line
     int     turn;           // RouteInfo::turn
     bool    complex;        // a fork, a ramp, a roundabout, a merge (JunctionComplex: the junction card)
+    int     act;            // what to say (VA_*)
     wchar_t text[112];
 };
 
@@ -591,6 +594,7 @@ static void OnRoute(const char* body, int k)
             d.shape = at;
             d.turn = Turn(m, type, mod, stop);
             d.complex = JunctionComplex(type);
+            d.act = VoiceAct(type, mod, (int)JNum(JKey(m, "exit"), 0), stop);
             Instruction(st, m, type, mod, stop, d.text, 112);
             if (stop && !strcmp(type, "arrive") && s_nViaShape < kMaxVia)
                 s_viaShape[s_nViaShape++] = at;
@@ -644,6 +648,7 @@ bool OnApiResult(ApiResult* r)
                 RouteAltsDone();
             }
             OnRoute(s_altBody ? s_altBody : r->body, 0);
+            s_serial++;   // (not for an alternative chosen: the same answer)
         }
         else {
             if (!s_np)
@@ -757,6 +762,8 @@ void RouteGet(RouteInfo* o)
     memset(o, 0, sizeof(*o));
     o->state = s_state;
     o->text = s_stateText;
+    o->serial = s_serial;
+    o->vias = s_plan.nvia;
     if (s_state == ROUTE_BUSY && !s_stateText[0])
         o->text = Tr(L"Расчёт маршрута…");
     else if (s_state == ROUTE_ARRIVED)
@@ -781,6 +788,10 @@ void RouteGet(RouteInfo* o)
                 o->nextM = 0;
             if (i + 1 < s_nm)
                 o->thenText = s_man[i + 1].text;
+            o->man = i;
+            o->act = s_man[i].act;
+            if (i + 1 < s_nm && s_cum[s_man[i + 1].shape] - s_cum[s_man[i].shape] <= kThenM)
+                o->thenAct = s_man[i + 1].act;
             break;
         }
     if (s_off)

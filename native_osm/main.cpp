@@ -273,7 +273,8 @@ enum { S_MAPS, S_ROUTE, S_CACHE_PREV, S_CACHE_NEXT, S_LOG_PREV, S_LOG_NEXT, S_GP
        S_INFO, S_LANG_PREV, S_LANG_NEXT, S_EXIT, S_BACK, S_PAGE_END,
        S_PORT_PREV = S_PAGE_END, S_PORT_NEXT, S_BAUD_PREV, S_BAUD_NEXT, S_SCAN, S_GPS_DONE, S_GPS_END,
        S_INFO_DONE = S_GPS_END, S_INFO_END,
-       S_JUNC_PREV = S_INFO_END, S_JUNC_NEXT, S_TOLL_PREV, S_TOLL_NEXT, S_ROUTE_DONE, S_ROUTE_END,
+       S_JUNC_PREV = S_INFO_END, S_JUNC_NEXT, S_TOLL_PREV, S_TOLL_NEXT, S_VOICE_PREV, S_VOICE_NEXT, S_ROUTE_DONE,
+       S_ROUTE_END,
        S_EXIT_YES = S_ROUTE_END, S_EXIT_NO, S_COUNT };
 enum { SHEET_NONE, SHEET_GPS, SHEET_INFO, SHEET_ROUTE, SHEET_EXIT };
 enum { kSetRow0 = 76, kSetRowH = 50, kMainRowH = 46, kSheetY = 200 };
@@ -292,8 +293,9 @@ static const RECT kSetCtl[S_COUNT] = {
     { 416, 416, 592, 468 },                            // ... find GPS
     { 600, 416, 784, 468 },                            // ... done
     { 600, 416, 784, 468 },                            // the requests' sheet: done
-    { 512, 259, 560, 303 }, { 712, 259, 760, 303 },   // the route's sheet: the junction card, the tolls
+    { 512, 259, 560, 303 }, { 712, 259, 760, 303 },   // the route's sheet: the junction card, the tolls, the voice
     { 512, 309, 560, 353 }, { 712, 309, 760, 353 },
+    { 512, 359, 560, 403 }, { 712, 359, 760, 403 },
     { 600, 416, 784, 468 },                            // ... done
     { 600, 416, 784, 468 }, { 416, 416, 592, 468 },   // the exit's sheet: exit, cancel (a tap beside it too)
 };
@@ -1002,6 +1004,8 @@ static void OnSettingsCtl(int id)
     case S_JUNC_NEXT:  g_cfg.junction = !g_cfg.junction; ConfigSave(); break;
     case S_TOLL_PREV:
     case S_TOLL_NEXT:  g_cfg.noToll = !g_cfg.noToll; ConfigSave(); break;
+    case S_VOICE_PREV:
+    case S_VOICE_NEXT: g_cfg.voice = !g_cfg.voice; ConfigSave(); break;
     case S_ROUTE:      s_setSheet = SHEET_ROUTE; break;
     case S_LOG_PREV:
     case S_LOG_NEXT:   g_cfg.log = !g_cfg.log; LogEnable(g_cfg.log != 0); ConfigSave(); break;
@@ -3590,10 +3594,11 @@ static void DrawRouteSheet(HDC dc)
     Sheet(dc, L"Маршрут");
     SetRow(dc, kSetCtl[S_JUNC_PREV].top - 3, L"Схема развязки", L"перед съездом, развилкой, кольцом", true);
     Stepper(dc, S_JUNC_PREV, S_JUNC_NEXT, g_cfg.junction ? L"Вкл" : L"Выкл");
-    SetRow(dc, kSetCtl[S_TOLL_PREV].top - 3, L"Платные дороги", L"объезд — по картам на флешке", false);
+    // (the server's routes keep the tolls: said in the row - the voice took the note's place)
+    SetRow(dc, kSetCtl[S_TOLL_PREV].top - 3, L"Платные дороги", L"объезд — только по картам на флешке", true);
     Stepper(dc, S_TOLL_PREV, S_TOLL_NEXT, g_cfg.noToll ? L"Объезжать" : L"Можно");
-    Text(dc, s_fontSmall, kTextDim, 36, 362, s_cw - 36, 404, DT_LEFT,
-         L"Без карт области и магистралей маршрут строит сервер — он платные не исключает.");
+    SetRow(dc, kSetCtl[S_VOICE_PREV].top - 3, L"Голосовые подсказки", L"на языке программы", false);
+    Stepper(dc, S_VOICE_PREV, S_VOICE_NEXT, g_cfg.voice ? L"Вкл" : L"Выкл");
     DoneButton(dc, S_ROUTE_DONE);
 }
 
@@ -5720,6 +5725,7 @@ static void OnCreate(HWND hwnd)
         VFavsLoad(&s_favs, path);
     }
     s_wnd = hwnd;
+    SayInit(hwnd);
     RECT rc;
     GetClientRect(hwnd, &rc);
     s_cw = rc.right;
@@ -5774,6 +5780,7 @@ static void OnCreate(HWND hwnd)
 
 static void OnDestroy(HWND hwnd)
 {
+    SayStop();
     KillTimer(hwnd, TIMER_TICK);
     KillTimer(hwnd, TIMER_GLIDE);
     KillTimer(hwnd, TIMER_USER);
@@ -5890,6 +5897,20 @@ static int VhReceive(const wchar_t* cmd)   // 2 = a button taken (VestaHome leav
         s_vh = NULL;
     }
     return 1;
+}
+
+// A voice prompt over the radio (say.cpp), as an external navigator asks it: the stock shell's window gets
+// WM_NAVIGATION_VOICE 0x101D (PROJECT.md, Ghidra); without the shell VestaHome asks the MCU ("voice", plugin-api.md).
+bool VoiceChannel(bool on)
+{
+    HWND h = FindWindow(NULL, L"RadioCommWindow");
+    if (h) {
+        PostMessage(h, 0x101D, on ? 1 : 0, 0);
+        return true;
+    }
+    if (!s_vh || !IsWindow(s_vh))
+        return false;
+    return VhapSend(s_vh, s_wnd, L"voice\ton=%d", on ? 1 : 0) == 1;
 }
 
 // The route's next manoeuvre to VestaHome (its top bar's chip), when it changes
@@ -6014,7 +6035,15 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         return 0;
     }
 
+    case MM_WOM_DONE:
+        SayDone();
+        return 0;
+
     case WM_TIMER:
+        if (wp == TIMER_VOICE) {
+            SayTimer();
+            return 0;
+        }
         if (wp == TIMER_GLIDE) {   // a frame between the fixes: the map on screen (following or not - the car moves on
             // it then), the CPU not taken over
             if (!MapHeld() && !s_settings && !s_search && !s_plan &&
@@ -6117,6 +6146,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             if (RouteAlts() >= 2 && s_gps.speedKmh > 15)
                 RouteAltsDone();   // driving: the route chosen is the one on
             RouteGps(s_raw.lon, s_raw.lat, s_raw.speedKmh, s_raw.course);
+            SayTick((int)s_raw.speedKmh);
         }
         if (!MapHeld()) {
             GlideApply();
