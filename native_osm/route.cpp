@@ -1,6 +1,7 @@
 ﻿#include "yamaps.h"
 #include "lang.h"
 #include "voice.h"
+#include "segpick.h"
 
 // Search and route over OSM data on public servers (2026-10-26): Photon (komoot, HTTPS) finds places by text,
 // OSRM of FOSSGIS (routing.openstreetmap.de, plain HTTP) lays the car route. The user's choice was Valhalla, but
@@ -15,6 +16,8 @@ static const char* kOsrm     = "routing.openstreetmap.de";   // its car profile:
 static const int    kMaxHits      = 7;
 static const double kOffM         = 50;     // farther from the line than this ...
 static const int    kOffFixes     = 4;      // ... this many fixes in a row: off the route
+enum { kWinBack = 10, kWinAhead = 200 };    // the car looked for on these pieces of the line around where it was
+static const double kTieM         = 8;      // pieces this much farther than the nearest: still "as near" (SegPick)
 static const DWORD  kRerouteMs    = 15000;  // a new route not more often
 static const double kArriveM      = 30;     // the destination this close: arrived
 static const DWORD  kArrivedMs    = 10000;  // "Вы приехали" this long, then the route gone (the user 2026-11-03)
@@ -704,11 +707,21 @@ void RouteGps(double lon, double lat, double kmh, double course)
     // near where the car was first (the line may pass the same place twice), the whole line if far from it
     double best = 1e18, bestT = 0;
     int seg = s_seg;
-    for (int pass = 0; pass < 2 && best > kOffM; pass++) {
-        int a = pass ? 0 : (s_seg > 10 ? s_seg - 10 : 0), b = pass ? s_np - 1 : s_seg + 200;
+    {   // near where it was: of pieces nearly as near, the earliest not behind it (segpick.h: a jog of two turns)
+        static double d[kWinBack + kWinAhead];
+        int a = s_seg > kWinBack ? s_seg - kWinBack : 0, b = s_seg + kWinAhead;
         if (b > s_np - 1)
             b = s_np - 1;
-        for (int i = a; i < b; i++) {
+        double t;
+        for (int i = a; i < b; i++)
+            d[i - a] = SegDist(x, y, i, &t);
+        if (b > a) {
+            seg = a + SegPick(d, b - a, s_seg - a, kTieM);
+            best = SegDist(x, y, seg, &bestT);
+        }
+    }
+    if (best > kOffM)   // far from it there: the whole line (it may pass the same place twice)
+        for (int i = 0; i < s_np - 1; i++) {
             double t, d = SegDist(x, y, i, &t);
             if (d < best) {
                 best = d;
@@ -716,7 +729,6 @@ void RouteGps(double lon, double lat, double kmh, double course)
                 seg = i;
             }
         }
-    }
     s_seg = seg;
     s_along = s_cum[seg] + bestT * (s_cum[seg + 1] - s_cum[seg]);
     // stops passed: out of the plan (the line keeps them, the next new route goes without them)

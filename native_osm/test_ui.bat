@@ -8,7 +8,7 @@ set VC=%VS8%\VC
 set PATH=%VS8%\Common7\IDE;%VC%\bin;%PATH%
 cd /d "%~dp0"
 if not exist obj mkdir obj
-"%VC%\bin\cl.exe" /nologo /O2 /W3 /MT /TP test_ui.cpp lang.cpp /Foobj\ /Fdobj\ /Feobj\test_ui.exe ^
+"%VC%\bin\cl.exe" /nologo /O2 /W3 /MT /TP test_ui.cpp lang.cpp segpick.cpp /Foobj\ /Fdobj\ /Feobj\test_ui.exe ^
   /DUNICODE /D_UNICODE /DWIN32 /D_CRT_SECURE_NO_WARNINGS /I"%VC%\include" /I"%VC%\PlatformSDK\Include" ^
   /link /LIBPATH:"%VC%\lib" /LIBPATH:"%VC%\PlatformSDK\Lib" kernel32.lib >obj\build_ui.log || (type obj\build_ui.log & exit /b 1)
 if "%1"=="build" exit /b 0

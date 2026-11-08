@@ -4,6 +4,7 @@
 #include <string.h>
 #include "lang.h"
 #include "startpt.h"
+#include "segpick.h"
 
 static int s_failed, s_checks;
 
@@ -28,6 +29,20 @@ static void TestStart()
     Check(s.source == START_CAR, "a first fix with nothing kept: the car");
     s = StartFrom(false, 0, 0, 0.5, 0, 10, 20);
     Check(s.source == START_LAST, "a place on the equator is a place");
+}
+
+static void TestSegPick()
+{
+    double one[4] = { 30, 20, 2, 25 };
+    Check(SegPick(one, 4, 0, 8) == 2, "seg: the nearest when no other is near it");
+    double jog[4] = { 3.5, 20, 3.4, 40 };   // before a jog of two turns: the piece after it as near as ours
+    Check(SegPick(jog, 4, 0, 8) == 0, "seg: of two as near, the earlier one");
+    Check(SegPick(jog, 4, 1, 8) == 2, "seg: not back before where it was");
+    double past[3] = { 21, 15, 0.5 };   // gone on past the jog: the old piece far behind
+    Check(SegPick(past, 3, 0, 8) == 2, "seg: past it - the piece it is on");
+    double edge[3] = { 8.6, 50, 0.5 };
+    Check(SegPick(edge, 3, 0, 8) == 2 && SegPick(edge, 3, 0, 8.1) == 0, "seg: within the tie only (its edge in)");
+    Check(SegPick(one, 0, 0, 8) == 0, "seg: no pieces - 0");
 }
 
 static int Load(const char* text)
@@ -89,6 +104,7 @@ static void TestLang()
 int main()
 {
     TestStart();
+    TestSegPick();
     TestLang();
     printf("%d checks, %d failed\n", s_checks, s_failed);
     return s_failed;
