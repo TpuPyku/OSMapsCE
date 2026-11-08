@@ -773,19 +773,21 @@ static void Rivals(DWORD from, DWORD e, const Prev& prev, Turn* t)
     }
 }
 
-static bool HasWayOff(DWORD node)   // a roundabout's node with a road off it
+static const GEdge* WayOff(DWORD node)   // a roundabout's node: the road off it (NULL - none)
 {
     for (DWORD k = s_g.first[node]; k < s_g.first[node + 1]; k++)
         if (!(s_g.edges[k].flags & 2))
-            return true;
-    return false;
+            return &s_g.edges[k];
+    return NULL;
 }
 
 // Onto a roundabout by the way's edge i: the exit's number (its nodes with a way off it, up to ours); name = the road
-// off it (kept when the way ends on the roundabout).
+// off it (kept when the way ends on the roundabout). One road off it twice in a row (Moscow's Летняя аллея at
+// площадь Космонавта Комарова, the user 2026-11-08: "the 4th" was the 3rd) - one exit, as a driver counts.
 static int RoundaboutExit(const Way& w, int i, int cnt, DWORD* name)
 {
     int exitNo = 0;
+    const GEdge* before = NULL;   // the exit before (one without a name: never the same road)
     for (int j = i; j < cnt; j++) {
         const GEdge& g = s_g.edges[EdgeAt(w, j)];
         if (!(g.flags & 2)) {   // off it: this road names the step
@@ -794,7 +796,11 @@ static int RoundaboutExit(const Way& w, int i, int cnt, DWORD* name)
         }
         if (j == cnt - 1)
             break;   // the way ends on the roundabout
-        exitNo += HasWayOff(g.to);
+        const GEdge* off = WayOff(g.to);
+        if (off) {
+            exitNo += !before || !off->name || off->name != before->name;
+            before = off;
+        }
     }
     return exitNo;
 }

@@ -145,11 +145,11 @@ class Tools(unittest.TestCase):
         out = os.path.join(self.tmp, 'route.grf')
         make_graph.build(TINY, out)
         nodes, edges = graph(out)
-        self.assertEqual(len(nodes), 14)              # the junctions and the ends (not the curve's inner points)
-        self.assertEqual(len(edges), 25)              # 10 two-way pieces, the one-way, the roundabout's 4
-        self.assertEqual(struct.unpack_from(make_graph.HEADER, read(out), 0)[4], 2)   # the curve's inner points
+        self.assertEqual(len(nodes), 15)              # the junctions and the ends (not the curves' inner points)
+        self.assertEqual(len(edges), 27)              # 10 two-way pieces, 2 one-way, the roundabout's 5
+        self.assertEqual(struct.unpack_from(make_graph.HEADER, read(out), 0)[4], 3)   # the curves' inner points
         ring = [(a, b) for a, b, _, _, n in edges if n == '']
-        self.assertEqual(len(ring), 4)                # the roundabout: one way round
+        self.assertEqual(len(ring), 5)                # the roundabout: one way round (r5: the south street again)
         one = [(a, b) for a, b, _, _, n in edges if n == 'Односторонняя улица']
         self.assertEqual(one, [((53000000, 50004000), (53002000, 50004000))])   # north only
         main = [dm for a, b, dm, _, n in edges if n == 'Главная улица' and a == (53000000, 50000000)]

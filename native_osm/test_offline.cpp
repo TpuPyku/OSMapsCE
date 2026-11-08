@@ -1193,6 +1193,11 @@ int main()
     Check(Has(b, L"\"name\":\"Восточная улица\",\"ref\":\"\",\"maneuver\":{\"type\":\"roundabout\"") &&
           Has(b, L"\"exit\":2"), "roundabout: the 2nd exit onto the east street", b);
     free(b);
+    // the south street off it twice (r4, r5) - one exit; then the east, the north: the 3rd
+    b = Route("50.010,53.000;50.012,53.002");
+    Check(Has(b, L"\"name\":\"Северная улица\",\"ref\":\"\",\"maneuver\":{\"type\":\"roundabout\"") &&
+          Has(b, L"\"exit\":3"), "roundabout: one road off it twice - one exit (the north street: the 3rd)", b);
+    free(b);
 
     // the search: the town first, a house by street and number, the station by its kind
     b = Ask("/api/?q=%D0%A2%D0%B5%D1%81%D1%82%D0%BE%D0%B2%D1%81%D0%BA&limit=7&lat=53.0&lon=50.0");   // Тестовск
