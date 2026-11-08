@@ -1198,6 +1198,13 @@ int main()
     Check(Has(b, L"\"name\":\"Северная улица\",\"ref\":\"\",\"maneuver\":{\"type\":\"roundabout\"") &&
           Has(b, L"\"exit\":3"), "roundabout: one road off it twice - one exit (the north street: the 3rd)", b);
     free(b);
+    // a T where the road goes on as itself to one side: a turn all the same; then a sharp one with no other way
+    b = Route("50.012,53.0015;50.014,53.0028");
+    Check(Has(b, L"\"name\":\"Северная улица\",\"ref\":\"\",\"maneuver\":{\"type\":\"turn\",\"modifier\":\"right\""),
+          "a T: right, though the street goes on that way", b);
+    Check(Has(b, L"\"name\":\"Дальняя улица\",\"ref\":\"\",\"maneuver\":{\"type\":\"turn\",\"modifier\":\"left\""),
+          "a sharp bend onto another street, no other way: told", b);
+    free(b);
 
     // the search: the town first, a house by street and number, the station by its kind
     b = Ask("/api/?q=%D0%A2%D0%B5%D1%81%D1%82%D0%BE%D0%B2%D1%81%D0%BA&limit=7&lat=53.0&lon=50.0");   // Тестовск

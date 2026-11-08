@@ -823,11 +823,18 @@ static const char* MergeKind(const Turn& t, const char** mod)   // off a link on
 
 // The road just goes on: no other way, or ours the obvious one (the straightest of the rivals and ours, 10 degrees'
 // slack) and the same road or nearly straight.
+// Nothing to tell: no other way, or the obvious one. A sharp turn (kSharpTurn+) never: a T where the road goes on as
+// itself to one side, a bend onto another road with no other way (Moscow's улица Генерала Сандалова, the user
+// 2026-11-08: its two rights were not told, the voice said the left after them); a bend of the same road still is.
+enum { kSharpTurn = 60 };
 static bool GoesOn(const Turn& t)
 {
     bool sameRoad = t.g->name == t.p->name && Named(*t.g);
+    bool gentle = fabs(t.turn) < kSharpTurn;
+    if (!t.alts)
+        return gentle || sameRoad;
     bool obvious = fabs(t.turn) <= t.rivalMin + 10;
-    return !t.alts || (obvious && (sameRoad || fabs(t.turn) < 35));
+    return obvious && gentle && (sameRoad || fabs(t.turn) < 35);
 }
 
 static const char* PlainKind(const Turn& t, const char** mod)   // not at a link's end

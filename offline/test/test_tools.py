@@ -145,8 +145,8 @@ class Tools(unittest.TestCase):
         out = os.path.join(self.tmp, 'route.grf')
         make_graph.build(TINY, out)
         nodes, edges = graph(out)
-        self.assertEqual(len(nodes), 15)              # the junctions and the ends (not the curves' inner points)
-        self.assertEqual(len(edges), 27)              # 10 two-way pieces, 2 one-way, the roundabout's 5
+        self.assertEqual(len(nodes), 18)              # the junctions and the ends (not the curves' inner points)
+        self.assertEqual(len(edges), 33)              # 13 two-way pieces, 2 one-way, the roundabout's 5
         self.assertEqual(struct.unpack_from(make_graph.HEADER, read(out), 0)[4], 3)   # the curves' inner points
         ring = [(a, b) for a, b, _, _, n in edges if n == '']
         self.assertEqual(len(ring), 5)                # the roundabout: one way round (r5: the south street again)
@@ -809,8 +809,9 @@ class Tools(unittest.TestCase):
         out = os.path.join(self.tmp, 'search.idx')
         make_search.build(TINY, out)
         h = struct.unpack_from(make_search.HEADER, read(out), 0)
-        self.assertEqual(h[2:6], (1, 10, 2, 1))       # places, streets (the ring has no name; Островная too:
-                                                      # only the graph leaves it out), houses, places to go
+        self.assertEqual(h[2:6], (1, 12, 2, 1))       # places, streets (the ring has no name; Островная too:
+                                                      # only the graph leaves it out; Западный, Дальняя),
+                                                      # houses, places to go
         self.assertEqual(make_search.norm('Улица 22-го Партсъезда, ё'), 'улица 22 го партсъезда е')
 
     def test_search_building_address(self):
