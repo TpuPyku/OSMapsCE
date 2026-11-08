@@ -93,5 +93,8 @@ C++, Win32 API, исходники в [native_osm](native_osm). Нужна Visua
 
 Сторонние библиотеки: [BearSSL](https://bearssl.org) 0.6 (MIT) — HTTPS; [stb_image](https://github.com/nothings/stb) (public domain) — PNG/JPEG. Подробнее — `THIRD_PARTY.txt`.
 
+## Если понравилось
+Поставьте ⭐ звезду репозиторию (кнопка **Star** вверху страницы) — так программу проще найти другим.
+
 ## Лицензия
 © 2026 TpuPyku, GNU GPL v3 (`LICENSE`): можно использовать, изменять и распространять, в том числе за деньги, только вместе с исходным кодом всех изменений под той же лицензией. Данные карт © участники OpenStreetMap, ODbL.

@@ -96,5 +96,8 @@ Tools: `core\make_ta.py` for root certificates; `native_osm\make_regions.py` for
 
 Third-party libraries: [BearSSL](https://bearssl.org) 0.6 (MIT) for HTTPS; [stb_image](https://github.com/nothings/stb) (public domain) for PNG/JPEG. See `THIRD_PARTY.txt`.
 
+## If you like it
+Give the repository a ⭐ star (the **Star** button at the top of the page): it helps others find the app.
+
 ## License
 © 2026 TpuPyku, GNU GPL v3 (`LICENSE`): you may use, change and distribute it, including for money, only together with the source code of all changes under the same license. Map data © OpenStreetMap contributors, ODbL.
