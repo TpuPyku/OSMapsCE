@@ -3491,8 +3491,9 @@ static void DrawSettings(HDC dc)
         _snwprintf(s, 160, Tr(L"векторная · детализация: авто (%s)"), Tr(kDetailLow[VTileDetail()]));
     MainRow(dc, 0, L"Карта", s, true);
     DrawCtl(dc, kSetCtl[S_MAPS], s_setPressed == S_MAPS, s_fontLabel, L"КАРТЫ");
-    _snwprintf(s, 160, Tr(L"схема развязки: %s · платные: %s"), g_cfg.junction ? Tr(L"вкл") : Tr(L"выкл"),
-               g_cfg.noToll ? Tr(L"объезжать") : Tr(L"можно"));
+    // (the voice's switch is in the route's sheet - no room for an eighth row here: its state said in this one)
+    _snwprintf(s, 160, Tr(L"голос: %s · развязка: %s · платные: %s"), g_cfg.voice ? Tr(L"вкл") : Tr(L"выкл"),
+               g_cfg.junction ? Tr(L"вкл") : Tr(L"выкл"), g_cfg.noToll ? Tr(L"объезжать") : Tr(L"можно"));
     MainRow(dc, 1, L"Маршрут", s, true);
     DrawCtl(dc, kSetCtl[S_ROUTE], s_setPressed == S_ROUTE, s_fontLabel, L"НАСТРОИТЬ");
     if (g_cfg.cacheKb >= 0)

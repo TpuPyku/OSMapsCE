@@ -55,7 +55,7 @@ COM%d не открывается	COM%d does not open
 векторная · детализация: авто (%s)	vector · detail: auto (%s)
 Карта	Map
 КАРТЫ	MAPS
-схема развязки: %s · платные: %s	junction diagram: %s · toll roads: %s
+голос: %s · развязка: %s · платные: %s	voice: %s · junction: %s · tolls: %s
 вкл	on
 выкл	off
 объезжать	avoid
