@@ -6322,6 +6322,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             } else if (RouteAlts() >= 2) {
                 RouteAltsDone();
             } else if ((s_favMenu = FavAt(x, y)) >= 0) {   // a favourite's mark: its menu
+                // (the user 2026-11-08, a Shturmann: "any tap at z16-z17 opens a favourite" - where it was, where the mark)
+                Log("ui: tap %d,%d - favourite %d, its mark at %d,%d, z%d", x, y, s_favMenu, s_favPt[s_favMenu].x,
+                    s_favPt[s_favMenu].y, g_cfg.z);
             } else {   // a tap on the map raises (and refreshes the traffic) / lowers the bottom bar
                 bool up = !DockUp();
                 DockShow(up);

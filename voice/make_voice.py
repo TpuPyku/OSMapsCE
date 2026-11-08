@@ -6,7 +6,8 @@
    clips sound alike), trimmed, evened in loudness, 22050 Hz mono 16-bit WAV (the unit plays it with no decoder):
        python make_voice.py build --lang ru --ref <dir>/ru_2.wav --out ../OSMapsCE/Voice/ru
 
-Needs: pip install qwen-tts soundfile (Python 3.10-3.12, torch); ffmpeg in PATH.
+Needs: pip install qwen-tts soundfile (Python 3.10-3.12, torch); ffmpeg in PATH. The models (~9 GB) go to Hugging
+Face's cache; kept on another disk - set HF_HUB_CACHE to their folder before running.
 """
 import argparse
 import os

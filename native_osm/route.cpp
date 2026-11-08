@@ -2,6 +2,7 @@
 #include "lang.h"
 #include "voice.h"
 #include "segpick.h"
+#include "vroute.h"   // VestaCore: the line shared (GpsSim)
 
 // Search and route over OSM data on public servers (2026-10-26): Photon (komoot, HTTPS) finds places by text,
 // OSRM of FOSSGIS (routing.openstreetmap.de, plain HTTP) lays the car route. The user's choice was Valhalla, but
@@ -612,6 +613,7 @@ static void OnRoute(const char* body, int k)
     s_stateText[0] = 0;
     Log("route: %d points, %d maneuvers, %d stops, %.1f km, %d min", np, s_nm, s_nViaShape, cum[np - 1] / 1000,
         (int)(s_timeS / 60));
+    VRoutePublish(pts, np);   // (VestaCore: GpsSim drives along it)
 }
 
 bool OnApiResult(ApiResult* r)
