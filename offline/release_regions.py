@@ -167,6 +167,14 @@ def upload_zip(disk, name, path):
     return size
 
 
+def placed(store, whole):
+    """A whole archive's entry, told it is on the own server ("files": True; the user 2026-11-09 - the regions not
+    rebuilt since keep the disk's)."""
+    if store.KEY == 'files':
+        whole['files'] = True
+    return whole
+
+
 def one_side(rings):
     """Rings there, all on one side of 180 degrees (Chukotka's are not: -170 and 170)."""
     lons = [lon for r in rings for lon, _ in r]
@@ -199,7 +207,7 @@ def build_full(entry, folder, dist, get_bytes, day, disk, rings=None):
         info = f.read() + 'tiles=%s\n' % day
     zpath = os.path.join(dist, entry['name'] + '.full.zip')
     stored_zip(zpath, folder, present(folder, ('route.grf', 'search.idx', 'layers.lay', 'parking.lay', 'tiles.vtp')), info)
-    entry['full'] = {'zip': entry['zip'], 'size': upload_zip(disk, entry['zip'], zpath), 'tiles': day}
+    entry['full'] = placed(disk, {'zip': entry['zip'], 'size': upload_zip(disk, entry['zip'], zpath), 'tiles': day})
     print('%s: zip %.0f MB up in %.0f s' % (entry['name'], entry['full']['size'] / 1e6, time.time() - t0))
     with open(os.path.join(dist, entry['name'] + '.json'), 'w', encoding='utf-8') as f:
         json.dump(entry, f)
@@ -222,7 +230,8 @@ def publish_disk(dist, disk, get_bytes, day):
             info = f.read()
         zpath = os.path.join(dist, 'overview.zip')
         stored_zip(zpath, folder, ('overview.vtp', 'trunk.grf') if graph else ('overview.vtp',), info, ('trunk.grf',))
-        cat['overview'] = {'zip': 'overview.zip', 'size': upload_zip(disk, 'overview.zip', zpath), 'tiles': day}
+        cat['overview'] = placed(disk, {'zip': 'overview.zip', 'size': upload_zip(disk, 'overview.zip', zpath),
+                                        'tiles': day})
         if graph:
             cat['overview']['date'] = maps_app.trunk_date(work)
     finally:

@@ -168,6 +168,7 @@ static char* s_full;
 static char* s_ov;
 static int   s_fullLen, s_ovLen, s_withDisk, s_apiFail, s_ovAsks, s_catFails;
 static char  s_apiQuery[512];
+static char  s_filesAsked[1024];   // the own server's paths asked (s_withDisk 2: the catalog tells it, 2026-11-09)
 
 static char* FileBytes(const wchar_t* name, int* len)   // a file of obj\test (malloc)
 {
@@ -248,7 +249,22 @@ static int FakeGet(const char* host, bool, const char* path, unsigned char** bod
                                       "\"size\":2048,\"date\":\"2026-10-30\"},\"regions\":[{\"name\":\"yy\",\"title\":\"Y\",\"date\":\"2026-10-29\","
                                       "\"zip\":\"yy.zip\",\"size\":2048},{\"name\":\"zz\",\"title\":\"Z\",\"date\":\"2026-10-30\","
                                       "\"zip\":\"zz.zip\",\"size\":2048,\"full\":{\"zip\":\"zz.zip\",\"size\":300000}}]}";
-        return Body(s_withDisk ? kDiskCat : kCat, body, len, status);
+        static const char* kFilesCat = "{\"files\":\"http://files.example/maps/\",\"disk\":\"https://disk.example/d/x\","
+                                       "\"overview\":{\"zip\":\"overview.zip\",\"size\":2048,\"date\":\"2026-10-30\",\"files\":true},"
+                                       "\"regions\":[{\"name\":\"yy\",\"title\":\"Y\",\"date\":\"2026-10-29\",\"zip\":\"yy.zip\","
+                                       "\"size\":2048,\"full\":{\"zip\":\"yy.zip\",\"size\":300000}},{\"name\":\"zz\",\"title\":"
+                                       "\"Z\",\"date\":\"2026-11-09\",\"zip\":\"zz.zip\",\"size\":2048,\"full\":{\"zip\":"
+                                       "\"zz.zip\",\"size\":300000,\"files\": true}}]}";
+        static char noDisk[1024];   // s_withDisk 3: the own server alone, no disk's link
+        strcpy(noDisk, kFilesCat);
+        memcpy(strstr(noDisk, "\"disk\""), "\"xxxx\"", 6);
+        return Body(s_withDisk == 3 ? noDisk : s_withDisk == 2 ? kFilesCat : s_withDisk ? kDiskCat : kCat, body, len,
+                    status);
+    }
+    if (s_withDisk >= 2 && !strcmp(host, "files.example")) {   // the own server: its files straight, in ranges
+        strncpy(s_filesAsked + strlen(s_filesAsked), path, sizeof(s_filesAsked) - strlen(s_filesAsked) - 1);
+        return !x->headers ? NET_TIMEOUT : strstr(path, "/maps/overview.zip") ? Ranged(s_ov, s_ovLen, x, body, len, status)
+               : strstr(path, "/maps/zz.zip") ? Ranged(s_full, s_fullLen, x, body, len, status) : (*status = 404, NET_OK);
     }
     if (s_withDisk && (!strcmp(host, "cloud-api.yandex.net") || !strcmp(host, "dl.example")))
         return DiskGet(host, path, body, len, status, x);
@@ -335,6 +351,35 @@ static void Remove(const wchar_t* dir)   // a folder of the test's last run (its
     RemoveDirectory(dir);
 }
 
+// The maps' own server (the user 2026-11-09: Yandex Disk's upload limit ran out): the catalog's "files" folder - the
+// archives put there ("files" in their entry) by their links straight, the overview too; one not rebuilt since: the
+// disk's still
+static void FilesChecks(const wchar_t* zz, const wchar_t* yy, const wchar_t* ov)
+{
+    s_withDisk = 2;
+    s_apiQuery[0] = s_filesAsked[0] = 0;
+    s_ovAsks = 0;
+    Check(MapsList() && WaitMaps() && MapsCount() == 2, "files: the catalog", NULL);
+    Check(MapsGetRegion(1) && WaitMaps() && FileIs(L"OSMapsData\\zz\\search.idx", "IDXIDXIDXIDXIDXIDXIDXIDXIDXIDX", 30)
+          && strstr(s_filesAsked, "/maps/zz.zip") && strstr(s_filesAsked, "/maps/overview.zip") && !s_ovAsks,
+          "files: the region whole and the overview straight from the server, not the disk", s_filesAsked);
+    Remove(zz);
+    Remove(ov);
+    MapsGetRegion(0);
+    WaitMaps();
+    Check(strstr(s_apiQuery, "yy.zip") && !strstr(s_filesAsked, "yy.zip"),
+          "files: a region not put there - asked of the disk", s_apiQuery);
+    Remove(yy);
+    Remove(ov);
+    s_withDisk = 3;
+    s_apiQuery[0] = 0;
+    Check(MapsList() && WaitMaps() && MapsGetRegion(0) && WaitMaps() && !s_apiQuery[0] &&
+          FileIs(L"OSMapsData\\yy\\search.idx", "IDXIDXIDXIDXIDXIDXIDXIDXIDXIDX", 30),
+          "files: a region not put there, no disk - its graph and search from the release", s_apiQuery);
+    Remove(yy);
+    Remove(ov);
+}
+
 // The region whole from Yandex Disk (the user 2026-10-30: GitHub's downloads slow): the catalog's folder - a public
 // file's link asked of the disk's API (public_key and path encoded), the zip in ranges, its big files stored - unpacked
 // piece by piece (tiles.vtp over a few pieces); the overview after it when the card has none
@@ -408,6 +453,7 @@ static void DiskChecks()
     Remove(zz);
     PathInDir(ov, L"OSMapsData\\overview");
     Remove(ov);
+    FilesChecks(zz, yy, ov);
     s_withDisk = 0;
     free(s_full);
     free(s_ov);

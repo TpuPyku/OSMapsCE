@@ -266,23 +266,26 @@ def drop_old_trunk(drive):
 def ready_links(cat, chosen, href=yadisk.public_href):
     """The ready archives on the catalog's Yandex Disk (the user 2026-10-30: the app for one's own build; the ready
     ones by their links): the chosen regions whole there (and the overview) - their download links; none chosen - the
-    disk's folder; no disk - none. The maps' own server (the catalog's "files", the user 2026-11-09: the disk's upload
-    limit ran out) first: its links straight, no folder to open (no listing there)."""
-    files = cat.get('files')
-    if files:
-        return [files + z for z in ready_zips(cat, chosen)]
-    disk = cat.get('disk')
-    if not disk:
-        return []
-    return [href(disk, z) for z in ready_zips(cat, chosen)] if chosen else [disk]
+    disk's folder; no disk - none. Those on the maps' own server (their entry's "files": the catalog's "files" folder,
+    the user 2026-11-09: the disk's upload limit ran out) by their links straight."""
+    files, disk = cat.get('files'), cat.get('disk')
+    if not chosen:
+        return [disk] if disk else []
+    links = []
+    for whole in ready_wholes(cat, chosen):
+        if whole.get('files') and files:
+            links.append(files + whole['zip'])
+        elif disk:
+            links.append(href(disk, whole['zip']))
+    return links
 
 
-def ready_zips(cat, chosen):
-    """The chosen regions' whole archives (and the overview's) the catalog tells."""
-    zips = [r['full']['zip'] for r in cat['regions'] if r['name'] in chosen and 'full' in r]
+def ready_wholes(cat, chosen):
+    """The chosen regions' whole archives' entries (and the overview's) the catalog tells."""
+    wholes = [r['full'] for r in cat['regions'] if r['name'] in chosen and 'full' in r]
     if OVERVIEW in chosen and 'overview' in cat:
-        zips.append(cat['overview']['zip'])
-    return zips
+        wholes.append(cat['overview'])
+    return wholes
 
 
 def inform(title, text):   # a message in its window (tests: replaced)

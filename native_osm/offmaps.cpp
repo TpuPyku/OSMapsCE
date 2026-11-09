@@ -15,6 +15,11 @@ static void Copy(char* out, int cap, const char* p)   // a JSON string into out 
     out[cap - 1] = 0;
 }
 
+static bool JTrue(const char* p)   // a JSON true
+{
+    return p && !strncmp(Ws(p), "true", 4);
+}
+
 // catalog.json's regions into out (at most cap); their count, 0 from a bad one
 int MapsCatalog(const char* json, MapRegion* out, int cap)
 {
@@ -28,6 +33,7 @@ int MapsCatalog(const char* json, MapRegion* out, int cap)
         Copy(m.zip, sizeof(m.zip), JKey(r, "zip"));
         m.sizeKb = (int)(JNum(JKey(r, "size"), 0) / 1024);
         m.fullKb = (int)(JNum(JKey(JKey(r, "full"), "size"), 0) / 1024);
+        m.files = JTrue(JKey(JKey(r, "full"), "files"));
         if (m.name[0] && m.zip[0])
             n++;
     }
@@ -414,6 +420,7 @@ static char             s_files[256];  // the catalog's maps' own server, its fo
 static char             s_trunkDate[16];   // the catalog's trunk roads' build in the overview's pack ("" not told: an old
                                            // catalog, its pack holds no graph)
 static int              s_ovKb;        // ... its overview's size
+static bool             s_ovFiles;     // ... on the own server (else the disk's)
 
 static void Lock()
 {
@@ -460,6 +467,7 @@ static DWORD WINAPI ListThread(LPVOID)
         Copy(files, sizeof(files), JKey((const char*)body, "files"));
     }
     int ovKb = n ? (int)(JNum(JKey(JKey((const char*)body, "overview"), "size"), 0) / 1024) : 0;
+    bool ovFiles = n && JTrue(JKey(JKey((const char*)body, "overview"), "files"));
     char trunkDate[16] = "";
     if (n)
         Copy(trunkDate, sizeof(trunkDate), JKey(JKey((const char*)body, "overview"), "date"));
@@ -472,6 +480,7 @@ static DWORD WINAPI ListThread(LPVOID)
     strcpy(s_disk, disk);
     strcpy(s_files, files);
     s_ovKb = ovKb;
+    s_ovFiles = ovFiles;
     strcpy(s_trunkDate, trunkDate);
     _snwprintf(s_text, 128, n ? Tr(L"Областей: %d") : Tr(L"Каталог не получен (нет связи с GitHub?)"), n);
     LeaveCriticalSection(&s_cs);
@@ -515,10 +524,17 @@ static bool DiskHref(const char* name, char* href, int cap)
     return href[0] != 0;
 }
 
-// An archive whole: its link on the maps' own server (straight), else on the disk (asked of its API); false - none
-static bool WholeHref(const char* name, char* href, int cap)
+// An archive whole there: on the maps' own server (files: its entry says so) or on the disk
+static bool WholeThere(bool files)
 {
-    if (!s_files[0])
+    return (files && s_files[0]) || s_disk[0];
+}
+
+// An archive whole: its link on the maps' own server (straight) when put there, else on the disk (asked of its API);
+// false - none
+static bool WholeHref(const char* name, bool files, char* href, int cap)
+{
+    if (!files || !s_files[0])
         return s_disk[0] && DiskHref(name, href, cap);
     _snprintf(href, cap, "%s%s", s_files, name);
     href[cap - 1] = 0;
@@ -530,9 +546,9 @@ static bool WholeHref(const char* name, char* href, int cap)
 static bool GetRegion(const MapRegion& r, const wchar_t* data)
 {
     char url[2048];
-    if ((s_files[0] || s_disk[0]) && r.fullKb) {
+    if (WholeThere(r.files) && r.fullKb) {
         s_totalKb = r.fullKb;
-        return WholeHref(r.zip, url, sizeof(url)) && MapsInstall(url, data, r.name, MAPS_FULL);
+        return WholeHref(r.zip, r.files, url, sizeof(url)) && MapsInstall(url, data, r.name, MAPS_FULL);
     }
     _snprintf(url, sizeof(url), "%s%s", kAssets, r.zip);
     return MapsInstall(url, data, r.name, MAPS_GRAPH);
@@ -546,11 +562,11 @@ static void GetExtras(const wchar_t* data)
     char url[2048];
     _snwprintf(ov, MAX_PATH, L"%s\\overview\\overview.vtp", data);
     ov[MAX_PATH - 1] = 0;
-    if (!(s_files[0] || s_disk[0]) || !s_ovKb || !s_trunkDate[0] || s_cancel || (Exists(ov, NULL) && TrunkCurrent()))
+    if (!WholeThere(s_ovFiles) || !s_ovKb || !s_trunkDate[0] || s_cancel || (Exists(ov, NULL) && TrunkCurrent()))
         return;
     Say(Tr(L"Обзорная карта и магистрали…"), NULL);
     s_totalKb = s_ovKb;
-    if (!WholeHref("overview.zip", url, sizeof(url)) || !MapsInstall(url, data, "overview", MAPS_OVERVIEW))
+    if (!WholeHref("overview.zip", s_ovFiles, url, sizeof(url)) || !MapsInstall(url, data, "overview", MAPS_OVERVIEW))
         return;
     // a card from before: the trunk roads' own folder goes (the first trunk.grf found is the one taken)
     _snwprintf(old, MAX_PATH, L"%s\\trunk\\trunk.grf", data);
