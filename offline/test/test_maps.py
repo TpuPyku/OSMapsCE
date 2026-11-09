@@ -62,7 +62,7 @@ class Maps(unittest.TestCase):
         entry = self.release_tiny()
         folder = os.path.join(self.tmp, 'work', 'data', 'tiny')
         up = []
-        disk = type('D', (), {'upload': lambda self, path, file: up.append((path, read(file)))})()
+        disk = type('D', (), {'KEY': 'disk', 'upload': lambda self, path, file: up.append((path, read(file)))})()
         got = release_regions.build_full(entry, folder, self.dist, self.planet(), '20261030', disk)
         self.assertEqual(up[0][0], 'app:/maps/tiny.zip')
         with zipfile.ZipFile(io.BytesIO(up[0][1])) as z:
@@ -124,13 +124,27 @@ class Maps(unittest.TestCase):
 
     def test_ready_links_own_server(self):
         """The maps' own server (the user 2026-11-09: Yandex Disk's upload limit ran out): the catalog's "files" -
-        the archives' folder on the web, their links straight (none asked of the disk), before the disk's."""
+        the archives' folder on the web - those put there ("files" in their entry) by their links straight; the others
+        (a region not rebuilt since: kept from the previous catalog) still the disk's."""
         cat = {'files': 'http://203.0.113.5/maps/', 'disk': 'https://disk.yandex.ru/d/x',
-               'overview': {'zip': 'overview.zip'}, 'regions': [{'name': 'a', 'full': {'zip': 'a.zip'}}, {'name': 'b'}]}
-        href = lambda pub, name: self.fail('asked of the disk')   # noqa: E731
-        self.assertEqual(maps_app.ready_links(cat, {'a', 'b', maps_app.OVERVIEW}, href),
-                         ['http://203.0.113.5/maps/a.zip', 'http://203.0.113.5/maps/overview.zip'])
-        self.assertEqual(maps_app.ready_links(cat, set(), href), [])   # (no listing there: nothing to open)
+               'overview': {'zip': 'overview.zip', 'files': True},
+               'regions': [{'name': 'a', 'full': {'zip': 'a.zip', 'files': True}}, {'name': 'b'},
+                           {'name': 'c', 'full': {'zip': 'c.zip'}}]}
+        href = lambda pub, name: 'https://dl/' + name   # noqa: E731
+        self.assertEqual(maps_app.ready_links(cat, {'a', 'b', 'c', maps_app.OVERVIEW}, href),
+                         ['http://203.0.113.5/maps/a.zip', 'https://dl/c.zip', 'http://203.0.113.5/maps/overview.zip'])
+        self.assertEqual(maps_app.ready_links(dict(cat, disk=None), {'a', 'c'}, href),
+                         ['http://203.0.113.5/maps/a.zip'])              # (c: no disk to have it of)
+        self.assertEqual(maps_app.ready_links(dict(cat, files=None), {'a'}, href), ['https://dl/a.zip'])
+
+    def test_release_full_region_own_server(self):
+        """A region put onto the own server: its entry tells it ("files") - the clients know it there, not on the
+        disk."""
+        entry = self.release_tiny()
+        folder = os.path.join(self.tmp, 'work', 'data', 'tiny')
+        store = type('S', (), {'KEY': 'files', 'upload': lambda self, path, file: None})()
+        got = release_regions.build_full(entry, folder, self.dist, self.planet(), '20261109', store)
+        self.assertIs(got['full']['files'], True)
 
     def test_release_store_key(self):
         """The publish job with the own server: the catalog tells its folder as "files" (the disk's link, old
@@ -148,6 +162,7 @@ class Maps(unittest.TestCase):
         with unittest.mock.patch.object(maps_app, 'download', lambda url, tell: buf.getvalue()):
             got = release_regions.publish_disk(self.dist, store, self.planet(), '20261030')
         self.assertEqual((got['files'], got['disk']), ('http://203.0.113.5/maps/', 'https://disk.example/d/x'))
+        self.assertIs(got['overview']['files'], True)
         os.makedirs(os.path.join(self.tmp, 'd2'))
         again = release_regions.catalog(os.path.join(self.tmp, 'd2'), got, {'tiny'})
         self.assertEqual((again['files'], again['disk']), (got['files'], got['disk']))

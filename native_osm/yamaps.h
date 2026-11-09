@@ -157,6 +157,7 @@ struct MapRegion {
     char name[48], title[96], date[12], zip[64], have[12];   // title: UTF-8; have: the card's date, "" none
     int  sizeKb;
     int  fullKb;   // the region whole (its tiles too) on the catalog's Yandex Disk; 0 none
+    bool files;    // ... on the catalog's own server instead ("files" in its entry, 2026-11-09)
 };
 int  MapsCatalog(const char* json, MapRegion* out, int cap);
 void MapsHave(MapRegion* r, int n);
