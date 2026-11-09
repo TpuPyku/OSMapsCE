@@ -13,8 +13,10 @@ on:
         type: choice
         options: [all, trunk, app]
   schedule:
-    - cron: '0 22 * * 0'   # Sundays 22:00 UTC = Mondays 01:00 Moscow: done by the morning (GitHub may start
-                             # a scheduled run hours late - 2026-11-02: 03:00 queued at 10:12)
+    # the 1st and the 15th, 22:00 UTC = 01:00 Moscow (GitHub may start a scheduled run hours late - 2026-11-02:
+    # 03:00 queued at 10:12). Twice a month, not weekly: a whole run puts ~21 GB onto Yandex Disk, whose upload
+    # limit is per 30 days, twice the Disk (52 GB: ~104 GB) - weekly ran past it (2026-11-09: HTTP 423)
+    - cron: '0 22 1,15 * *'
 
 permissions:
   contents: write
