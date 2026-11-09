@@ -404,6 +404,8 @@ static volatile LONG    s_busyRegion = -1;   // the region GetThread downloads
 static wchar_t          s_text[128];   // what goes on / the last result
 static int              s_totalKb;     // the file being downloaded
 static char             s_disk[256];   // the catalog's Yandex Disk folder (public link): the regions whole; "" none
+static char             s_files[256];  // the catalog's maps' own server, its folder ("http://.../maps/"; the user
+                                       // 2026-11-09: the disk's upload limit ran out) - before the disk; "" none
 static char             s_trunkDate[16];   // the catalog's trunk roads' build in the overview's pack ("" not told: an old
                                            // catalog, its pack holds no graph)
 static int              s_ovKb;        // ... its overview's size
@@ -447,9 +449,11 @@ static DWORD WINAPI ListThread(LPVOID)
     bool ok = err == NET_OK && status == 200 && body;
     static MapRegion got[kMaxRegions];
     int n = ok ? MapsCatalog((const char*)body, got, kMaxRegions) : 0;
-    char disk[256] = "";
-    if (n)
+    char disk[256] = "", files[256] = "";
+    if (n) {
         Copy(disk, sizeof(disk), JKey((const char*)body, "disk"));
+        Copy(files, sizeof(files), JKey((const char*)body, "files"));
+    }
     int ovKb = n ? (int)(JNum(JKey(JKey((const char*)body, "overview"), "size"), 0) / 1024) : 0;
     char trunkDate[16] = "";
     if (n)
@@ -461,6 +465,7 @@ static DWORD WINAPI ListThread(LPVOID)
     memcpy(s_reg, got, n * sizeof(MapRegion));
     s_nReg = n;
     strcpy(s_disk, disk);
+    strcpy(s_files, files);
     s_ovKb = ovKb;
     strcpy(s_trunkDate, trunkDate);
     _snwprintf(s_text, 128, n ? Tr(L"Областей: %d") : Tr(L"Каталог не получен (нет связи с GitHub?)"), n);
@@ -505,14 +510,24 @@ static bool DiskHref(const char* name, char* href, int cap)
     return href[0] != 0;
 }
 
-// The region: whole from the disk when the catalog has it there (the user 2026-10-30: GitHub's downloads slow), else
-// its graph and search from the release
+// An archive whole: its link on the maps' own server (straight), else on the disk (asked of its API); false - none
+static bool WholeHref(const char* name, char* href, int cap)
+{
+    if (!s_files[0])
+        return s_disk[0] && DiskHref(name, href, cap);
+    _snprintf(href, cap, "%s%s", s_files, name);
+    href[cap - 1] = 0;
+    return true;
+}
+
+// The region: whole from the server or the disk when the catalog has it there (the user 2026-10-30: GitHub's
+// downloads slow), else its graph and search from the release
 static bool GetRegion(const MapRegion& r, const wchar_t* data)
 {
     char url[2048];
-    if (s_disk[0] && r.fullKb) {
+    if ((s_files[0] || s_disk[0]) && r.fullKb) {
         s_totalKb = r.fullKb;
-        return DiskHref(r.zip, url, sizeof(url)) && MapsInstall(url, data, r.name, MAPS_FULL);
+        return WholeHref(r.zip, url, sizeof(url)) && MapsInstall(url, data, r.name, MAPS_FULL);
     }
     _snprintf(url, sizeof(url), "%s%s", kAssets, r.zip);
     return MapsInstall(url, data, r.name, MAPS_GRAPH);
@@ -526,11 +541,11 @@ static void GetExtras(const wchar_t* data)
     char url[2048];
     _snwprintf(ov, MAX_PATH, L"%s\\overview\\overview.vtp", data);
     ov[MAX_PATH - 1] = 0;
-    if (!s_disk[0] || !s_ovKb || !s_trunkDate[0] || s_cancel || (Exists(ov, NULL) && TrunkCurrent()))
+    if (!(s_files[0] || s_disk[0]) || !s_ovKb || !s_trunkDate[0] || s_cancel || (Exists(ov, NULL) && TrunkCurrent()))
         return;
     Say(Tr(L"Обзорная карта и магистрали…"), NULL);
     s_totalKb = s_ovKb;
-    if (!DiskHref("overview.zip", url, sizeof(url)) || !MapsInstall(url, data, "overview", MAPS_OVERVIEW))
+    if (!WholeHref("overview.zip", url, sizeof(url)) || !MapsInstall(url, data, "overview", MAPS_OVERVIEW))
         return;
     // a card from before: the trunk roads' own folder goes (the first trunk.grf found is the one taken)
     _snwprintf(old, MAX_PATH, L"%s\\trunk\\trunk.grf", data);
