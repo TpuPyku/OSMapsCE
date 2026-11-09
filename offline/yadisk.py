@@ -56,6 +56,8 @@ WAITS = (30, 60)   # the upload asked again after these seconds (a connection re
 
 
 class Disk:
+    KEY = 'disk'   # (the catalog's: the folder's public link; the own server's is "files")
+
     def __init__(self, token, send=urllib_send, sleep=time.sleep):
         self.send, self.sleep = send, sleep
         self.auth = {'Authorization': 'OAuth ' + token, 'Accept': 'application/json'}

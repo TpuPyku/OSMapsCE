@@ -32,6 +32,7 @@ import make_graph
 import make_outlines
 import make_region
 import pmextract
+import sftpstore
 import yadisk
 
 ASSETS = 'https://github.com/TpuPyku/OSMapsCE/releases/download/maps/'
@@ -226,7 +227,7 @@ def publish_disk(dist, disk, get_bytes, day):
             cat['overview']['date'] = maps_app.trunk_date(work)
     finally:
         shutil.rmtree(work, ignore_errors=True)
-    cat['disk'] = disk.publish(DISK)
+    cat[disk.KEY] = disk.publish(DISK)
     with open(path, 'w', encoding='utf-8') as f:
         json.dump(cat, f, ensure_ascii=False)
     return cat
@@ -267,7 +268,7 @@ def catalog(dist, previous=None, known=()):
     entries += kept(previous, built, known)
     cat = {'version': 1, 'made': time.strftime('%Y-%m-%d', time.gmtime()),
            'regions': sorted(entries, key=lambda e: e['name'])}
-    for k in ('disk', 'overview', 'trunk'):   # (a run without the disk / the trunk roads: the previous ones')
+    for k in ('files', 'disk', 'overview', 'trunk'):   # (a run without the disk / the trunk roads: the previous ones')
         if previous and k in previous:
             cat[k] = previous[k]
     with open(os.path.join(dist, 'catalog.json'), 'w', encoding='utf-8') as f:
@@ -275,23 +276,32 @@ def catalog(dist, previous=None, known=()):
     return cat
 
 
+def store(env, folder):
+    """Where the regions whole go: the maps' own server when its key is a secret (the user 2026-11-09: Yandex Disk's
+    upload limit ran out), else Yandex Disk with its token, else None (the release's graphs alone)."""
+    own = sftpstore.from_env(env, folder)
+    if own or not env.get('YANDEX_DISK_TOKEN'):
+        return own
+    return yadisk.Disk(env['YANDEX_DISK_TOKEN'])
+
+
 def main(argv):
     if argv[0] == 'list':
         print(json.dumps(sorted(make_region.regions())))
     elif argv[0] == 'build':
         entry = build_region(argv[1], make_region.regions()[argv[1]], argv[2], make_region.WORK)
-        if os.environ.get('YANDEX_DISK_TOKEN'):
+        up = store(os.environ, tempfile.mkdtemp())
+        if up:
             build = pmextract.latest_build()
             entry = build_full(entry, os.path.join(make_region.WORK, 'data', argv[1]), argv[2],
-                               pmextract.http_bytes(build), build_day(build), yadisk.Disk(os.environ['YANDEX_DISK_TOKEN']),
+                               pmextract.http_bytes(build), build_day(build), up,
                                region_rings(make_region.regions()[argv[1]]))
         print(entry)
     elif argv[0] == 'trunk':
         trunk_into(argv[1], argv[2])
     elif argv[0] == 'disk':
         build = pmextract.latest_build()
-        publish_disk(argv[1], yadisk.Disk(os.environ['YANDEX_DISK_TOKEN']), pmextract.http_bytes(build),
-                     build_day(build))
+        publish_disk(argv[1], store(os.environ, tempfile.mkdtemp()), pmextract.http_bytes(build), build_day(build))
     else:
         catalog(argv[1], json.load(open(argv[2], encoding='utf-8')) if len(argv) > 2 else None, make_region.regions())
 

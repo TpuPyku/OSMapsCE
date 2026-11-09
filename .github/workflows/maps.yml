@@ -16,6 +16,7 @@ on:
     # the 1st and the 15th, 22:00 UTC = 01:00 Moscow (GitHub may start a scheduled run hours late - 2026-11-02:
     # 03:00 queued at 10:12). Twice a month, not weekly: a whole run puts ~21 GB onto Yandex Disk, whose upload
     # limit is per 30 days, twice the Disk (52 GB: ~104 GB) - weekly ran past it (2026-11-09: HTTP 423)
+    # (the regions now on the maps' own server - its secrets set; the Disk's without them)
     - cron: '0 22 1,15 * *'
 
 permissions:
@@ -54,11 +55,16 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install osmium pmtiles
-      # with the secret (the user 2026-10-30: GitHub's downloads slow): the region whole - its tiles cut out of
-      # Protomaps' build too - onto the owner's Yandex Disk (offline/yadisk.py), only its entry into the artifact
+      # with the secrets (the user 2026-10-30: GitHub's downloads slow): the region whole - its tiles cut out of
+      # Protomaps' build too - onto the maps' own server by SFTP (offline/sftpstore.py, the user 2026-11-09: Yandex
+      # Disk's upload limit ran out), without its key onto the owner's Yandex Disk; only its entry into the artifact
       - run: python offline/release_regions.py build ${{ matrix.region }} dist
         env:
           YANDEX_DISK_TOKEN: ${{ secrets.YANDEX_DISK_TOKEN }}
+          MAPS_SSH_KEY: ${{ secrets.MAPS_SSH_KEY }}
+          MAPS_HOST: ${{ secrets.MAPS_HOST }}
+          MAPS_PORT: ${{ secrets.MAPS_PORT }}
+          MAPS_KNOWN_HOSTS: ${{ secrets.MAPS_KNOWN_HOSTS }}
       - uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.region }}
@@ -72,6 +78,10 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       YANDEX_DISK_TOKEN: ${{ secrets.YANDEX_DISK_TOKEN }}
+      MAPS_SSH_KEY: ${{ secrets.MAPS_SSH_KEY }}
+      MAPS_HOST: ${{ secrets.MAPS_HOST }}
+      MAPS_PORT: ${{ secrets.MAPS_PORT }}
+      MAPS_KNOWN_HOSTS: ${{ secrets.MAPS_KNOWN_HOSTS }}
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
@@ -92,8 +102,8 @@ jobs:
           python offline/release_regions.py catalog dist previous.json
       - name: The regions' outlines for the app's map and the overview's cut (the sources' .poly)
         run: python offline/make_outlines.py dist/outlines.json
-      - name: The overview's pack (the map and the trunk roads) onto Yandex Disk, its folder public (the catalog tells the link)
-        if: ${{ env.YANDEX_DISK_TOKEN != '' }}
+      - name: The overview's pack (the map and the trunk roads) onto the server or Yandex Disk (the catalog tells the link)
+        if: ${{ env.MAPS_SSH_KEY != '' || env.YANDEX_DISK_TOKEN != '' }}
         run: python offline/release_regions.py disk dist
       - run: gh release upload maps dist/*.zip dist/catalog.json dist/outlines.json --clobber
       - name: The zips no longer in the catalog (regions merged or gone) removed

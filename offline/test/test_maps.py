@@ -85,7 +85,7 @@ class Maps(unittest.TestCase):
         with open(os.path.join(self.dist, 'catalog.json'), 'w', encoding='utf-8') as f:
             json.dump(cat, f)
         up = []
-        disk = type('D', (), {'upload': lambda self, path, file: up.append((path, read(file))),
+        disk = type('D', (), {'KEY': 'disk', 'upload': lambda self, path, file: up.append((path, read(file))),
                               'publish': lambda self, path: up.append(('publish', path)) or 'https://disk.example/d/x'})()
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, 'w') as z:
@@ -122,6 +122,44 @@ class Maps(unittest.TestCase):
         self.assertEqual(set(asked), {'https://disk.yandex.ru/d/x'})
         self.assertEqual(maps_app.ready_links(cat, set(), href), ['https://disk.yandex.ru/d/x'])
         self.assertEqual(maps_app.ready_links({'regions': []}, {'a'}, href), [])
+
+    def test_ready_links_own_server(self):
+        """The maps' own server (the user 2026-11-09: Yandex Disk's upload limit ran out): the catalog's "files" -
+        the archives' folder on the web, their links straight (none asked of the disk), before the disk's."""
+        cat = {'files': 'http://203.0.113.5/maps/', 'disk': 'https://disk.yandex.ru/d/x',
+               'overview': {'zip': 'overview.zip'}, 'regions': [{'name': 'a', 'full': {'zip': 'a.zip'}}, {'name': 'b'}]}
+        href = lambda pub, name: self.fail('asked of the disk')   # noqa: E731
+        self.assertEqual(maps_app.ready_links(cat, {'a', 'b', maps_app.OVERVIEW}, href),
+                         ['http://203.0.113.5/maps/a.zip', 'http://203.0.113.5/maps/overview.zip'])
+        self.assertEqual(maps_app.ready_links(cat, set(), href), [])   # (no listing there: nothing to open)
+
+    def test_release_store_key(self):
+        """The publish job with the own server: the catalog tells its folder as "files" (the disk's link, old
+        OSMapsCE's, kept from the previous catalog); a catalog made after keeps both."""
+        os.makedirs(self.dist)
+        with open(os.path.join(self.dist, 'catalog.json'), 'w', encoding='utf-8') as f:
+            json.dump({'regions': [{'name': 'tiny', 'bbox': [49.9, 52.9, 50.1, 53.1]}],
+                       'disk': 'https://disk.example/d/x'}, f)
+        store = type('S', (), {'KEY': 'files', 'upload': lambda self, path, file: None,
+                               'publish': lambda self, path: 'http://203.0.113.5/maps/'})()
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, 'w') as z:
+            z.writestr('trunk.grf', b'OSMG')
+            z.writestr('region.txt', 'name=trunk\ndate=2026-11-09\n')
+        with unittest.mock.patch.object(maps_app, 'download', lambda url, tell: buf.getvalue()):
+            got = release_regions.publish_disk(self.dist, store, self.planet(), '20261030')
+        self.assertEqual((got['files'], got['disk']), ('http://203.0.113.5/maps/', 'https://disk.example/d/x'))
+        os.makedirs(os.path.join(self.tmp, 'd2'))
+        again = release_regions.catalog(os.path.join(self.tmp, 'd2'), got, {'tiny'})
+        self.assertEqual((again['files'], again['disk']), (got['files'], got['disk']))
+
+    def test_release_store_choice(self):
+        """Where the regions whole go: the own server when its key is a secret, else Yandex Disk, else nowhere."""
+        tmp = self.tmp
+        self.assertEqual(release_regions.store({'MAPS_SSH_KEY': 'K', 'MAPS_HOST': 'h', 'YANDEX_DISK_TOKEN': 'T'},
+                                                tmp).KEY, 'files')
+        self.assertEqual(release_regions.store({'YANDEX_DISK_TOKEN': 'T'}, tmp).KEY, 'disk')
+        self.assertIsNone(release_regions.store({}, tmp))
 
     def test_release_trunk_date(self):
         """The trunk roads' build in the catalog (the user 2026-10-30: an old graph on the card took the toll road -
