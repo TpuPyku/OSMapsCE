@@ -200,6 +200,8 @@ void MapsCancel();                // the download stopped (its part kept: goes o
 // offline.cpp - routes from a region's road graph (OSMapsData\<region>\route.grf), answered as OSRM's JSON
 int   RoadTier(int cls);   // a road class's level: 0 main (motorway..primary, links), 1 secondary / tertiary, 2 minor
 bool  HierAllows(int tier, int nearM, int hier);   // its edge searched nearM from the nearer end (hier: 2, 1, 0 none)
+int   TurnCostDs(int x1, int y1, int x2, int y2);   // a turn from move 1 to move 2 (metres): its time, 0.1 s
+int   TurnCostB(int in, int out);   // the same by bearings (256 = a full circle: the graph's own, make_graph.py)
 bool  OfflineRoute(const char* osrmPath, char** body, int* len);   // false: no region / no way - ask OSRM
 bool  OfflineTrunkRoute(const char* osrmPath, char** body, int* len);   // over the trunk roads (4b): after OSRM failed
 bool  OfflineHasTrunk();   // the trunk roads' graph is on a card
@@ -214,7 +216,7 @@ bool  VPackTile(const MapRequest& d, unsigned char** data, int* len);   // false
 int   VOverviewZ();   // the overview pack's deepest zoom (OSMapsData\overview\overview.vtp: the CIS's small zooms whole), -1 none
 bool  VOverviewTile(const MapRequest& d, unsigned char** data, int* len);   // its data tile d (malloc'd); false: none
 // offdata.cpp - the offline data's files (a header, parts kept in memory) and the JSON text of the answers
-enum { kOffParts = 6 };
+enum { kOffParts = 7 };
 struct OffFile {
     HANDLE      file, mfile, map;   // mfile, map: the file mapped (its parts paged in as read, out when memory is short)
     const BYTE* view;

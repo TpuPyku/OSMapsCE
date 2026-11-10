@@ -576,6 +576,36 @@ static void LevelChecks()
           HierAllows(0, 1000000, 2), "levels: every road near the ends, the tertiary to 20 km, then the main", NULL);
     Check(HierAllows(1, 50000, 1) && !HierAllows(2, 5000, 1) && HierAllows(2, 4999, 1) && HierAllows(2, 1000000, 0),
           "levels: asked again - the tertiary and up, at last every road", NULL);
+    // a turn's cost by its sharpness (east, then: x east, y north; OSRM's car profile in steps), tenths of a second
+    Check(TurnCostDs(100, 0, 100, 0) == 0 && TurnCostDs(100, 0, 100, 50) == 0 && TurnCostDs(100, 0, 100, -50) == 0,
+          "turn cost: straight on and up to 30 degrees - none", NULL);
+    Check(TurnCostDs(100, 0, 100, 60) == 5 && TurnCostDs(100, 0, 100, -170) == 5, "turn cost: 31-60 degrees - 0.5 s",
+          NULL);
+    Check(TurnCostDs(100, 0, 100, 175) == 20 && TurnCostDs(100, 0, 0, 100) == 20 && TurnCostDs(100, 0, 0, -100) == 20,
+          "turn cost: 61-90 degrees - 2 s", NULL);
+    Check(TurnCostDs(100, 0, -50, 100) == 45 && TurnCostDs(100, 0, -50, -100) == 45, "turn cost: 91-120 degrees - 4.5 s",
+          NULL);
+    Check(TurnCostDs(100, 0, -100, 80) == 65 && TurnCostDs(100, 0, -100, -60) == 65, "turn cost: 121-150 degrees - 6.5 s",
+          NULL);
+    Check(TurnCostDs(100, 0, -100, 10) == 200 && TurnCostDs(100, 0, -100, 0) == 200, "turn cost: back the way - 20 s",
+          NULL);
+    Check(TurnCostDs(0, 0, 100, 0) == 0 && TurnCostDs(100, 0, 0, 0) == 0, "turn cost: a move of no length - none", NULL);
+    Check(TurnCostDs(60, 80, 80, 60) == 0 && TurnCostDs(60, 80, 80, -60) == 20 && TurnCostDs(-60, 80, 80, 60) == 20,
+          "turn cost: moves off the axes (16, 90, 90 degrees)", NULL);
+    Check(TurnCostDs(0, 100000, 100000, 0) == 20, "turn cost: 100 km moves, no overflow", NULL);
+    // by the graph's bearings (256 a circle): 21 = 29.5 degrees, 22 = 30.9, 42 = 59, 43 = 60.5, 64 = 90, 65 = 91.4,
+    // 85 = 119.5, 86 = 120.9, 106 = 149, 107 = 150.5
+    Check(TurnCostB(64, 64) == 0 && TurnCostB(64, 85) == 0 && TurnCostB(64, 43) == 0 && TurnCostB(250, 15) == 0,
+          "turn cost by bearings: up to 30 degrees, either way, across north - none", NULL);
+    Check(TurnCostB(0, 22) == 5 && TurnCostB(0, 42) == 5 && TurnCostB(0, 234) == 5, "turn cost by bearings: 31-60 - 0.5 s",
+          NULL);
+    Check(TurnCostB(0, 43) == 20 && TurnCostB(0, 64) == 20 && TurnCostB(0, 192) == 20, "turn cost by bearings: 61-90 - 2 s",
+          NULL);
+    Check(TurnCostB(0, 65) == 45 && TurnCostB(0, 85) == 45, "turn cost by bearings: 91-120 - 4.5 s", NULL);
+    Check(TurnCostB(0, 86) == 65 && TurnCostB(0, 106) == 65 && TurnCostB(0, 150) == 65,
+          "turn cost by bearings: 121-150 - 6.5 s", NULL);
+    Check(TurnCostB(0, 107) == 200 && TurnCostB(0, 128) == 200 && TurnCostB(200, 72) == 200,
+          "turn cost by bearings: back the way - 20 s", NULL);
 }
 
 static void JsonChecks()
@@ -1115,6 +1145,35 @@ int main()
     free(b);
     b = Route("50.105,60.000;50.115,60.000", "&exclude=toll");   // by the far toll road alone: on it all the same
     Check(b && Num(b, "\"distance\":") > 500 && Num(b, "\"distance\":") < 600, "toll: no free road near - the toll one", b);
+    free(b);
+
+    // a turn costs time (the hook region, 64 N; the user 2026-11-09, Khodynka): W -> T straight on the service road
+    // (~402 m from 150 m west of A), not by the loop curving into B as for a U-turn (~463 m, 10.6 s quicker with no
+    // cost for turns) - seen by the roads' bearings ('OSMB': 20.5 s), not by the nodes' chords (9 s)
+    b = Route("49.996923,64.000000;50.005129,63.999811");   // (inside the region: its ends round off it)
+    Check(b && Num(b, "\"distance\":") < 430 && !Has(b, L"\"location\":[49.999897,64.000288]"),
+          "turn cost: straight on, not the loop's U-turn", b);
+    // every fork of roads alike told (the user 2026-11-10): the loop beside ours at A, a service road too - keep right
+    Check(b && Has(b, L"\"type\":\"fork\",\"modifier\":\"slight right\",\"bearing_before\":90") &&
+          Has(b, L"\"location\":[50.000000,64.000000]"), "a fork of roads alike, ours the straighter: told", b);
+    free(b);
+    // a graph made before the bearings (hookold: the same, 66 N, its 'OSMB' cut off): by the chords - the loop
+    b = Route("49.996683,66.000000;50.005528,65.999811");
+    Check(b && Num(b, "\"distance\":") > 430, "turn cost, an old graph: by the nodes - the loop's U-turn unseen", b);
+    free(b);
+    // a turn restriction (from the loop at B not onto Улица Ветка): from the loop to T by M (without it: Ветка)
+    b = Route("50.000226,64.000121;50.005129,63.999811");
+    Check(b && !Has(b, L"Улица Ветка") && Has(b, L"Улица Крюк"), "a turn restriction: kept", b);
+    free(b);
+    // along the street M through B: a branch as good (Улица Ветка, ~20 degrees off) - M goes on by its name, not told
+    b = Route("49.998923,64.000414;50.001180,64.000162");
+    Check(b && !Has(b, L"\"location\":[49.999897,64.000288]") && Count(b, "\"maneuver\"") == 2,
+          "a fork, our street going on by its name: not told", b);
+    free(b);
+    // W -> N: the loop it is; at A it bends away within metres - told as a fork, left
+    b = Route("49.996923,64.000000;50.000146,64.001799");
+    Check(b && Has(b, L"\"type\":\"fork\",\"modifier\":\"slight left\",\"bearing_before\":90") &&
+          Has(b, L"\"location\":[50.000000,64.000000]"), "a fork bending away within metres: told", b);
     free(b);
 
     // from the east end to the upper corner: right onto the one-way street (east -> west, then north)

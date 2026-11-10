@@ -36,6 +36,15 @@ if not "%1"=="build" (
   if not exist obj\test\OSMapsData\toll mkdir obj\test\OSMapsData\toll
   python ..\offline\test\make_test_toll.py obj\test\toll.osm || goto :bad
   python ..\offline\make_graph.py obj\test\toll.osm obj\test\OSMapsData\toll\route.grf >nul || goto :bad
+  rem the hook region: a fork, a loop with a hairpin beside a straight road, 64 degrees north
+  if not exist obj\test\OSMapsData\hook mkdir obj\test\OSMapsData\hook
+  python ..\offline\test\make_test_hook.py obj\test\hook.osm || goto :bad
+  python ..\offline\make_graph.py obj\test\hook.osm obj\test\OSMapsData\hook\route.grf >nul || goto :bad
+  rem the same at 66 N as a graph made before the bearings (cut at its 'OSMB'): the turns by the nodes
+  if not exist obj\test\OSMapsData\hookold mkdir obj\test\OSMapsData\hookold
+  python ..\offline\test\make_test_hook.py obj\test\hookold.osm 66 || goto :bad
+  python ..\offline\make_graph.py obj\test\hookold.osm obj\test\OSMapsData\hookold\route.grf >nul || goto :bad
+  python -c "import sys; p = sys.argv[1]; d = open(p, 'rb').read(); open(p, 'wb').write(d[:d.rindex(b'OSMB')])" obj\test\OSMapsData\hookold\route.grf || goto :bad
 )
 set OPT=/O2
 if "%COVER%"=="1" set OPT=/Od /Zi
