@@ -176,12 +176,17 @@ class Tools(unittest.TestCase):
             {'barrier': 'lift_gate'}, {'barrier': 'block'}, {'barrier': 'bollard'}, {'barrier': 'toll_booth'},
             {'barrier': 'cattle_grid'}, {'barrier': 'entrance'}, {'barrier': 'lift_gate', 'motor_vehicle': 'no'},
             {'barrier': 'lift_gate', 'access': 'yes'})],
-            [None, 'gate', 'block', None, 'gate', 'block', 'block', None, None, None, 'block', None])
+            [None, 'gate', 'locked', None, 'gate', 'block', 'block', None, None, None, 'locked', None])
+        # a gate closed by its access tag: passed for much more (the user 2026-11-08: a place behind one - the route
+        # ended at it); a block, a bollard closed so: still no way past
+        self.assertEqual(make_graph.barrier_of({'barrier': 'bollard', 'access': 'no'}), 'block')
         osm = os.path.join(self.tmp, 'barriers.osm')
         nodes = {1: (53.1, 50.000), 2: (53.1, 50.002), 3: (53.1, 50.004), 4: (53.1, 50.006),
-                 5: (53.101, 50.002), 6: (53.102, 50.002), 7: (53.101, 50.004), 8: (53.102, 50.004)}
-        tags = {5: {'barrier': 'gate'}, 7: {'barrier': 'block'}}
-        ways = [([1, 2, 3, 4], 'Главная'), ([2, 5, 6], 'Воротная'), ([3, 7, 8], 'Блочная'), ([6, 8], 'Верхняя')]
+                 5: (53.101, 50.002), 6: (53.102, 50.002), 7: (53.101, 50.004), 8: (53.102, 50.004),
+                 9: (53.1, 50.008), 10: (53.101, 50.008), 11: (53.102, 50.008)}
+        tags = {5: {'barrier': 'gate'}, 7: {'barrier': 'block'}, 10: {'barrier': 'gate', 'access': 'private'}}
+        ways = [([1, 2, 3, 4, 9], 'Главная'), ([2, 5, 6], 'Воротная'), ([3, 7, 8], 'Блочная'), ([6, 8], 'Верхняя'),
+                ([9, 10, 11], 'Дачная')]
         with open(osm, 'w', encoding='utf-8') as f:
             f.write('<?xml version="1.0" encoding="UTF-8"?>\n<osm version="0.6">\n')
             for i, (la, lo) in nodes.items():
@@ -198,6 +203,9 @@ class Tools(unittest.TestCase):
         plain = [ds for a, b, dm, ds, n in edges if n == 'Блочная']
         self.assertEqual(len(gate), 2)
         self.assertTrue(all(ds > 6000 for ds in gate) and all(ds < 1000 for ds in plain), (gate, plain))
+        locked = [ds for a, b, dm, ds, n in edges if n == 'Дачная']
+        self.assertEqual(len(locked), 2)                            # passed both ways, not cut
+        self.assertTrue(all(ds > 3 * 6000 for ds in locked), locked)   # three gates' worth: never a way through
         at7 = (53101000, 50004000)
         self.assertEqual(got.count(at7), 2)                         # the block: each side's own end there
         self.assertFalse([1 for a, b, _, _, n in edges if n == 'Блочная' and a == at7 and b == at7])
@@ -221,6 +229,92 @@ class Tools(unittest.TestCase):
         self.assertEqual(flags, {'Платная дорога': {8}, 'Объезд': {0}, 'Тупик': {0}, 'Дальняя платная': {8}})
         self.assertTrue(make_graph.toll_of({'toll': 'yes'}) and make_graph.toll_of({'toll:motorcar': 'yes'}))
         self.assertFalse(make_graph.toll_of({'toll': 'no'}) or make_graph.toll_of({}))
+
+    def test_graph_bearings(self):
+        """Each edge's way out of its start and into its end (the user 2026-11-09, Khodynka: a turn's cost by the
+        roads' true directions, not the nodes' chord): appended after the grid, 'OSMB' and 2 bytes an edge
+        (256 = a full circle), the old readers' header untouched."""
+        import make_test_hook
+        osm, out = os.path.join(self.tmp, 'hook.osm'), os.path.join(self.tmp, 'hook.grf')
+        with open(osm, 'w', encoding='utf-8') as f:
+            f.write(make_test_hook.osm())
+        make_graph.build(osm, out)
+        d = read(out)
+        h = struct.unpack_from(make_graph.HEADER, d, 0)
+        self.assertEqual(h[1], 1)                                     # the version: the old programs still read it
+        n_nodes, n_edges, off = h[2], h[3], h[-6:]
+        end = off[5] + (h[10] * h[11] + 1 + h[13]) * 4
+        self.assertEqual(d[end:end + 4], b'OSMB')
+        self.assertEqual(len(d), end + 4 + n_edges * 2)
+        nodes = [struct.unpack_from('<ii', d, off[0] + i * 8) for i in range(n_nodes)]
+        first = struct.unpack_from('<%dI' % (n_nodes + 1), d, off[1])
+        bear = {}
+        for a in range(n_nodes):
+            for e in range(first[a], first[a + 1]):
+                to = struct.unpack_from('<I', d, off[2] + e * 24)[0]
+                bear[(nodes[a], nodes[to])] = (d[end + 4 + e * 2], d[end + 5 + e * 2])
+
+        def at(name):
+            la, lo = make_test_hook.lat_lon(name)
+            return round(la * 1e6), round(lo * 1e6)
+        self.assertEqual(bear[(at('W'), at('A'))], (64, 64))          # east, straight: 90 degrees out and in
+        self.assertEqual(bear[(at('A'), at('B'))], (30, 208))         # the loop: off A 42 degrees (20 m on: its first
+        #                                                               metres east hide it), into B 292 (west)
+        self.assertEqual(bear[(at('N'), at('W'))], (219, 128))        # backwards (its points read from the end): off N
+        #                                                               to Z 307 degrees, into W from Z - south
+        self.assertEqual(make_graph.bearing_byte((64000000, 50000000), (64000000, 49990000)), 192)   # west
+        self.assertEqual(make_graph.bearing_byte((64000000, 50000000), (63990000, 50022800)), 96)    # south-east
+        w, a = at('W'), at('A')
+        self.assertEqual(make_graph.point_along([w, a]), (64000000, 49996307))   # 20 m on (the longitude's metres)
+        self.assertEqual(make_graph.point_along([a, at('B1')]), at('B1'))         # shorter: its end
+        self.assertEqual(make_graph.bearing_byte((64000000, 50000000), (64001000, 49999609)), 249)   # 350.3 degrees
+        short = [(64000000, 50000000), (64000050, 50000000), (64000100, 50000000)]   # 11 m in all
+        self.assertEqual(make_graph.point_along(short), short[-1])
+
+    def test_graph_turn_rules(self):
+        """Turn restrictions (the user 2026-11-09, Khodynka's "only straight on"): the restricted way in reaches a copy
+        of its via node with only the turns allowed - the file and the router as they were."""
+        import make_test_hook
+        osm, out = os.path.join(self.tmp, 'hook.osm'), os.path.join(self.tmp, 'hook.grf')
+        with open(osm, 'w', encoding='utf-8') as f:
+            f.write(make_test_hook.osm())
+        make_graph.build(osm, out)
+        nodes, edges = graph(out)
+
+        def at(name):   # (as the file has it: 7 decimals, then 1e-6 degrees)
+            la, lo = make_test_hook.lat_lon(name)
+            return round(round(la, 7) * 1e6), round(round(lo, 7) * 1e6)
+        self.assertEqual(nodes.count(at('B')), 2)                     # B and its copy for the loop's way in
+        outs = {}
+        for a, b, _, _, name in edges:
+            if a == at('B'):
+                outs.setdefault(name, []).append(b)
+        self.assertEqual(sorted(outs['Улица Крюк']), sorted([at('M0'), at('X')] * 2))   # B and its copy
+        self.assertEqual(outs['Улица Ветка'], [at('T')])              # (by Y) B's only: not from the copy
+        ins = [name for a, b, _, _, name in edges if b == at('B') and a == at('A')]
+        self.assertEqual(ins, [''])                                   # the loop in: once (into the copy)
+        P = make_graph.Piece   # the rules on lists as directed() makes them: node 1 -> 0 by way 1; 0 -> 2 way 2, 0 -> 3 way 3
+        pieces = [P(1, 0, [], 1, 0, 1, False, 50, 0, 0, 0, False, wid) for wid in (1, 2, 3)]
+
+        def graph_of():
+            e = lambda to, pi: (to, 10, 10, 0, 0, 0, 0, 0, pi)   # noqa: E731
+            return [(0, 0), (0, 1000), (1000, 0), (0, -1000)], [[e(2, 1), e(3, 2)], [e(0, 0)], [], []]
+        for kind, left in (('only', 2), ('no', 3)):
+            nodes, lst = graph_of()
+            self.assertEqual(make_graph.turn_rules(nodes, lst, pieces, [(kind, {1}, 100, {2})], {100: (0, 0)}), 1)
+            self.assertEqual((len(nodes), nodes[4], lst[1][0][0]), (5, (0, 0), 4))   # the way in: to the copy
+            self.assertEqual([e[0] for e in lst[4]], [left])        # only: onto way 2 alone; no: all but way 2
+            self.assertEqual([e[0] for e in lst[0]], [2, 3])        # the node itself: as it was
+        nodes, lst = graph_of()
+        self.assertEqual(make_graph.turn_rules(nodes, lst, pieces, [('no', {1}, 7, {2}), ('no', {1}, 100, {9}),
+                                                                    ('no', {5}, 100, {2})], {100: (0, 0)}), 0)
+        self.assertEqual(len(nodes), 4)                              # no via, no "to" way, no "from" way in: none
+        self.assertEqual(make_graph.turn_rule({'type': 'restriction', 'restriction': 'only_straight_on'}), 'only')
+        self.assertEqual(make_graph.turn_rule({'type': 'restriction', 'restriction:motorcar': 'no_left_turn'}), 'no')
+        self.assertIsNone(make_graph.turn_rule({'type': 'restriction', 'restriction': 'no_left_turn',
+                                                'except': 'bus;motorcar'}))
+        self.assertIsNone(make_graph.turn_rule({'type': 'restriction', 'restriction': 'no_entry'}))   # (not a turn)
+        self.assertIsNone(make_graph.turn_rule({'type': 'multipolygon'}))
 
     def test_trunk_graph(self):
         """4b (the user 2026-10-29): the trunk roads of the whole country - only the classes asked, the shapes

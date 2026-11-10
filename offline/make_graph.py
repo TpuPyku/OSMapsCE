@@ -5,7 +5,8 @@
 
 Car roads only (highway classes below, access / motor_vehicle not "no" / "private"), split at the junctions; each
 piece is an edge in both directions unless one-way. Times from the class's speed (or maxspeed, capped) plus the
-traffic lights' wait. Turn restrictions: not yet. The file (little endian, all offsets in bytes from the file's start):
+traffic lights' wait. Turn restrictions (from way, via node, to way; no_* / only_*): the restricted way in reaches a
+copy of its via node with only the turns allowed (turn_rules) - the file and the router know nothing of them. The file (little endian, all offsets in bytes from the file's start):
 
     header   'OSMG' u32 version, u32 nodes, u32 edges, u32 geomPts, u32 nameBytes,
              i32 minLat, minLon, maxLat, maxLon (1e-6 degrees), u32 gridW, gridH, i32 cellE6, u32 gridItems,
@@ -18,6 +19,9 @@ traffic lights' wait. Turn restrictions: not yet. The file (little endian, all o
     geom     i32 lat, lon of the inner points                             - geomPts x 8
     names    "name\\tref\\0" UTF-8, an edge's name = its offset (0 = none: the table starts with "\\t\\0")
     grid     the edges (forward ones: each piece once) near each cell, cellE6 square: snapping a point to a road
+    bearings 'OSMB', then u8 out, u8 in for each edge: its way off its start and into its end, kBearM along
+             (256 = a full circle, 0 = north, clockwise) - the turns' costs (the user 2026-11-09); after the grid,
+             so the header (and the readers before it) stay as they were
 """
 import math
 import struct
@@ -36,8 +40,10 @@ kCls = {c: i for i, (c, _) in enumerate(kClasses)}
 kSignalS = 8   # a traffic light's wait, seconds (on average: half the time it is red)
 # The barriers on roads (the user 2026-10-29: a route through a hospital's grounds, closed by gates): a gate with no
 # access tag - kGateS more (a way through avoided, a place inside still reached), the passed ones - nothing, any
-# other (a block, a bollard, a gate closed by its access tag) - the road cut there
+# other (a block, a bollard) - the road cut there. A gate closed by its access tag (private, no...) - kLockedGates gates'
+# worth (the user 2026-11-08: a place behind one - the route ended at the gate): a way into it, never one through it
 kGateS = 600
+kLockedGates = 3
 kGates = {'gate', 'swing_gate', 'sliding_gate', 'hampshire_gate', 'wicket_gate',
           'lift_gate'}   # (2026-10-31: grounds behind lift gates - into them, not across)
 kPassed = {'toll_booth', 'cattle_grid', 'border_control', 'entrance', 'no', 'height_restrictor', 'kerb',
@@ -51,9 +57,9 @@ VERSION = 1
 HEADER = '<4s5I4i2IiI6I'
 
 # a car road as read: its node ids, class, one-way (1 forward, -1 backward, 0 both), roundabout, km/h, name, ref
-Way = namedtuple('Way', 'ids cls oneway rb speed name ref toll')
+Way = namedtuple('Way', 'ids cls oneway rb speed name ref toll wid', defaults=(0,))   # wid: its OSM id
 # a junction-to-junction part of a way: node indices a -> b, inner points, metres, its way's data, lights on it
-Piece = namedtuple('Piece', 'a b inner length cls oneway rb speed name signals gates toll')
+Piece = namedtuple('Piece', 'a b inner length cls oneway rb speed name signals gates toll wid', defaults=(0,))
 
 
 def maxspeed_kmh(text):
@@ -92,13 +98,14 @@ def oneway_of(tags, rb):
 
 
 def barrier_of(tags):
-    """A node's barrier for cars: None (none, or passed), 'gate' (passed, kGateS more), 'block' (no way past)."""
+    """A node's barrier for cars: None (none, or passed), 'gate' (passed, kGateS more), 'locked' (a gate closed by
+    its access tag: kLockedGates gates' worth), 'block' (no way past)."""
     b = tags.get('barrier')
     if not b:
         return None
     access = [tags.get(k) for k in kAccessKeys if tags.get(k)]
     if any(a in kNoAccess for a in access):
-        return 'block'
+        return 'locked' if b in kGates else 'block'
     if access or b in kPassed:
         return None
     return 'gate' if b in kGates else 'block'
@@ -108,7 +115,7 @@ def toll_of(tags):   # a toll road (the user 2026-10-29: an option to keep off t
     return tags.get('toll') == 'yes' or tags.get('toll:motorcar') == 'yes'
 
 
-def car_way(tags, ids):
+def car_way(tags, ids, wid=0):
     """The Way of a car road, None for anything else."""
     hw = tags.get('highway')
     if hw not in kCls or not allowed(tags) or len(ids) < 2:
@@ -116,7 +123,19 @@ def car_way(tags, ids):
     rb = tags.get('junction') in ('roundabout', 'circular')
     cls = kCls[hw]
     return Way(ids, cls, oneway_of(tags, rb), rb, speed_of(tags, cls), tags.get('name', ''), tags.get('ref', ''),
-               toll_of(tags))
+               toll_of(tags), wid)
+
+
+kTurnKinds = {'no_left_turn', 'no_right_turn', 'no_straight_on', 'no_u_turn', 'only_left_turn', 'only_right_turn',
+              'only_straight_on', 'only_u_turn'}
+
+
+def turn_rule(tags):
+    """A relation's turn restriction for cars: 'no' / 'only', None for anything else (another kind, cars excepted)."""
+    if tags.get('type') != 'restriction' or 'motorcar' in tags.get('except', '').split(';'):
+        return None
+    kind = tags.get('restriction:motorcar') or tags.get('restriction')
+    return kind.split('_')[0] if kind in kTurnKinds else None
 
 
 # The trunk graph (4b, the user 2026-10-27/29: from one region to another, Vladivostok - Moscow, without the internet):
@@ -129,11 +148,21 @@ class Ways(osmium.SimpleHandler):
     def __init__(self, classes=None):
         super().__init__()
         self.ways = []
+        self.rules = []
         self.uses = {}       # node id -> how many way ends (2 each) / passes (1)
         self.keep = {kCls[c] for c in classes} if classes else None
 
+    def relation(self, r):   # a turn restriction: (no / only, from ways, its via node, to ways)
+        rule = turn_rule(r.tags)
+        roles = {}
+        for m in r.members:
+            roles.setdefault((m.role, m.type), []).append(m.ref)
+        via = roles.get(('via', 'n'), [])
+        if rule and len(via) == 1 and roles.get(('from', 'w')) and roles.get(('to', 'w')):
+            self.rules.append((rule, set(roles[('from', 'w')]), via[0], set(roles[('to', 'w')])))
+
     def way(self, w):
-        way = car_way(w.tags, [n.ref for n in w.nodes])
+        way = car_way(w.tags, [n.ref for n in w.nodes], w.id)
         if not way or (self.keep is not None and way.cls not in self.keep):
             return
         self.ways.append(way)
@@ -151,6 +180,7 @@ class Locs(osmium.SimpleHandler):
         self.signals = set()
         self.gates = set()     # barriers passed for kGateS more
         self.blocks = set()    # barriers no car passes: the road cut there
+        self.locked = set()    # gates closed by their access tags: kLockedGates gates' worth
 
     def node(self, n):
         if n.id in self.want and (self.west is None or n.location.lon * 1e6 >= self.west):
@@ -159,7 +189,7 @@ class Locs(osmium.SimpleHandler):
                 self.signals.add(n.id)
             kind = barrier_of(n.tags)
             if kind:
-                (self.gates if kind == 'gate' else self.blocks).add(n.id)
+                {'gate': self.gates, 'locked': self.locked}.get(kind, self.blocks).add(n.id)
 
 
 def dist_m(a, b):
@@ -232,8 +262,8 @@ def segments(ids, junction):
             start = i
 
 
-Barriers = namedtuple('Barriers', 'gates blocks')
-NONE = Barriers(frozenset(), frozenset())
+Barriers = namedtuple('Barriers', 'gates blocks locked')
+NONE = Barriers(frozenset(), frozenset(), frozenset())
 
 
 def make_piece(w, seg, nm, loc, signals, nodes, tol_m=0, bars=NONE):
@@ -245,7 +275,8 @@ def make_piece(w, seg, nm, loc, signals, nodes, tol_m=0, bars=NONE):
     sig = sum(1 for n in seg[1:] if n in signals)
     end = lambda n: nodes.alone(n) if n in bars.blocks else nodes.index(n)   # noqa: E731
     return Piece(end(seg[0]), end(seg[-1]), simplify(pts, tol_m)[1:-1], length, w.cls, w.oneway, w.rb,
-                 w.speed, nm, sig, sum(1 for n in seg if n in bars.gates), w.toll)
+                 w.speed, nm, sig, sum(1 if n in bars.gates else kLockedGates if n in bars.locked else 0 for n in seg), w.toll,
+                 w.wid)
 
 
 def make_pieces(ways, loc, signals, junction, tol_m=0, bars=NONE):
@@ -387,6 +418,35 @@ def directed(pieces, nnodes):
     return edges, geom
 
 
+def turn_rules(nodes, edges, pieces, rules, loc):
+    """The restrictions into the graph (edges: each node's list, as directed() makes them): each restricted way in
+    (an edge into the via node by a "from" way) goes to a copy of the via node at its place, with the via node's edges
+    out but the ones forbidden (no_*: onto the "to" ways; only_*: onto any other). Returns the copies made."""
+    at, into = {}, {}
+    for i, p in enumerate(nodes):
+        at.setdefault(tuple(p), i)
+    for u, lst in enumerate(edges):
+        for k, e in enumerate(lst):
+            into.setdefault(e[0], []).append((u, k))
+    banned = {}   # (u, k) -> (via, the forbidden places in its list)
+    for kind, froms, via, tos in rules:
+        v = at.get(tuple(loc[via])) if via in loc else None
+        if v is None:
+            continue
+        outs = {j for j, e in enumerate(edges[v]) if pieces[e[8]].wid in tos}
+        if not outs:
+            continue
+        forbid = outs if kind == 'no' else set(range(len(edges[v]))) - outs
+        for u, k in into.get(v, []):
+            if pieces[edges[u][k][8]].wid in froms:
+                banned.setdefault((u, k), (v, set()))[1].update(forbid)
+    for (u, k), (v, forbid) in banned.items():
+        nodes.append(nodes[v])
+        edges.append([e for j, e in enumerate(edges[v]) if j not in forbid])
+        edges[u][k] = (len(nodes) - 1,) + tuple(edges[u][k][1:])
+    return len(banned)
+
+
 def flatten(edges):
     """first[] (CSR), the edges in a row, each piece's first edge (the grid's)."""
     first, flat, piece_edge = [], [], {}
@@ -430,6 +490,39 @@ def make_grid(pieces, nodes, piece_edge, box, ncells):
     return cstart, items
 
 
+kBearM = 20   # metres along an edge for its bearings: past the first few metres (a fork's short first segments)
+
+
+def bearing_byte(p, q):
+    """From point p to q (lat, lon 1e-6 degrees): 0..255, 0 = north, clockwise."""
+    dx = (q[1] - p[1]) * math.cos(math.radians(p[0] / 1e6))
+    return int(round(math.degrees(math.atan2(dx, q[0] - p[0])) * 256 / 360)) & 255
+
+
+def point_along(pts):
+    """The point kBearM along a line from its first point (its last one, if shorter)."""
+    m, kx = 0.0, math.cos(math.radians(pts[0][0] / 1e6))
+    for k in range(1, len(pts)):
+        seg = math.hypot((pts[k][1] - pts[k - 1][1]) * kx, pts[k][0] - pts[k - 1][0]) * 0.111195
+        if m + seg >= kBearM:
+            u = (kBearM - m) / seg
+            return tuple(round(pts[k - 1][i] + (pts[k][i] - pts[k - 1][i]) * u) for i in (0, 1))
+        m += seg
+    return pts[-1]
+
+
+def bearings(nodes, first, flat, geom):
+    """Each edge's (out, in) bearing bytes, in the edges' order."""
+    out = bytearray()
+    for a in range(len(nodes)):
+        for e in flat[first[a]:first[a + 1]]:
+            inner = geom[e[3]:e[3] + e[4]]
+            pts = [nodes[a]] + (inner[::-1] if e[6] & 1 else inner) + [nodes[e[0]]]
+            out.append(bearing_byte(pts[0], point_along(pts)))
+            out.append(bearing_byte(point_along(pts[::-1]), pts[-1]))
+    return bytes(out)
+
+
 def write(out, nodes, first, flat, geom, names, bbox, grid, cell=kCell):
     (min_lat, min_lon, max_lat, max_lon), (gw, gh, cstart, items) = bbox, grid
     off = [struct.calcsize(HEADER)]
@@ -445,7 +538,8 @@ def write(out, nodes, first, flat, geom, names, bbox, grid, cell=kCell):
         f.write(bytes(names) + b'\x00' * (((len(names) + 3) & ~3) - len(names)))
         f.write(struct.pack('<%dI' % len(cstart), *cstart))
         f.write(struct.pack('<%dI' % len(items), *items))
-    return off[-1] + (len(cstart) + len(items)) * 4
+        f.write(b'OSMB' + bearings(nodes, first, flat, geom))
+    return off[-1] + (len(cstart) + len(items)) * 4 + 4 + len(flat) * 2
 
 
 def build(src, out, classes=None, simplify_m=0, cell=kCell, west=None, max_cells=kMaxCells):
@@ -455,9 +549,10 @@ def build(src, out, classes=None, simplify_m=0, cell=kCell, west=None, max_cells
     locs.apply_file(src)
     junction = {n for n, c in w.uses.items() if c > 1} | locs.blocks   # shared by ways, a way's end, a block
     nodes, names, pieces = make_pieces(w.ways, locs.loc, locs.signals, junction, simplify_m,
-                                       Barriers(locs.gates, locs.blocks))
+                                       Barriers(locs.gates, locs.blocks, locs.locked))
     nodes, pieces = main_network(nodes, pieces)
     edges, geom = directed(pieces, len(nodes))
+    turn_rules(nodes, edges, pieces, w.rules, locs.loc)
     first, flat, piece_edge = flatten(edges)
     lats, lons = [n[0] for n in nodes], [n[1] for n in nodes]
     bbox = (min(lats), min(lons), max(lats), max(lons))
