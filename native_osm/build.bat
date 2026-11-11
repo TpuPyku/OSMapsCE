@@ -8,7 +8,7 @@ if "%VS8%"=="" set VS8=C:\Program Files (x86)\Microsoft Visual Studio 8
 set VC=%VS8%\VC
 set SDK=%VS8%\SmartDevices\SDK\PocketPC2003
 set PATH=%VS8%\Common7\IDE;%VC%\bin;%PATH%
-set SRC=main.cpp net.cpp cache.cpp image.cpp util.cpp route.cpp lang.cpp vtile.cpp tilt.cpp junction.cpp ring.cpp fling.cpp zoomanim.cpp trafshade.cpp offline.cpp offsearch.cpp offdata.cpp vpack.cpp offmaps.cpp
+set SRC=main.cpp net.cpp cache.cpp image.cpp stamp.cpp util.cpp route.cpp voice.cpp say.cpp segpick.cpp lang.cpp vtile.cpp tilt.cpp junction.cpp ring.cpp fling.cpp zoomanim.cpp trafshade.cpp layers.cpp offline.cpp offsearch.cpp offdata.cpp vpack.cpp offmaps.cpp
 set OUT=..\OSMapsCE
 set BR=%~dp0..\third_party\bearssl-0.6
 set COMPAT=%~dp0..\third_party\compat
@@ -18,7 +18,7 @@ set CORE=%~dp0..\..\VestaCore
 if not exist "%CORE%\vgps.cpp" set CORE=%~dp0..\core
 if not exist "%CORE%\vgps.cpp" goto nocore
 echo === VestaCore: %CORE%
-set SRC=%SRC% "%CORE%\vgps.cpp" "%CORE%\vlogdir.cpp" "%CORE%\vnight.cpp" "%CORE%\vkeys.cpp" "%CORE%\vfavs.cpp" "%CORE%\vhttp.cpp" "%CORE%\vhap.cpp" "%CORE%\vnav.cpp" "%CORE%\vfont.cpp" "%CORE%\vjson.cpp"
+set SRC=%SRC% "%CORE%\vgps.cpp" "%CORE%\vlogdir.cpp" "%CORE%\vnight.cpp" "%CORE%\vkeys.cpp" "%CORE%\vfavs.cpp" "%CORE%\vhttp.cpp" "%CORE%\vhap.cpp" "%CORE%\vnav.cpp" "%CORE%\vroute.cpp" "%CORE%\vfont.cpp" "%CORE%\vjson.cpp"
 
 cd /d "%~dp0"
 if not exist obj\bearssl_arm.lib goto nobearssl
@@ -46,7 +46,7 @@ echo === x86 (desktop test build)
   /I"%BR%\inc" /I"%COMPAT%" /I"%CORE%" /I"%VC%\include" /I"%VC%\PlatformSDK\Include"
 if errorlevel 1 goto fail
 "%VC%\bin\link.exe" /nologo /SUBSYSTEM:WINDOWS /OUT:"%OUT%\OSMapsPC.exe" obj\pc\*.obj obj\app.res obj\bearssl_pc.lib ^
-  /LIBPATH:"%VC%\lib" /LIBPATH:"%VC%\PlatformSDK\Lib" user32.lib gdi32.lib kernel32.lib ws2_32.lib advapi32.lib
+  /LIBPATH:"%VC%\lib" /LIBPATH:"%VC%\PlatformSDK\Lib" user32.lib gdi32.lib kernel32.lib ws2_32.lib advapi32.lib winmm.lib
 if errorlevel 1 goto fail
 
 echo === OK

@@ -36,11 +36,15 @@ struct Config {
     int     traffic;        // traffic overlay on/off
     int     trafficSrc;     // TRF_*
     int     trafficRoute;   // traffic on the route alone, not on the map (trafshade.h)
+    int     parking;        // car parks on the map, in turn with the traffic on one button (layers.h)
+    int     layerSignals;   // traffic lights on the map
+    int     layerBumps;     // speed bumps on the map, and the warning on the way
     int     follow;         // GPS mode: 0 off, 1 north-up, 2 heading-up
     int     night;          // dark map: lightness inverted, dimmed
     int     vector;         // the base map: 0 OSM raster tiles, 1 vector tiles (OpenFreeMap, vtile.cpp)
     int     junction;       // the junction card before complex maneuvers (junction.cpp; the user 2026-10-28: off by default)
     int     noToll;         // routes keep off toll roads (the user 2026-10-29; the unit's graphs only - OSRM cannot)
+    int     voice;          // the voice prompts on the route (voice.cpp, say.cpp; users 2026-11-07)
     int     detail;         // the vector map's detail: 0 auto, 1 full, 2 medium, 3 fast (VTileSetDetail(detail - 1))
     int     log;            // OSMapsCE.log kept (the user 2026-10-29: off by default)
     int     tilt;           // the third person's view (its button: heading-up from z15; tilt.cpp, ring.cpp)
@@ -97,6 +101,23 @@ unsigned short* ImageCreate(int w, int h, Image* out);   // 16bpp RGB565, bottom
 bool ImageFromMemory(const unsigned char* data, int len, Image* out);
 bool ImageFromFile(const wchar_t* path, Image* out);
 void ImageFree(Image* im);
+// n RGB565 pixels to 0x00RRGGBB (each channel widened with its top bits: 31 -> 255, 0 -> 0) - the frame for a
+// 32-bit screen (sheet 29 p. 25-26: GDI's own conversion of the frame took 42 ms on the unit)
+void Rgb565To32(const unsigned short* s, unsigned long* d, int n);
+// Text as ready pixels (stamp.cpp; the Shturmann's frame 2026-11: names and panels, GDI's text, over half of it): a text
+// drawn once on black and on white gives its runs; the next frames lay those straight into the frame.
+struct StampKey { const wchar_t* s; int n, a, b, c, d; };   // the text and what else makes its look (font, colours, box)
+typedef void (*StampPaint)(HDC dc, int x, int y, void* arg);   // draws it with its origin at (x, y)
+int StampBuild(const WORD* onBlack, const WORD* onWhite, int stride, int w, int h, WORD* out, int cap);   // words, -1 no room
+void StampBlit(const WORD* runs, int words, WORD* frame, int stride, int cw, int ch, int x, int y);   // frame: top-down
+void StampReset(int budgetWords);
+const WORD* StampFind(const StampKey& key, int* words);
+bool StampPut(const StampKey& key, const WORD* runs, int words);
+int StampWords();
+void StampTarget(HDC dc, WORD* frame, int stride, int cw, int ch);   // frame with stride: dc's pixels, rows as they lie
+// Draws the box (x, y, w, h) on the target's dc, paint's origin at (x + ox, y + oy); other dc, or too big: paint itself.
+void StampDraw(HDC dc, const StampKey& key, int x, int y, int w, int h, StampPaint paint, void* arg, int ox, int oy);
+void StampStats(int* hits, int* misses, int* direct);   // since the last call
 // Traffic overlay in one malloc'ed block, transparent pixels left out (most of a traffic
 // image is empty). Row y (top-down) at rowOfs[y] from the block start:
 // u16 run count, u16 padding, then runs of { u16 skip, u16 count, count * RGBA }.
@@ -182,6 +203,8 @@ void MapsCancel();                // the download stopped (its part kept: goes o
 // offline.cpp - routes from a region's road graph (OSMapsData\<region>\route.grf), answered as OSRM's JSON
 int   RoadTier(int cls);   // a road class's level: 0 main (motorway..primary, links), 1 secondary / tertiary, 2 minor
 bool  HierAllows(int tier, int nearM, int hier);   // its edge searched nearM from the nearer end (hier: 2, 1, 0 none)
+int   TurnCostDs(int x1, int y1, int x2, int y2);   // a turn from move 1 to move 2 (metres): its time, 0.1 s
+int   TurnCostB(int in, int out);   // the same by bearings (256 = a full circle: the graph's own, make_graph.py)
 bool  OfflineRoute(const char* osrmPath, char** body, int* len);   // false: no region / no way - ask OSRM
 bool  OfflineTrunkRoute(const char* osrmPath, char** body, int* len);   // over the trunk roads (4b): after OSRM failed
 bool  OfflineHasTrunk();   // the trunk roads' graph is on a card
@@ -196,7 +219,7 @@ bool  VPackTile(const MapRequest& d, unsigned char** data, int* len);   // false
 int   VOverviewZ();   // the overview pack's deepest zoom (OSMapsData\overview\overview.vtp: the CIS's small zooms whole), -1 none
 bool  VOverviewTile(const MapRequest& d, unsigned char** data, int* len);   // its data tile d (malloc'd); false: none
 // offdata.cpp - the offline data's files (a header, parts kept in memory) and the JSON text of the answers
-enum { kOffParts = 6 };
+enum { kOffParts = 7 };
 struct OffFile {
     HANDLE      file, mfile, map;   // mfile, map: the file mapped (its parts paged in as read, out when memory is short)
     const BYTE* view;
@@ -241,6 +264,11 @@ struct RouteInfo {
     int            seg;         // the line's segment the car is on (the rest of the line: from it)
     bool           complex;     // the next maneuver a fork, a ramp, a roundabout, a merge (the junction card)
     int            shape;       // its point on the line (RoutePoints)
+    int            man;         // its number on the route (the voice prompts: voice.h)
+    int            act;         // what it asks (VA_*), thenAct - the one after it when close behind (kThenM)
+    int            thenAct;
+    int            serial;      // the route's number: a new one for each answer of the router
+    int            vias;        // the stops left on the way
 };
 void SearchStart(const wchar_t* q, double lon, double lat);
 int  SearchState();
@@ -265,11 +293,21 @@ bool RouteAltGet(int k, const double** lonLat, int* np, double* timeS, double* d
 void RouteAltChoose(int k);
 void RouteAltsDone();                    // chosen: the others and the kept answer go
 void RouteClear();
+void RouteMagnet(double* lon, double* lat, double kmh, double* course);   // the fix shown: on the line when near it
 void RouteGps(double lon, double lat, double kmh, double course);   // each fix: progress, off -> a new route
 void RouteGet(RouteInfo* out);
 int  RoutePoints(const double** lonLat);   // the line: lon, lat pairs
 bool RouteDest(double* lon, double* lat);
 DWORD RouteSig();                   // changes when what is drawn of the route changes
+
+// say.cpp - the voice prompts spoken (voice.h decides what and when)
+enum { TIMER_VOICE = 9 };            // (main.cpp's timers: 1..8)
+void SayInit(HWND wnd);
+void SayTick(int kmh);               // each GPS fix: the route's prompt due, said (g_cfg.voice)
+void SayDone();                      // MM_WOM_DONE
+void SayTimer();                     // TIMER_VOICE
+void SayStop();                      // the program ends
+int VoiceChannel(bool on);           // main.cpp: the radio down for a prompt - 1 by the shell, 2 by VestaHome, 0 no one
 bool OnApiResult(ApiResult* r);     // frees it; true = redraw
 
 // vtile.cpp - vector tiles drawn into TILE x TILE images; their .pbf on disk as Cache\<VEC_ZBASE + z>\...
@@ -342,6 +380,9 @@ double GlideCourse(double from, double to, DWORD ms);   // the turn from -> to a
 // The mark a fix late (the user 2026-11-02): its speed from where it is shown to the fix in periodMs, metres a ms east
 // and north; false: more than 50 m off or no time - none (put there)
 bool GlideAim(double lon, double lat, double tLon, double tLat, DWORD periodMs, double* ve, double* vn);
+// The car on the route's line, for the eye only (the user 2026-11-03: it jumps about on a poor signal): the line's nearest
+// point around segment seg of pts[np] (lon, lat pairs) when the fix is near it and goes its way. "was": it was on the line.
+bool MagnetSnap(const double* pts, int np, int seg, double* lon, double* lat, double kmh, double* course, bool was);
 // The route (lon, lat pairs) behind the car cut off: of its segments from..to (clamped) the nearest to (lon, lat) within
 // maxM; cut: the car's point on it. -1: none that near
 int  RouteCut(const double* ll, int np, int from, int to, double lon, double lat, double maxM, double* cut);

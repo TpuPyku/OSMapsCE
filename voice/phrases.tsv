@@ -1,0 +1,45 @@
+# The voice prompts' clips: id <tab> Russian <tab> English. A prompt is glued from them (native_osm voice.cpp):
+# [distance] action [then action2]. Numbers are written as words: the synthesizer reads them better.
+# distance: one clip each, so the phrase keeps its tune
+d100	Через сто метров	In one hundred meters
+d150	Через сто пятьдесят метров	In one hundred fifty meters
+d200	Через двести метров	In two hundred meters
+d300	Через триста метров	In three hundred meters
+d400	Через четыреста метров	In four hundred meters
+d500	Через пятьсот метров	In five hundred meters
+d600	Через шестьсот метров	In six hundred meters
+d800	Через восемьсот метров	In eight hundred meters
+d1000	Через километр	In one kilometer
+d1500	Через полтора километра	In one and a half kilometers
+d2000	Через два километра	In two kilometers
+d3000	Через три километра	In three kilometers
+d5000	Через пять километров	In five kilometers
+# actions
+right	поверните направо.	turn right.
+left	поверните налево.	turn left.
+slight_right	плавно поверните направо.	turn slightly right.
+slight_left	плавно поверните налево.	turn slightly left.
+sharp_right	резко поверните направо.	make a sharp right.
+sharp_left	резко поверните налево.	make a sharp left.
+uturn	развернитесь.	make a U-turn.
+keep_right	держитесь правее.	keep right.
+keep_left	держитесь левее.	keep left.
+straight	продолжайте прямо.	continue straight.
+exit_right	съезд направо.	take the exit on the right.
+exit_left	съезд налево.	take the exit on the left.
+round1	на кольце первый съезд.	at the roundabout, take the first exit.
+round2	на кольце второй съезд.	at the roundabout, take the second exit.
+round3	на кольце третий съезд.	at the roundabout, take the third exit.
+round4	на кольце четвёртый съезд.	at the roundabout, take the fourth exit.
+round5	на кольце пятый съезд.	at the roundabout, take the fifth exit.
+round6	на кольце шестой съезд.	at the roundabout, take the sixth exit.
+round	въезд на кольцо.	enter the roundabout.
+via	промежуточная точка.	waypoint ahead.
+finish	цель маршрута.	you will reach your destination.
+# "then": the next maneuver close behind
+then	Затем	Then
+# whole phrases
+arrived	Вы приехали!	You have arrived!
+via_reached	Промежуточная точка пройдена.	Waypoint reached.
+route_ready	Маршрут построен. Поехали!	The route is ready. Let's go!
+route_new	Маршрут перестроен.	The route has been recalculated.

@@ -29,3 +29,7 @@ Public domain (the Unlicense, its alternative B); also MIT, Copyright (c) 2017 S
 
 OpenStreetMap data (the maps' road graph, search and tiles, the release "maps"; the OSM tiles shown online)
 (c) OpenStreetMap contributors, Open Database License 1.0: https://www.openstreetmap.org/copyright
+
+Moscow's paid street parking (offline/data/moscow_parking.lay, set 623, version 12.22 of 2026-01-20)
+Moscow Government Open Data Portal, https://data.mos.ru/opendata/623 - open data, reproduced with a link to the portal:
+https://data.mos.ru/terms

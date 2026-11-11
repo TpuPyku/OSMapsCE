@@ -136,6 +136,8 @@ void ConfigDefaults()
     g_cfg.lat = 55.823220;
     g_cfg.z = 13;
     g_cfg.traffic = 1;
+    g_cfg.layerBumps = 1;
+    g_cfg.voice = 1;
     g_cfg.trafficSrc = TRF_YANDEX;
     g_cfg.follow = 1;
     g_cfg.trafficTtlMin = 10;
@@ -248,6 +250,9 @@ static void ConfigSet(const char* key, const char* val)
         g_cfg.lang[sizeof(g_cfg.lang) - 1] = 0;
     }
     else if (!strcmp(key, "traffic_route")) g_cfg.trafficRoute = atoi(val) != 0;
+    else if (!strcmp(key, "parking"))      g_cfg.parking = atoi(val) != 0;
+    else if (!strcmp(key, "layer_signals")) g_cfg.layerSignals = atoi(val) != 0;
+    else if (!strcmp(key, "layer_bumps"))  g_cfg.layerBumps = atoi(val) != 0;
     else if (!strcmp(key, "follow"))       g_cfg.follow = Clamp(atoi(val), 0, 2);
     else if (!strcmp(key, "traffic_ttl"))  g_cfg.trafficTtlMin = Clamp(atoi(val), 2, 600);
     else if (!strcmp(key, "yandex_limit")) g_cfg.yandexLimit = Clamp(atoi(val), 0, 100000);
@@ -268,6 +273,7 @@ static void ConfigSet(const char* key, const char* val)
     else if (!strcmp(key, "vector"))       g_cfg.vector = atoi(val) != 0;
     else if (!strcmp(key, "junction"))     g_cfg.junction = atoi(val) != 0;
     else if (!strcmp(key, "no_toll"))      g_cfg.noToll = atoi(val) != 0;
+    else if (!strcmp(key, "voice"))        g_cfg.voice = atoi(val) != 0;
     else if (!strcmp(key, "detail"))       g_cfg.detail = Clamp(atoi(val), 0, 3);
     else if (!strcmp(key, "log"))          g_cfg.log = atoi(val) != 0;
     else if (!strcmp(key, "tilt"))         g_cfg.tilt = atoi(val) != 0;
@@ -335,6 +341,11 @@ void ConfigSave()
         "traffic=%d\r\n"
         "; traffic on the route alone (not on the map): 1\r\n"
         "traffic_route=%d\r\n"
+        "; car parks on the map (the traffic's button: traffic, car parks, neither): 1\r\n"
+        "parking=%d\r\n"
+        "; of a downloaded region: traffic lights; speed bumps, with the warning on the way\r\n"
+        "layer_signals=%d\r\n"
+        "layer_bumps=%d\r\n"
         "; yandex | 2gis\r\n"
         "traffic_src=%s\r\n"
         "; GPS mode: 0 off, 1 north-up, 2 heading-up\r\n"
@@ -347,6 +358,8 @@ void ConfigSave()
         "junction=%d\r\n"
         "; routes off the toll roads: 1 (the offline graphs; online OSRM takes them anyway)\r\n"
         "no_toll=%d\r\n"
+        "; the voice prompts on the route: 1 on (Voice\\ru, Voice\\en beside the program)\r\n"
+        "voice=%d\r\n"
         "; the vector map's detail: 0 auto (by the device's speed), 1 full, 2 medium, 3 fast\r\n"
         "detail=%d\r\n"
         "; the third person's view (the 3D button: heading-up from z15): 1 on\r\n"
@@ -385,8 +398,8 @@ void ConfigSave()
         "map_y=%d\r\n"
         "map_w=%d\r\n"
         "map_h=%d\r\n",
-        g_cfg.lon, g_cfg.lat, g_cfg.lastLon, g_cfg.lastLat, g_cfg.lang, g_cfg.z, g_cfg.traffic, g_cfg.trafficRoute, kTrafficNames[g_cfg.trafficSrc],
-        g_cfg.follow, g_cfg.night, g_cfg.vector, g_cfg.junction, g_cfg.noToll, g_cfg.detail, g_cfg.tilt, g_cfg.trafficTtlMin, g_cfg.yandexLimit, g_cfg.twogisLimit,
+        g_cfg.lon, g_cfg.lat, g_cfg.lastLon, g_cfg.lastLat, g_cfg.lang, g_cfg.z, g_cfg.traffic, g_cfg.trafficRoute, g_cfg.parking, g_cfg.layerSignals, g_cfg.layerBumps, kTrafficNames[g_cfg.trafficSrc],
+        g_cfg.follow, g_cfg.night, g_cfg.vector, g_cfg.junction, g_cfg.noToll, g_cfg.voice, g_cfg.detail, g_cfg.tilt, g_cfg.trafficTtlMin, g_cfg.yandexLimit, g_cfg.twogisLimit,
         g_cfg.autoReserve, g_cfg.cacheMb, g_cfg.cacheKb, g_cfg.cacheDays, g_cfg.reqDay,
         g_cfg.yandexCount, g_cfg.twogisCount, g_cfg.osmCount, g_cfg.apiLimit, g_cfg.apiCount,
         g_cfg.gpsEnabled, DeviceName(), port, DeviceName(), g_cfg.gpsBaud, kill, g_cfg.hideTaskbar, g_cfg.log,

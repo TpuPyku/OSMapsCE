@@ -1400,8 +1400,121 @@ static void LocalChecks(const unsigned char* tile, int tileLen, const unsigned c
     OverviewChecks(tile, tileLen, houses, housesLen);
 }
 
+// MagnetSnap's line: 1 km north along lon 37, then 1 km east (lat 55)
+static const double kM = 1000 / 110540.0, kMagE = 1000 / (111320 * 0.573576436);
+static const double kMagLine[6] = { 37.0, 55.0, 37.0, 55.0 + kM, 37.0 + kMagE, 55.0 + kM };
+
+static bool Mag(double eastM, double northM, double kmh, double course, bool was, double* lon, double* lat, double* c)
+{
+    *lon = 37.0 + eastM / (111320 * 0.573576436);
+    *lat = 55.0 + northM / 110540.0;
+    *c = course;
+    return MagnetSnap(kMagLine, 3, 0, lon, lat, kmh, c, was);
+}
+
+static double s_magLong[2 * 300];   // north, 10 m a segment
+
+static bool MagAt(int np, int seg, double index, double kmh, double* lat)
+{
+    double lon = 37.0, c = 0;
+    *lat = 55.0 + index * 10 / 110540.0;
+    return MagnetSnap(s_magLong, np, seg, &lon, lat, kmh, &c, false);
+}
+
+static double LongLat(int i)
+{
+    return 55.0 + i * 10 / 110540.0;
+}
+
+static void TestMagnetEdges()
+{
+    double lon, lat, c;
+    Check(Mag(29.8, 500, 60, 0, false, &lon, &lat, &c), "magnet: 29.8 m - still caught");
+    Check(Mag(10, 500, 10, 180, false, &lon, &lat, &c), "magnet: exactly 10 km/h - the course still not counted");
+    Check(!Mag(10, 500, 10.5, 180, false, &lon, &lat, &c), "magnet: above 10 km/h - counted");
+    Check(Mag(10, 500, 60, 60, false, &lon, &lat, &c), "magnet: 60 degrees right - its way");
+    Check(Mag(10, 500, 60, 300, false, &lon, &lat, &c), "magnet: 60 degrees left - its way");
+    Check(!Mag(10, 500, 60, 60.5, false, &lon, &lat, &c), "magnet: over 60 right - not");
+    Check(!Mag(10, 500, 60, 299.5, false, &lon, &lat, &c), "magnet: over 60 left - not");
+    // going west: the course stays in 0..360
+    const double west[4] = { 37.01, 55.0, 37.0, 55.0 };
+    lon = 37.005, lat = 55.0, c = 270;
+    Check(MagnetSnap(west, 2, 0, &lon, &lat, 60, &c, false) && fabs(c - 270) < 1e-6, "magnet: west - 270");
+    // a short piece counts, a piece of no length does not
+    const double piece[8] = { 37.0, 55.0, 37.0, 55.0, 37.0, 55.0 + 0.5 / 110540.0, 37.0, 55.0 + 0.5 / 110540.0 };
+    lon = 37.0, lat = 55.0 + 0.2 / 110540.0, c = 0;
+    Check(MagnetSnap(piece, 4, 0, &lon, &lat, 5, &c, false) && fabs(lat - (55.0 + 0.2 / 110540.0)) < 1e-9 && fabs(c) < 1e-6,
+          "magnet: half a metre's piece - on it, its course");
+    // past the line's end: its end, not the line going on
+    double e;
+    Check(Mag(-1000 + 1000, 1020, 5, 0, false, &lon, &e, &c), "magnet: past the corner, near its line");
+    const double two[4] = { 37.0, 55.0, 37.0, 55.0 + kM };
+    lon = 37.0, lat = 55.0 + kM + 20 / 110540.0, c = 0;
+    Check(MagnetSnap(two, 2, 0, &lon, &lat, 5, &c, false) && fabs(lat - (55.0 + kM)) < 1e-7, "magnet: past the end - the end");
+    // the points after np are not the line's
+    const double more[8] = { 37.0, 55.0, 37.0, 55.0 + kM, 40.0, 55.0, 37.5, 55.5 };
+    lon = 37.5, lat = 55.5, c = 0;
+    Check(!MagnetSnap(more, 2, 0, &lon, &lat, 5, &c, false), "magnet: only np points");
+    // the window: 10 segments back, 200 ahead of the car's
+    for (int i = 0; i < 300; i++) {
+        s_magLong[i * 2] = 37.0;
+        s_magLong[i * 2 + 1] = LongLat(i);
+    }
+    Check(MagAt(300, 0, 201, 5, &lat) && fabs(lat - LongLat(200)) < 1e-7, "magnet: 200 segments ahead at most");
+    Check(MagAt(300, 20, 9, 5, &lat) && fabs(lat - LongLat(10)) < 1e-7, "magnet: 10 segments back at most");
+    Check(MagAt(300, 5, 2, 5, &lat) && fabs(lat - LongLat(2)) < 1e-7, "magnet: near the start - from its first segment");
+    Check(MagAt(150, 0, 148.5, 5, &lat) && fabs(lat - LongLat(148) - 0.5 * 10 / 110540.0) < 1e-7, "magnet: to the last segment");
+    Check(MagAt(150, 0, 149.5, 5, &lat) && fabs(lat - LongLat(149)) < 1e-7, "magnet: not past np");
+}
+
+static void TestMagnet()
+{
+    double lon, lat, c;
+    Check(Mag(20, 500, 60, 0, false, &lon, &lat, &c) && fabs(lon - 37.0) < 1e-7 && fabs(lat - (55.0 + 500 / 110540.0)) < 1e-7 &&
+          fabs(c) < 1e-6, "magnet: 20 m beside the line, going its way - on the line, its course");
+    Check(Mag(20, 500, 60, 355, false, &lon, &lat, &c), "magnet: the course's difference over north counts the short way");
+    Check(!Mag(31, 500, 60, 0, false, &lon, &lat, &c) && fabs(lon - (37.0 + 31 / (111320 * 0.573576436))) < 1e-9 && c == 0,
+          "magnet: more than 30 m off - the fix untouched");
+    Check(Mag(31, 500, 60, 0, true, &lon, &lat, &c), "magnet: on the line it holds to 40 m");
+    Check(!Mag(41, 500, 60, 0, true, &lon, &lat, &c), "magnet: over 40 m it lets go");
+    Check(!Mag(10, 500, 60, 90, false, &lon, &lat, &c) && c == 90, "magnet: across the line - a side road, not snapped");
+    Check(!Mag(10, 500, 60, 180, false, &lon, &lat, &c), "magnet: against the line");
+    Check(Mag(10, 500, 8, 180, false, &lon, &lat, &c) && fabs(c) < 1e-6, "magnet: slow - the course means nothing, snapped");
+    Check(Mag(500, 1010, 60, 90, false, &lon, &lat, &c) && fabs(c - 90) < 0.5 && fabs(lat - (55.0 + kM)) < 1e-6,
+          "magnet: the second segment found, its course");
+    Check(Mag(-5, -8, 8, 0, false, &lon, &lat, &c) && fabs(lat - 55.0) < 1e-7 && fabs(lon - 37.0) < 1e-7,
+          "magnet: before the line's start - its first point");
+    lon = 37.0, lat = 55.0, c = 7;
+    Check(!MagnetSnap(kMagLine, 1, 0, &lon, &lat, 60, &c, false) && c == 7, "magnet: no segment - nothing");
+    lon = 37.0 + 500 / (111320 * 0.573576436), lat = 55.0 + kM + 10 / 110540.0, c = 90;
+    Check(MagnetSnap(kMagLine, 3, 1, &lon, &lat, 60, &c, false) && fabs(lat - (55.0 + kM)) < 1e-6, "magnet: from the car's segment");
+    TestMagnetEdges();
+}
+
+static void TestRgb565To32()
+{
+    unsigned short s[5] = { 0xFFFF, 0x0000, 0xF800, 0x07E0, 0x001F };
+    unsigned long d[6] = { 1, 1, 1, 1, 1, 0xABCDEF };
+    Rgb565To32(s, d, 5);
+    Check(d[0] == 0xFFFFFF, "565 -> 32: white stays white");
+    Check(d[1] == 0x000000, "565 -> 32: black");
+    Check(d[2] == 0xFF0000, "565 -> 32: red 31 -> 255");
+    Check(d[3] == 0x00FF00, "565 -> 32: green 63 -> 255");
+    Check(d[4] == 0x0000FF, "565 -> 32: blue 31 -> 255");
+    Check(d[5] == 0xABCDEF, "565 -> 32: only n pixels written");
+    unsigned short m = (unsigned short)(16 << 11 | 32 << 5 | 1);   // the middle and one step
+    Rgb565To32(&m, d, 1);
+    Check(d[0] == ((16 << 3 | 16 >> 2) << 16 | (32 << 2 | 32 >> 4) << 8 | (1 << 3 | 1 >> 2)),
+          "565 -> 32: each channel's top bits below it (16 -> 132, 32 -> 130, 1 -> 8)");
+    unsigned short g = (unsigned short)(0x15 << 11 | 0x2A << 5 | 0x0A);
+    Rgb565To32(&g, d, 1);
+    Check(d[0] == 0xADAA52, "565 -> 32: the channels not mixed");
+}
+
 int main()
 {
+    TestRgb565To32();
+    TestMagnet();
     VTileInit();
     TiltChecks();
     unsigned char data[4096];

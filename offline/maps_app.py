@@ -183,6 +183,8 @@ def install(entry, drive, get_file, get_bytes, maxzoom, progress=None, tiles_dat
                     lambda part, text: tell(kTilesPart + (1 - kTilesPart) * part, 'граф и поиск: ' + text))
     with zipfile.ZipFile(io.BytesIO(data)) as z:
         for f in release_regions.FILES:   # (only these: the zip's own names never chose a path)
+            if f not in z.namelist():   # (a region not rebuilt since: its old zip has no layers)
+                continue
             with open(os.path.join(dst, f), 'wb') as out:
                 out.write(z.read(f) + (b'tiles=%s\n' % tiles_date.encode() if f == 'region.txt' else b''))
 

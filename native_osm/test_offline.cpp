@@ -6,6 +6,7 @@
 #include "fling.h"
 #include "zoomanim.h"
 #include "trafshade.h"
+#include "layers.h"
 
 Config  g_cfg;
 wchar_t g_dir[MAX_PATH];
@@ -410,6 +411,7 @@ static void DiskChecks()
     free(tiles);
     Check(same && FileIs(L"OSMapsData\\zz\\search.idx", "IDXIDXIDXIDXIDXIDXIDXIDXIDXIDX", 30),
           "disk: the region whole - its tiles too, unpacked piece by piece", NULL);
+    Check(FileIs(L"OSMapsData\\zz\\parking.lay", "PARKPARKPARK", 12), "disk: Moscow's park lines come with its region", NULL);
     char* ovb = FileBytes(L"OSMapsData\\overview\\overview.vtp", &n);
     Check(n == 800 && !memcmp(ovb, "OVERVIEW", 8), "disk: the overview after it", NULL);
     free(ovb);
@@ -574,6 +576,36 @@ static void LevelChecks()
           HierAllows(0, 1000000, 2), "levels: every road near the ends, the tertiary to 20 km, then the main", NULL);
     Check(HierAllows(1, 50000, 1) && !HierAllows(2, 5000, 1) && HierAllows(2, 4999, 1) && HierAllows(2, 1000000, 0),
           "levels: asked again - the tertiary and up, at last every road", NULL);
+    // a turn's cost by its sharpness (east, then: x east, y north; OSRM's car profile in steps), tenths of a second
+    Check(TurnCostDs(100, 0, 100, 0) == 0 && TurnCostDs(100, 0, 100, 50) == 0 && TurnCostDs(100, 0, 100, -50) == 0,
+          "turn cost: straight on and up to 30 degrees - none", NULL);
+    Check(TurnCostDs(100, 0, 100, 60) == 5 && TurnCostDs(100, 0, 100, -170) == 5, "turn cost: 31-60 degrees - 0.5 s",
+          NULL);
+    Check(TurnCostDs(100, 0, 100, 175) == 20 && TurnCostDs(100, 0, 0, 100) == 20 && TurnCostDs(100, 0, 0, -100) == 20,
+          "turn cost: 61-90 degrees - 2 s", NULL);
+    Check(TurnCostDs(100, 0, -50, 100) == 45 && TurnCostDs(100, 0, -50, -100) == 45, "turn cost: 91-120 degrees - 4.5 s",
+          NULL);
+    Check(TurnCostDs(100, 0, -100, 80) == 65 && TurnCostDs(100, 0, -100, -60) == 65, "turn cost: 121-150 degrees - 6.5 s",
+          NULL);
+    Check(TurnCostDs(100, 0, -100, 10) == 200 && TurnCostDs(100, 0, -100, 0) == 200, "turn cost: back the way - 20 s",
+          NULL);
+    Check(TurnCostDs(0, 0, 100, 0) == 0 && TurnCostDs(100, 0, 0, 0) == 0, "turn cost: a move of no length - none", NULL);
+    Check(TurnCostDs(60, 80, 80, 60) == 0 && TurnCostDs(60, 80, 80, -60) == 20 && TurnCostDs(-60, 80, 80, 60) == 20,
+          "turn cost: moves off the axes (16, 90, 90 degrees)", NULL);
+    Check(TurnCostDs(0, 100000, 100000, 0) == 20, "turn cost: 100 km moves, no overflow", NULL);
+    // by the graph's bearings (256 a circle): 21 = 29.5 degrees, 22 = 30.9, 42 = 59, 43 = 60.5, 64 = 90, 65 = 91.4,
+    // 85 = 119.5, 86 = 120.9, 106 = 149, 107 = 150.5
+    Check(TurnCostB(64, 64) == 0 && TurnCostB(64, 85) == 0 && TurnCostB(64, 43) == 0 && TurnCostB(250, 15) == 0,
+          "turn cost by bearings: up to 30 degrees, either way, across north - none", NULL);
+    Check(TurnCostB(0, 22) == 5 && TurnCostB(0, 42) == 5 && TurnCostB(0, 234) == 5, "turn cost by bearings: 31-60 - 0.5 s",
+          NULL);
+    Check(TurnCostB(0, 43) == 20 && TurnCostB(0, 64) == 20 && TurnCostB(0, 192) == 20, "turn cost by bearings: 61-90 - 2 s",
+          NULL);
+    Check(TurnCostB(0, 65) == 45 && TurnCostB(0, 85) == 45, "turn cost by bearings: 91-120 - 4.5 s", NULL);
+    Check(TurnCostB(0, 86) == 65 && TurnCostB(0, 106) == 65 && TurnCostB(0, 150) == 65,
+          "turn cost by bearings: 121-150 - 6.5 s", NULL);
+    Check(TurnCostB(0, 107) == 200 && TurnCostB(0, 128) == 200 && TurnCostB(200, 72) == 200,
+          "turn cost by bearings: back the way - 20 s", NULL);
 }
 
 static void JsonChecks()
@@ -641,6 +673,12 @@ static void MapsChecks()
     Check(FileIs(L"..\\unzip\\region.txt", "name=zipped\ndate=2026-10-29\n", 28), "maps: region.txt", NULL);
     static const char* kMissing[1] = { "nope.bin" };
     Check(!ZipExtract(zip, dir, kMissing, 1), "maps: a file the zip has not - false", NULL);
+    static const char* kMaybe[2] = { "?nope.bin", "region.txt" };
+    Check(ZipExtract(zip, dir, kMaybe, 2), "maps: \"?\" - it may be missing, the rest goes on", NULL);
+    static const char* kLayers[1] = { "?layers.lay" };
+    wchar_t full[MAX_PATH];
+    PathInDir(full, L"..\\full.zip");
+    Check(ZipExtract(full, dir, kLayers, 1) && FileIs(L"..\\unzip\\layers.lay", "LAYLAYLAYLAY", 12), "maps: \"?\" - there: unpacked", NULL);
 }
 
 static bool Writable(const wchar_t* name)   // the data folder's file can be opened for writing (nothing holds it)
@@ -825,6 +863,220 @@ static void DropChecks()
     free(r);
 }
 
+static void PutFile(const wchar_t* name, const void* data, DWORD n)
+{
+    wchar_t path[MAX_PATH];
+    PathInDir(path, name);
+    HANDLE f = CreateFile(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
+    DWORD wr;
+    WriteFile(f, data, n, &wr, NULL);
+    CloseHandle(f);
+}
+
+static int ReadBad(const void* data, DWORD n)
+{
+    wchar_t path[MAX_PATH];
+    PathInDir(path, L"..\\bad.lay");
+    PutFile(L"..\\bad.lay", data, n);
+    int box[4] = { 53000000, 50000000, 53001000, 50001000 };
+    LayerPoint p[4];
+    int got = LayersRead(path, box, p, 4);
+    DeleteFile(path);
+    return got;
+}
+
+static void LayerFileChecks()   // layers.lay as make_layers.py writes it
+{
+    wchar_t path[MAX_PATH];
+    PathInDir(path, L"..\\OSMapsData\\tiny\\layers.lay");
+    LayerPoint p[8];
+    int west[4] = { 53000000, 50000000, 53002000, 50004000 }, both[4] = { 53000000, 50000000, 53002000, 50015000 };
+    int n = LayersRead(path, west, p, 8);
+    Check(sizeof(LayerPoint) == 12, "layers: a point is 12 bytes", NULL);
+    Check(n == 3, "layers: the box's cells whole, the next cell not", NULL);
+    Check(LayersRead(path, both, p, 8) == 4, "layers: two cells", NULL);
+    int kinds = 0, paid = 0;
+    for (int i = 0; i < 4; i++) {
+        kinds |= 1 << p[i].kind;
+        if (p[i].fee == FEE_PAID)
+            paid = p[i].places;
+    }
+    Check(kinds == (1 << LAY_SIGNAL | 1 << LAY_BUMP | 1 << LAY_PARKING), "layers: the kinds", NULL);
+    Check(paid == 40, "layers: a paid car park's places", NULL);
+    Check(LayersRead(path, both, p, 2) == 2, "layers: no more than asked", NULL);
+    int north[4] = { 53030000, 50000000, 53040000, 50015000 }, east[4] = { 53000000, 50020000, 53002000, 50030000 };
+    Check(LayersRead(path, north, p, 8) == 0 && LayersRead(path, east, p, 8) == 0, "layers: no cells there - none", NULL);
+    int cellEnd[4] = { 53000000, 50000000, 53009999, 50009999 };
+    Check(LayersRead(path, cellEnd, p, 8) == 3, "layers: a box up to a cell's last - not the next rows, not the next cell", NULL);
+    int rows[4] = { 53000000, 50000000, 53015000, 50009999 };
+    Check(LayersRead(path, rows, p, 8) == 4 && p[0].lat == 53000000 && p[3].lat == 53010500, "layers: a second row after the first, the right points", NULL);
+    int later[4] = { 53010000, 50000000, 53025000, 50009999 };
+    p[2].lat = -1;
+    Check(LayersRead(path, later, p, 2) == 2 && p[1].lat == 53020500 && p[2].lat == -1, "layers: the second row - only what room is left", NULL);
+    int last[4] = { 53020000, 50000000, 53025000, 50009999 };
+    Check(LayersRead(path, last, p, 8) == 2, "layers: the file's last cell - up to its last point", NULL);
+    Check(LayersRead(L"nope\\layers.lay", both, p, 8) == -1, "layers: no file", NULL);
+    unsigned head[6] = { 0x4C4D534F, 1, 1, 0, 0, 0 };   // 'OSML', version, cells, points; a cell
+    Check(ReadBad("OSM", 3) == -1, "layers: cut short", NULL);
+    Check(ReadBad(head, 20) == -1, "layers: a cell's bytes past what it tells", NULL);
+    Check(ReadBad(head, 24) == 0, "layers: exactly the cells' bytes read", NULL);
+    head[2] = 0;
+    Check(ReadBad(head, 16) == 0, "layers: an empty region's file", NULL);
+    head[1] = 2;
+    Check(ReadBad(head, 16) == -1, "layers: another version", NULL);
+    head[1] = 1;
+    head[0] = 0;
+    Check(ReadBad(head, 16) == -1, "layers: another file", NULL);
+    head[0] = 0x4C4D534F;
+    head[3] = 1;
+    Check(ReadBad(head, 16) == -1, "layers: points told, none there", NULL);
+}
+
+static void LayerBoxChecks()   // any side of the box to another cell: read anew
+{
+    int n = -1;
+    int both[4] = { 53000000, 50000000, 53002000, 50015000 }, eastOnly[4] = { 53000000, 50010000, 53002000, 50015000 };
+    LayersIn(both, &n);
+    LayersIn(eastOnly, &n);
+    Check(n == 1, "layers: its west side moved", NULL);
+    int low[4] = { 52990000, 50000000, 53009999, 50015000 }, high[4] = { 52990000, 50000000, 53010500, 50015000 };
+    LayersIn(low, &n);
+    Check(n == 4, "layers: a box wider than the points", NULL);
+    LayersIn(high, &n);
+    Check(n == 5, "layers: its north side moved", NULL);
+    int south[4] = { 53010000, 50000000, 53010500, 50015000 };
+    LayersIn(south, &n);
+    Check(n < 5, "layers: its south side moved", NULL);
+}
+
+static void LayerRegionChecks()   // the region's under the box, kept
+{
+    LayersDrop();
+    int n = -1;
+    int west[4] = { 53000000, 50000000, 53002000, 50004000 }, both[4] = { 53000000, 50000000, 53002000, 50015000 };
+    const LayerPoint* p = LayersIn(west, &n);
+    Check(p && n == 3, "layers: the region's under the box", NULL);
+    int same[4] = { 53001000, 50001000, 53003000, 50005000 };
+    wchar_t path[MAX_PATH], kept[MAX_PATH];
+    PathInDir(path, L"..\\OSMapsData\\tiny\\layers.lay");
+    PathInDir(kept, L"..\\OSMapsData\\tiny\\layers.keep");
+    Check(MoveFile(path, kept) != 0, "layers: nothing held open between the calls (a download can write over it)", NULL);
+    LayersIn(same, &n);
+    Check(n == 3, "layers: the same cells - kept, not read", NULL);
+    LayersIn(both, &n);
+    Check(n == 0, "layers: the file gone, other cells - none", NULL);
+    MoveFile(kept, path);
+    LayersDrop();
+    LayersIn(both, &n);
+    Check(n == 4, "layers: dropped - read anew", NULL);
+    LayersPause(true);
+    LayersIn(west, &n);
+    Check(n == 4, "layers: a region being written - the points in hand stay", NULL);
+    LayersPause(false);
+    LayersIn(both, &n);
+    Check(n == 4, "layers: after it", NULL);
+    LayersIn(west, &n);
+    Check(n == 3, "layers: after it, other cells read", NULL);
+    int nowhere[4] = { 10000000, 10000000, 10001000, 10001000 };
+    LayersIn(nowhere, &n);
+    Check(n == 0, "layers: no region there - none", NULL);
+    LayersIn(west, &n);
+    Check(n == 3, "layers: back in the region, not held off by the failed try", NULL);
+    LayersPause(true);
+    LayersIn(west, &n);
+    MoveFile(path, kept);
+    LayersPause(false);
+    LayersIn(west, &n);
+    Check(n == 0, "layers: after a region was written - the same cells read anew", NULL);
+    MoveFile(kept, path);
+    LayersPause(true);
+    LayersDrop();
+    LayersIn(west, &n);
+    Check(n == 0, "layers: dropped while a region is written - none in hand", NULL);
+    LayersPause(false);
+    LayerBoxChecks();
+    LayersDrop();
+}
+
+static void ParkLineChecks()   // Moscow's paid street parking as make_parklines.py writes it (parking.lay)
+{
+    wchar_t path[MAX_PATH], kept[MAX_PATH], other[MAX_PATH];
+    PathInDir(path, L"..\\OSMapsData\\tiny\\parking.lay");
+    PathInDir(kept, L"..\\OSMapsData\\tiny\\parking.keep");
+    PathInDir(other, L"..\\OSMapsData\\tiny\\layers.lay");
+    ParkLine l[8];
+    LayerPoint p[8];
+    int west[4] = { 53000000, 50000000, 53002000, 50004000 }, both[4] = { 53000000, 50000000, 53002000, 50015000 };
+    Check(sizeof(ParkLine) == 20, "park lines: a piece is 20 bytes", NULL);
+    Check(ParkLinesRead(path, west, l, 8) == 1 && l[0].lat == 53000500 && l[0].lon == 50001000 && l[0].dLat == 0 && l[0].dLon == 1000, "park lines: a cell's piece, where", NULL);
+    Check(l[0].price[0] == 4 && l[0].price[1] == 4 && l[0].price[3] == 0, "park lines: its prices", NULL);
+    Check(ParkLinesRead(path, both, l, 8) == 3 && l[2].dLat == 200 && l[2].dLon == 500 && l[2].price[1] == 38 && l[2].price[4] == 45, "park lines: two cells, in the file's order", NULL);
+    Check(ParkLinesRead(other, both, l, 8) == -1 && LayersRead(path, both, p, 8) == -1, "park lines and layers: the one's reader refuses the other's file", NULL);
+    LayersDrop();
+    int n = -1;
+    const ParkLine* in = ParkLinesIn(both, &n);
+    Check(in && n == 3 && in[0].lat == 53000500, "park lines: the region's under the box", NULL);
+    MoveFile(path, kept);
+    ParkLinesIn(both, &n);
+    Check(n == 3, "park lines: the same cells - kept, the file not held", NULL);
+    ParkLinesIn(west, &n);
+    Check(n == 0, "park lines: a region without them (all but Moscow's) - none", NULL);
+    MoveFile(kept, path);
+    LayersDrop();
+    ParkLinesIn(west, &n);
+    Check(n == 1, "park lines: dropped - read anew", NULL);
+    LayersPause(true);
+    ParkLinesIn(both, &n);
+    Check(n == 1, "park lines: a region being written - those in hand stay", NULL);
+    MoveFile(path, kept);
+    LayersPause(false);
+    ParkLinesIn(west, &n);
+    Check(n == 0, "park lines: after a region was written - read anew", NULL);
+    MoveFile(kept, path);
+    LayersDrop();
+}
+
+static void ParkPriceChecks()   // Sunday 0: as GetLocalTime tells
+{
+    ParkLine l = { 0, 0, 0, 0, { 6, 8, 7, 1, 2, 3 } };
+    Check(ParkPrice(l, 1, 0) == 60 && ParkPrice(l, 1, 7) == 60, "park price: a weekday before 8", NULL);
+    Check(ParkPrice(l, 1, 8) == 80 && ParkPrice(l, 5, 20) == 80, "park price: Monday to Friday, 8 to 21", NULL);
+    Check(ParkPrice(l, 1, 21) == 70 && ParkPrice(l, 5, 23) == 70, "park price: a weekday from 21", NULL);
+    Check(ParkPrice(l, 6, 7) == 10 && ParkPrice(l, 0, 0) == 10, "park price: the weekend before 8", NULL);
+    Check(ParkPrice(l, 6, 8) == 20 && ParkPrice(l, 0, 20) == 20, "park price: Saturday, Sunday, 8 to 21", NULL);
+    Check(ParkPrice(l, 6, 21) == 30 && ParkPrice(l, 0, 23) == 30, "park price: the weekend from 21", NULL);
+    ParkLine top = { 0, 0, 0, 0, { 255, 0, 0, 0, 0, 0 } };
+    Check(ParkPrice(top, 1, 0) == 2550, "park price: up to the byte's whole", NULL);
+}
+
+static void LayerAheadChecks()
+{
+    LayerPoint p[3] = { { 53000000, 50005000, LAY_BUMP, 0, 0 }, { 53000000, 50004000, LAY_SIGNAL, 0, 0 }, { 53000000, 50007000, LAY_BUMP, 0, 0 } };
+    int d = 0;
+    Check(LayerAhead(p, 3, LAY_BUMP, 53000000, 50003000, 90, 200, &d) && d > 125 && d < 142, "ahead: east, the nearest of its kind", NULL);
+    Check(LayerAhead(p, 3, LAY_SIGNAL, 53000000, 50003000, 90, 200, &d) && d > 60 && d < 75, "ahead: another kind", NULL);
+    Check(!LayerAhead(p, 3, LAY_BUMP, 53000000, 50003000, 90, 100, &d), "ahead: too far yet", NULL);
+    Check(!LayerAhead(p, 3, LAY_BUMP, 53000000, 50003000, 270, 200, &d), "ahead: behind", NULL);
+    Check(!LayerAhead(p, 3, LAY_BUMP, 53000000, 50003000, 0, 200, &d), "ahead: to the side", NULL);
+    Check(!LayerAhead(p, 3, LAY_BUMP, 53000400, 50003000, 90, 200, &d), "ahead: on the next street (44 m off the line)", NULL);
+    Check(LayerAhead(p, 3, LAY_BUMP, 53000100, 50003000, 90, 200, &d), "ahead: a little off the line (GPS)", NULL);
+    Check(LayerAhead(p, 3, LAY_BUMP, 53000000, 50006000, 90, 200, &d) && d > 60 && d < 75, "ahead: the one passed no more", NULL);
+    Check(LayerAhead(p, 3, LAY_BUMP, 53000000, 50006000, 270, 200, &d) && d > 60 && d < 75, "ahead: the other way - the other one", NULL);
+    Check(!LayerAhead(p, 0, LAY_BUMP, 53000000, 50003000, 90, 200, &d), "ahead: no points", NULL);
+    Check(LayerAhead(p, 3, LAY_BUMP, 53000000, 50005000, 90, 200, &d) && d == 0, "ahead: right on it", NULL);
+    LayerPoint distant = { 52999784, 50014944, LAY_BUMP, 0, 0 };   // (1000 m east, 24 m south: the degrees' metres at this latitude)
+    Check(LayerAhead(&distant, 1, LAY_BUMP, 53000000, 50000000, 90, 2000, &d) && d >= 999 && d <= 1001, "ahead: far on, the line's edge, the distance exact", NULL);
+    LayerPoint ne = { 53000636, 50001057, LAY_BUMP, 0, 0 };    // (100 m north-east)
+    Check(LayerAhead(&ne, 1, LAY_BUMP, 53000000, 50000000, 45, 200, &d) && d >= 99 && d <= 101, "ahead: a diagonal course", NULL);
+    int t = 1, c = 0;
+    OverlayNext(&t, &c);
+    Check(!t && c, "overlay: traffic -> car parks", NULL);
+    OverlayNext(&t, &c);
+    Check(!t && !c, "overlay: car parks -> neither", NULL);
+    OverlayNext(&t, &c);
+    Check(t && !c, "overlay: neither -> traffic", NULL);
+}
+
 static void TrafficLookChecks()   // how the traffic is shown (trafshade.cpp)
 {
     TrafficLook t = TrafficLookOf(true, false, false, true);
@@ -861,6 +1113,11 @@ int main()
     FlingChecks();
     ZoomChecks();
     TrafficLookChecks();
+    LayerFileChecks();
+    LayerRegionChecks();
+    ParkLineChecks();
+    ParkPriceChecks();
+    LayerAheadChecks();
 
     // along the main street, west to east: ~400 m, no turn on the way
     char* b = Route("50.000,53.000;50.006,53.000");
@@ -888,6 +1145,35 @@ int main()
     free(b);
     b = Route("50.105,60.000;50.115,60.000", "&exclude=toll");   // by the far toll road alone: on it all the same
     Check(b && Num(b, "\"distance\":") > 500 && Num(b, "\"distance\":") < 600, "toll: no free road near - the toll one", b);
+    free(b);
+
+    // a turn costs time (the hook region, 64 N; the user 2026-11-09, Khodynka): W -> T straight on the service road
+    // (~402 m from 150 m west of A), not by the loop curving into B as for a U-turn (~463 m, 10.6 s quicker with no
+    // cost for turns) - seen by the roads' bearings ('OSMB': 20.5 s), not by the nodes' chords (9 s)
+    b = Route("49.996923,64.000000;50.005129,63.999811");   // (inside the region: its ends round off it)
+    Check(b && Num(b, "\"distance\":") < 430 && !Has(b, L"\"location\":[49.999897,64.000288]"),
+          "turn cost: straight on, not the loop's U-turn", b);
+    // every fork of roads alike told (the user 2026-11-10): the loop beside ours at A, a service road too - keep right
+    Check(b && Has(b, L"\"type\":\"fork\",\"modifier\":\"slight right\",\"bearing_before\":90") &&
+          Has(b, L"\"location\":[50.000000,64.000000]"), "a fork of roads alike, ours the straighter: told", b);
+    free(b);
+    // a graph made before the bearings (hookold: the same, 66 N, its 'OSMB' cut off): by the chords - the loop
+    b = Route("49.996683,66.000000;50.005528,65.999811");
+    Check(b && Num(b, "\"distance\":") > 430, "turn cost, an old graph: by the nodes - the loop's U-turn unseen", b);
+    free(b);
+    // a turn restriction (from the loop at B not onto Улица Ветка): from the loop to T by M (without it: Ветка)
+    b = Route("50.000226,64.000121;50.005129,63.999811");
+    Check(b && !Has(b, L"Улица Ветка") && Has(b, L"Улица Крюк"), "a turn restriction: kept", b);
+    free(b);
+    // along the street M through B: a branch as good (Улица Ветка, ~20 degrees off) - M goes on by its name, not told
+    b = Route("49.998923,64.000414;50.001180,64.000162");
+    Check(b && !Has(b, L"\"location\":[49.999897,64.000288]") && Count(b, "\"maneuver\"") == 2,
+          "a fork, our street going on by its name: not told", b);
+    free(b);
+    // W -> N: the loop it is; at A it bends away within metres - told as a fork, left
+    b = Route("49.996923,64.000000;50.000146,64.001799");
+    Check(b && Has(b, L"\"type\":\"fork\",\"modifier\":\"slight left\",\"bearing_before\":90") &&
+          Has(b, L"\"location\":[50.000000,64.000000]"), "a fork bending away within metres: told", b);
     free(b);
 
     // from the east end to the upper corner: right onto the one-way street (east -> west, then north)
@@ -1011,6 +1297,18 @@ int main()
     b = Route("50.010,53.000;50.015,53.000");
     Check(Has(b, L"\"name\":\"Восточная улица\",\"ref\":\"\",\"maneuver\":{\"type\":\"roundabout\"") &&
           Has(b, L"\"exit\":2"), "roundabout: the 2nd exit onto the east street", b);
+    free(b);
+    // the south street off it twice (r4, r5) - one exit; then the east, the north: the 3rd
+    b = Route("50.010,53.000;50.012,53.002");
+    Check(Has(b, L"\"name\":\"Северная улица\",\"ref\":\"\",\"maneuver\":{\"type\":\"roundabout\"") &&
+          Has(b, L"\"exit\":3"), "roundabout: one road off it twice - one exit (the north street: the 3rd)", b);
+    free(b);
+    // a T where the road goes on as itself to one side: a turn all the same; then a sharp one with no other way
+    b = Route("50.012,53.0015;50.014,53.0028");
+    Check(Has(b, L"\"name\":\"Северная улица\",\"ref\":\"\",\"maneuver\":{\"type\":\"turn\",\"modifier\":\"right\""),
+          "a T: right, though the street goes on that way", b);
+    Check(Has(b, L"\"name\":\"Дальняя улица\",\"ref\":\"\",\"maneuver\":{\"type\":\"turn\",\"modifier\":\"left\""),
+          "a sharp bend onto another street, no other way: told", b);
     free(b);
 
     // the search: the town first, a house by street and number, the station by its kind

@@ -1,5 +1,8 @@
 ﻿#include "yamaps.h"
 #include "lang.h"
+#include "voice.h"
+#include "segpick.h"
+#include "vroute.h"   // VestaCore: the line shared (GpsSim)
 
 // Search and route over OSM data on public servers (2026-10-26): Photon (komoot, HTTPS) finds places by text,
 // OSRM of FOSSGIS (routing.openstreetmap.de, plain HTTP) lays the car route. The user's choice was Valhalla, but
@@ -14,10 +17,13 @@ static const char* kOsrm     = "routing.openstreetmap.de";   // its car profile:
 static const int    kMaxHits      = 7;
 static const double kOffM         = 50;     // farther from the line than this ...
 static const int    kOffFixes     = 4;      // ... this many fixes in a row: off the route
+enum { kWinBack = 10, kWinAhead = 200 };    // the car looked for on these pieces of the line around where it was
+static const double kTieM         = 8;      // pieces this much farther than the nearest: still "as near" (SegPick)
 static const DWORD  kRerouteMs    = 15000;  // a new route not more often
 static const double kArriveM      = 30;     // the destination this close: arrived
 static const DWORD  kArrivedMs    = 10000;  // "Вы приехали" this long, then the route gone (the user 2026-11-03)
 static DWORD        s_arriveTick;
+static int          s_serial;       // the router's answers taken (RouteInfo::serial)
 
 
 // ---------------------------------------------------------------- requests
@@ -131,6 +137,7 @@ struct Maneuver {
     int     shape;          // its point on the line
     int     turn;           // RouteInfo::turn
     bool    complex;        // a fork, a ramp, a roundabout, a merge (JunctionComplex: the junction card)
+    int     act;            // what to say (VA_*)
     wchar_t text[112];
 };
 
@@ -591,6 +598,7 @@ static void OnRoute(const char* body, int k)
             d.shape = at;
             d.turn = Turn(m, type, mod, stop);
             d.complex = JunctionComplex(type);
+            d.act = VoiceAct(type, mod, (int)JNum(JKey(m, "exit"), 0), stop);
             Instruction(st, m, type, mod, stop, d.text, 112);
             if (stop && !strcmp(type, "arrive") && s_nViaShape < kMaxVia)
                 s_viaShape[s_nViaShape++] = at;
@@ -605,6 +613,7 @@ static void OnRoute(const char* body, int k)
     s_stateText[0] = 0;
     Log("route: %d points, %d maneuvers, %d stops, %.1f km, %d min", np, s_nm, s_nViaShape, cum[np - 1] / 1000,
         (int)(s_timeS / 60));
+    VRoutePublish(pts, np);   // (VestaCore: GpsSim drives along it)
 }
 
 bool OnApiResult(ApiResult* r)
@@ -644,6 +653,7 @@ bool OnApiResult(ApiResult* r)
                 RouteAltsDone();
             }
             OnRoute(s_altBody ? s_altBody : r->body, 0);
+            s_serial++;   // (not for an alternative chosen: the same answer)
         }
         else {
             if (!s_np)
@@ -682,6 +692,12 @@ void RouteAltChoose(int k)
     s_sig++;
 }
 
+void RouteMagnet(double* lon, double* lat, double kmh, double* course)
+{
+    static bool on;
+    on = s_state == ROUTE_ON && s_np && MagnetSnap(s_pts, s_np, s_seg, lon, lat, kmh, course, on);
+}
+
 void RouteGps(double lon, double lat, double kmh, double course)
 {
     s_gpsLon = lon;
@@ -693,11 +709,21 @@ void RouteGps(double lon, double lat, double kmh, double course)
     // near where the car was first (the line may pass the same place twice), the whole line if far from it
     double best = 1e18, bestT = 0;
     int seg = s_seg;
-    for (int pass = 0; pass < 2 && best > kOffM; pass++) {
-        int a = pass ? 0 : (s_seg > 10 ? s_seg - 10 : 0), b = pass ? s_np - 1 : s_seg + 200;
+    {   // near where it was: of pieces nearly as near, the earliest not behind it (segpick.h: a jog of two turns)
+        static double d[kWinBack + kWinAhead];
+        int a = s_seg > kWinBack ? s_seg - kWinBack : 0, b = s_seg + kWinAhead;
         if (b > s_np - 1)
             b = s_np - 1;
-        for (int i = a; i < b; i++) {
+        double t;
+        for (int i = a; i < b; i++)
+            d[i - a] = SegDist(x, y, i, &t);
+        if (b > a) {
+            seg = a + SegPick(d, b - a, s_seg - a, kTieM);
+            best = SegDist(x, y, seg, &bestT);
+        }
+    }
+    if (best > kOffM)   // far from it there: the whole line (it may pass the same place twice)
+        for (int i = 0; i < s_np - 1; i++) {
             double t, d = SegDist(x, y, i, &t);
             if (d < best) {
                 best = d;
@@ -705,7 +731,6 @@ void RouteGps(double lon, double lat, double kmh, double course)
                 seg = i;
             }
         }
-    }
     s_seg = seg;
     s_along = s_cum[seg] + bestT * (s_cum[seg + 1] - s_cum[seg]);
     // stops passed: out of the plan (the line keeps them, the next new route goes without them)
@@ -751,6 +776,8 @@ void RouteGet(RouteInfo* o)
     memset(o, 0, sizeof(*o));
     o->state = s_state;
     o->text = s_stateText;
+    o->serial = s_serial;
+    o->vias = s_plan.nvia;
     if (s_state == ROUTE_BUSY && !s_stateText[0])
         o->text = Tr(L"Расчёт маршрута…");
     else if (s_state == ROUTE_ARRIVED)
@@ -775,6 +802,10 @@ void RouteGet(RouteInfo* o)
                 o->nextM = 0;
             if (i + 1 < s_nm)
                 o->thenText = s_man[i + 1].text;
+            o->man = i;
+            o->act = s_man[i].act;
+            if (i + 1 < s_nm && s_cum[s_man[i + 1].shape] - s_cum[s_man[i].shape] <= kThenM)
+                o->thenAct = s_man[i + 1].act;
             break;
         }
     if (s_off)

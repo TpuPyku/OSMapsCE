@@ -78,6 +78,41 @@ void GlideMove(double* lon, double* lat, double ve, double vn, DWORD ms)
     *lat += vn * ms / 110540.0;
 }
 
+// Near: 30 m to catch the line, 40 m to leave it (no flicker at the edge). Going its way: within 60 degrees, above 10 km/h
+// (slower the course is noise). A side road the car really took fails one of the two, and the mark follows the fix.
+bool MagnetSnap(const double* pts, int np, int seg, double* lon, double* lat, double kmh, double* course, bool was)
+{
+    const double kx = 111320.0 * cos(*lat * M_PI / 180), ky = 110540.0;
+    int b = seg + 200 < np - 1 ? seg + 200 : np - 1;
+    double best = 1e18, bx = 0, by = 0, lineCourse = 0;
+    for (int i = seg > 10 ? seg - 10 : 0; i < b; i++) {   // (the same window as RouteGps: the line may pass here twice)
+        double ax = (pts[i * 2] - *lon) * kx, ay = (pts[i * 2 + 1] - *lat) * ky;
+        double dx = (pts[i * 2 + 2] - pts[i * 2]) * kx, dy = (pts[i * 2 + 3] - pts[i * 2 + 1]) * ky, l2 = dx * dx + dy * dy;
+        if (l2 <= 0)
+            continue;
+        double k = -(ax * dx + ay * dy) / l2;
+        k = k < 0 ? 0 : k > 1 ? 1 : k;
+        double ex = ax + k * dx, ey = ay + k * dy, d2 = ex * ex + ey * ey;
+        if (d2 < best) {
+            best = d2;
+            bx = ex;
+            by = ey;
+            lineCourse = atan2(dx, dy) * 180 / M_PI;
+        }
+    }
+    double reach = was ? 40 : 30;
+    if (best > reach * reach)
+        return false;
+    if (lineCourse < 0)
+        lineCourse += 360;
+    if (kmh > 10 && fabs(fmod(*course - lineCourse + 540, 360) - 180) > 60)
+        return false;
+    *lon += bx / kx;
+    *lat += by / ky;
+    *course = lineCourse;
+    return true;
+}
+
 // Metres east and north from point a to b (a small piece: the plane at a's latitude)
 static void Metres(const double* a, const double* b, double* e, double* n)
 {

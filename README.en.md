@@ -12,8 +12,11 @@ A navigation app on [OpenStreetMap](https://www.openstreetmap.org) maps for Wind
 - **Offline:** regions of Russia and the CIS with a map, address search and routes. Routes between regions follow the main roads.
 - **Map:** raster (OSM tiles) or vector (OpenFreeMap) with day and night palettes, a 3D view, bridges, tunnels, house numbers, filling stations and car parks. Places you have viewed are cached.
 - **Routes:** search for addresses and places, turn guidance, rerouting when you leave the route, alternatives with time estimates, avoiding toll roads, a card for complex junctions.
+- **Voice guidance:** a female voice in Russian or English, following the interface language. Each maneuver is announced in advance and again just before it, with the timing adjusted to your speed. It works offline too. On the Lada Vesta with VestaHome the prompts play over the radio. Turn it off in the route sheet: Voice prompts.
 - **Route editor:** long press on the map, up to three stops, your own starting point. Without a GPS signal, a route starts from the last known location, or from the map center if GPS has not worked yet. Favorite places show on the map.
 - **Traffic:** updated every 10 minutes. In the map settings, "Traffic: Route" shows it on the route line only.
+- **OSM layers:** one button cycles traffic, car parks, neither; paid car parks are red, free ones green, unknown ones grey. Traffic lights and speed bumps have their own switches in the map settings, and a caption warns of a bump ahead. They need a region package built with these layers.
+- **Moscow paid street parking:** lines along the streets from z15, colored by the price for the current day and hour (the device's clock): red is paid, green is free right now. From z16 the lines show the car price in rubles per hour. Public holidays are not recognized, so the usual price shows. Data: [Moscow Government Open Data Portal](https://data.mos.ru/opendata/623), version of 2026-01-20; prices may have changed, so check the signs.
 - **GPS:** the car on the map, north-up and heading-up modes.
 - **Interface language:** Russian or English, in Настройки → Язык / Language (Settings → Language). Map labels and region names stay in Russian or the local language. For another language, add a file to the `Lang` folder: a copy of `en.txt` with your translation.
 - **On the Lada Vesta with VestaHome:** the theme color and a map widget on the home screen. During a route the widget shows the road and the maneuver, and other screens show the maneuver in the top bar.
@@ -53,6 +56,7 @@ Almost everything can be changed on screen. Edit the file only while the app is 
 | `yandex_limit`, `2gis_limit` | 900, 2000 | traffic requests per day |
 | `auto_reserve` | 100 | part of the limit kept for manual updates |
 | `api_limit` | 300 | search and route requests per day |
+| `voice` | 1 | voice guidance on a route (clips in the `Voice\ru`, `Voice\en` folders) |
 | `vector` | 0 | map type: 0 raster, 1 vector |
 | `cache_mb` | 500 | map cache size, MB |
 | `cache_days` | 7 | days before a tile is checked against the server (0: never) |
@@ -91,6 +95,9 @@ Tests: `native_osm\test_offline.bat`, `native_osm\test_vtile.bat`, `native_osm\t
 Tools: `core\make_ta.py` for root certificates; `native_osm\make_regions.py` for 2GIS cities (needs a key in `native_osm\.env`, not part of the app).
 
 Third-party libraries: [BearSSL](https://bearssl.org) 0.6 (MIT) for HTTPS; [stb_image](https://github.com/nothings/stb) (public domain) for PNG/JPEG. See `THIRD_PARTY.txt`.
+
+## If you like it
+Give the repository a ⭐ star (the **Star** button at the top of the page): it helps others find the app.
 
 ## License
 © 2026 TpuPyku, GNU GPL v3 (`LICENSE`): you may use, change and distribute it, including for money, only together with the source code of all changes under the same license. Map data © OpenStreetMap contributors, ODbL.

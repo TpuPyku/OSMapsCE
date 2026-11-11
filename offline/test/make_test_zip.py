@@ -23,6 +23,8 @@ if __name__ == '__main__':
     with zipfile.ZipFile(os.path.join(folder, 'full.zip'), 'w', zipfile.ZIP_STORED) as z:
         z.writestr('route.grf', grf)
         z.writestr('search.idx', b'IDX' * 10)
+        z.writestr('layers.lay', b'LAY' * 4)
+        z.writestr('parking.lay', b'PARK' * 3)
         tiles = zipfile.ZipInfo('tiles.vtp')
         tiles.extra = b'\xfe\xca\x04\x00abcd'   # (an extra field: the data after it)
         z.writestr(tiles, bytes(range(251)) * 1000)

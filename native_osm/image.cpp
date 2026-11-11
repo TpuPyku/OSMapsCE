@@ -143,3 +143,11 @@ void ImageFree(Image* im)
     im->bmp = NULL;
     im->w = im->h = 0;
 }
+
+void Rgb565To32(const unsigned short* s, unsigned long* d, int n)
+{
+    for (int i = 0; i < n; i++) {
+        unsigned p = s[i], r = p >> 11, g = p >> 5 & 63, b = p & 31;
+        d[i] = (r << 3 | r >> 2) << 16 | (g << 2 | g >> 4) << 8 | (b << 3 | b >> 2);
+    }
+}

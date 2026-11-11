@@ -35,6 +35,7 @@ struct Graph {
     DWORD*  first;
     GEdge*  edges;
     char*   names;
+    BYTE*   bear;      // each edge's bearings out of its start and into its end (NULL: a graph made before them)
     DWORD*  cstart;    // gw * gh + 1
     DWORD*  items;
     OffFile d;         // the parts above; the geometry is read from its file
@@ -75,6 +76,10 @@ static bool Load(const wchar_t* path)
     s_g.names = (char*)OffPart(f, h.off[4], h.nameBytes);
     s_g.cstart = (DWORD*)OffPart(f, h.off[5], (h.gw * h.gh + 1) * 4);
     s_g.items = (DWORD*)OffPart(f, h.off[5] + (h.gw * h.gh + 1) * 4, h.items * 4);
+    DWORD end = h.off[5] + (h.gw * h.gh + 1 + h.items) * 4;   // the bearings after the grid, if made with them
+    char tag[4];
+    if (OffRead(f->file, end, tag, 4) && !memcmp(tag, "OSMB", 4))
+        s_g.bear = (BYTE*)OffPart(f, end + 4, h.edges * 2);
     if (f->bad) {
         Log("offline: cannot load %S (memory?)", path);
         Unload();
@@ -318,6 +323,8 @@ static bool Flip(const Snap& s, Snap* o)
 
 static DWORD* s_dist;
 static DWORD* s_prevE;    // the edge that reached the node; 0xFFFFFFFF = from the start
+static DWORD  s_seedFrom[2], s_seedE[2];   // the starts' edges and their first nodes (Seed): the way into the first
+                                           // node, for its turn
 static DWORD  s_distN;    // their size, nodes (a bigger graph loaded: made again - 2026-10-29, the trunk after a region)
 static DWORD* s_heapK;
 static DWORD* s_heapN;
@@ -355,6 +362,38 @@ bool HierAllows(int tier, int nearM, int hier)
     if (!hier || nearM < kHierNearM)
         return true;
     return hier == 2 && nearM >= kHierMidM ? tier == 0 : tier <= 1;
+}
+
+// A turn's time by its sharpness, as OSRM's car profile (the user 2026-11-09, Khodynka: with turns free a service loop
+// with a hairpin beat the straight road beside it): tenths of a second; the moves' integer vectors (no FPU on the unit),
+// the angle's class by the tangents of 30 and 60 degrees (x 1000).
+int TurnCostDs(int x1, int y1, int x2, int y2)
+{
+    __int64 dot = (__int64)x1 * x2 + (__int64)y1 * y2, cr = (__int64)x1 * y2 - (__int64)y1 * x2;
+    if (cr < 0)
+        cr = -cr;
+    if ((!x1 && !y1) || (!x2 && !y2))
+        return 0;
+    if (dot > 0)
+        return cr * 1000 < dot * 577 ? 0 : cr * 1000 < dot * 1732 ? 5 : 20;
+    if (dot == 0)
+        return 20;
+    dot = -dot;   // from the way back: over 60 degrees off it - under 120 turned
+    return cr * 1000 > dot * 1732 ? 45 : cr * 1000 > dot * 577 ? 65 : 200;
+}
+
+// By the roads' own bearings (0..255): their difference's angle class, the same costs.
+int TurnCostB(int in, int out)
+{
+    int d = (out - in) & 255;
+    int deg = (d > 128 ? 256 - d : d) * 45 / 32;
+    return deg < 30 ? 0 : deg < 60 ? 5 : deg <= 90 ? 20 : deg < 120 ? 45 : deg < 150 ? 65 : 200;
+}
+
+static void MoveM(DWORD a, DWORD b, int* x, int* y)   // node a to node b in metres (east, north)
+{
+    *y = (s_g.nodes[b * 2] - s_g.nodes[a * 2]) / 9;
+    *x = (int)((__int64)(s_g.nodes[b * 2 + 1] - s_g.nodes[a * 2 + 1]) * s_kxInt / 1000);
 }
 
 static int NearM(DWORD n)   // metres to the nearer end
@@ -480,6 +519,8 @@ static void Seed(Fastest& f, int i, Way* w)
     if (c < s_dist[g.to]) {
         s_dist[g.to] = c;
         s_prevE[g.to] = 0x80000000 | i;   // reached from start i
+        s_seedFrom[i] = s.from;            // (its way in: the turn at that node)
+        s_seedE[i] = s.e;
         Push(c + Est(g.to), g.to);
     }
 }
@@ -498,14 +539,25 @@ static void ReachEnds(Fastest& f, DWORD n, DWORD d, Way* w)   // node n settled 
     }
 }
 
-static bool Relax(DWORD n, DWORD d)   // node n's edges; false = no memory
+static bool Relax(DWORD n, DWORD d)   // node n's edges, each with the turn onto it; false = no memory
 {
-    int nearM = s_hier ? NearM(n) : 0;
+    int nearM = s_hier ? NearM(n) : 0, ix = 0, iy = 0, ox, oy;
+    DWORD in = s_prevE[n];   // the way in (a start's: its edge); no bearings in the graph - node to node
+    if (!s_g.bear)
+        MoveM(in & 0x80000000 ? s_seedFrom[in & 1] : FromNode(in), n, &ix, &iy);
+    int inB = s_g.bear ? s_g.bear[(in & 0x80000000 ? s_seedE[in & 1] : in) * 2 + 1] : 0;
     for (DWORD e = s_g.first[n]; e < s_g.first[n + 1]; e++) {
         const GEdge& g = s_g.edges[e];
         if ((s_noToll && (g.flags & 8)) || !HierAllows(RoadTier(g.cls), nearM, s_hier))
             continue;
-        DWORD c = d + g.timeDs;
+        int turn;
+        if (s_g.bear) {
+            turn = TurnCostB(inB, s_g.bear[e * 2]);
+        } else {
+            MoveM(n, g.to, &ox, &oy);
+            turn = TurnCostDs(ix, iy, ox, oy);
+        }
+        DWORD c = d + g.timeDs + turn;
         if (c < s_dist[g.to]) {
             s_dist[g.to] = c;
             s_prevE[g.to] = e;
@@ -576,6 +628,8 @@ static bool SearchAt(const Snap& sb, Fastest& f, Way* w, int hier)
     return Settle(f, w);
 }
 
+static DWORD WayDs(const Way& m);
+
 // The fastest way between two snaps; anyStart: the start's other road side allowed too. The roads' levels first,
 // fewer limits while none is found.
 static bool Search(const Snap& sa, const Snap& sb, bool anyStart, Way* w)
@@ -589,10 +643,10 @@ static bool Search(const Snap& sa, const Snap& sb, bool anyStart, Way* w)
         if (!SearchAt(sb, f, w, hier))
             return false;
     s_hier = 0;
-    if (f.bestEnd == -1)
+    if (f.bestEnd == -1 || (f.bestEnd != -2 && !Reconstruct(f, w)))
         return false;
-    w->timeDs = f.best;
-    return f.bestEnd == -2 || Reconstruct(f, w);
+    w->timeDs = WayDs(*w);   // the roads' time: the turns' costs choose the way only (the speeds match OSRM's times)
+    return true;
 }
 
 // ---------------------------------------------------------------- the answer (OSRM's JSON)
@@ -749,6 +803,7 @@ struct Turn {            // a node between two of the way's edges
     int    rivals;       // of them: not of a lower class than ours
     double rivalMin;     // the straightest rival's turn (its size)
     double rivalTurn;
+    DWORD  rivalName;    // the straightest rival's name
 };
 
 // The other ways out of the node (from, the way going on by e) and the rivals among them.
@@ -769,23 +824,26 @@ static void Rivals(DWORD from, DWORD e, const Prev& prev, Turn* t)
         if (fabs(ot) < t->rivalMin) {
             t->rivalMin = fabs(ot);
             t->rivalTurn = ot;
+            t->rivalName = o.name;
         }
     }
 }
 
-static bool HasWayOff(DWORD node)   // a roundabout's node with a road off it
+static const GEdge* WayOff(DWORD node)   // a roundabout's node: the road off it (NULL - none)
 {
     for (DWORD k = s_g.first[node]; k < s_g.first[node + 1]; k++)
         if (!(s_g.edges[k].flags & 2))
-            return true;
-    return false;
+            return &s_g.edges[k];
+    return NULL;
 }
 
 // Onto a roundabout by the way's edge i: the exit's number (its nodes with a way off it, up to ours); name = the road
-// off it (kept when the way ends on the roundabout).
+// off it (kept when the way ends on the roundabout). One road off it twice in a row (Moscow's Летняя аллея at
+// площадь Космонавта Комарова, the user 2026-11-08: "the 4th" was the 3rd) - one exit, as a driver counts.
 static int RoundaboutExit(const Way& w, int i, int cnt, DWORD* name)
 {
     int exitNo = 0;
+    const GEdge* before = NULL;   // the exit before (one without a name: never the same road)
     for (int j = i; j < cnt; j++) {
         const GEdge& g = s_g.edges[EdgeAt(w, j)];
         if (!(g.flags & 2)) {   // off it: this road names the step
@@ -794,7 +852,11 @@ static int RoundaboutExit(const Way& w, int i, int cnt, DWORD* name)
         }
         if (j == cnt - 1)
             break;   // the way ends on the roundabout
-        exitNo += HasWayOff(g.to);
+        const GEdge* off = WayOff(g.to);
+        if (off) {
+            exitNo += !before || !off->name || off->name != before->name;
+            before = off;
+        }
     }
     return exitNo;
 }
@@ -817,11 +879,23 @@ static const char* MergeKind(const Turn& t, const char** mod)   // off a link on
 
 // The road just goes on: no other way, or ours the obvious one (the straightest of the rivals and ours, 10 degrees'
 // slack) and the same road or nearly straight.
+// Nothing to tell: no other way, or the obvious one. A sharp turn (kSharpTurn+) never: a T where the road goes on as
+// itself to one side, a bend onto another road with no other way (Moscow's улица Генерала Сандалова, the user
+// 2026-11-08: its two rights were not told, the voice said the left after them); a bend of the same road still is.
+// A fork - ours and a road as good (no lower class) both within kForkTurn (the user 2026-11-10: every fork of roads
+// alike told, keep left / right, whichever is the straighter): told, unless our road goes on by its name and the other
+// is another one.
+enum { kSharpTurn = 60, kForkTurn = 35 };
 static bool GoesOn(const Turn& t)
 {
     bool sameRoad = t.g->name == t.p->name && Named(*t.g);
+    bool gentle = fabs(t.turn) < kSharpTurn;
+    if (!t.alts)
+        return gentle || sameRoad;
+    if (t.rivals && t.rivalMin < kForkTurn && fabs(t.turn) < kForkTurn)
+        return sameRoad && t.rivalName != t.g->name;
     bool obvious = fabs(t.turn) <= t.rivalMin + 10;
-    return !t.alts || (obvious && (sameRoad || fabs(t.turn) < 35));
+    return obvious && gentle && (sameRoad || fabs(t.turn) < 35);
 }
 
 static const char* PlainKind(const Turn& t, const char** mod)   // not at a link's end

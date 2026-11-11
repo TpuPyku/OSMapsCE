@@ -2,18 +2,26 @@
 
     python -m unittest discover -s offline/test      (quality.bat runs it under coverage)
 """
+import gzip
+import io
+import json
 import math
 import os
 import pathlib
 import shutil
 import struct
+import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
+from urllib.parse import parse_qs, urlsplit
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 import make_graph    # noqa: E402
+import make_layers   # noqa: E402
+import make_parklines   # noqa: E402
 import make_region   # noqa: E402
 import make_search   # noqa: E402
 import make_tiles    # noqa: E402
@@ -137,11 +145,11 @@ class Tools(unittest.TestCase):
         out = os.path.join(self.tmp, 'route.grf')
         make_graph.build(TINY, out)
         nodes, edges = graph(out)
-        self.assertEqual(len(nodes), 14)              # the junctions and the ends (not the curve's inner points)
-        self.assertEqual(len(edges), 25)              # 10 two-way pieces, the one-way, the roundabout's 4
-        self.assertEqual(struct.unpack_from(make_graph.HEADER, read(out), 0)[4], 2)   # the curve's inner points
+        self.assertEqual(len(nodes), 18)              # the junctions and the ends (not the curves' inner points)
+        self.assertEqual(len(edges), 33)              # 13 two-way pieces, 2 one-way, the roundabout's 5
+        self.assertEqual(struct.unpack_from(make_graph.HEADER, read(out), 0)[4], 3)   # the curves' inner points
         ring = [(a, b) for a, b, _, _, n in edges if n == '']
-        self.assertEqual(len(ring), 4)                # the roundabout: one way round
+        self.assertEqual(len(ring), 5)                # the roundabout: one way round (r5: the south street again)
         one = [(a, b) for a, b, _, _, n in edges if n == 'Односторонняя улица']
         self.assertEqual(one, [((53000000, 50004000), (53002000, 50004000))])   # north only
         main = [dm for a, b, dm, _, n in edges if n == 'Главная улица' and a == (53000000, 50000000)]
@@ -165,6 +173,188 @@ class Tools(unittest.TestCase):
         self.assertLess(make_graph.hilbert(0, 0, 4), make_graph.hilbert(0, 1, 4))
         self.assertEqual(sorted(make_graph.hilbert(x, y, 2) for x in range(4) for y in range(4)), list(range(16)))
         self.assertEqual([make_graph.hilbert(x, y, 1) for x, y in ((0, 0), (0, 1), (1, 1), (1, 0))], [0, 1, 2, 3])
+
+    def layers(self, path):
+        """As the unit reads layers.lay: the header, the sorted cells, each one's points."""
+        d = read(path)
+        magic, version, n_cells, n_points = struct.unpack_from(make_layers.HEADER, d, 0)
+        self.assertEqual((magic, version), (b'OSML', 1))
+        size = struct.calcsize(make_layers.HEADER)
+        cells = [struct.unpack_from('<II', d, size + i * 8) for i in range(n_cells)]
+        at = size + n_cells * 8
+        self.assertEqual(len(d), at + n_points * 12)
+        self.assertEqual([c[0] for c in cells], sorted(c[0] for c in cells))
+        out = {}
+        for i, (key, first) in enumerate(cells):
+            last = cells[i + 1][1] if i + 1 < n_cells else n_points
+            out[key] = [struct.unpack_from('<iiBBH', d, at + k * 12) for k in range(first, last)]
+        return out
+
+    def test_layers_what_is_kept(self):
+        """Traffic lights, speed bumps, car parks (the user 2026-11-06): where, what, is it paid; the others left out."""
+        self.assertEqual([make_layers.kind_of(t) for t in (
+            {'highway': 'traffic_signals'}, {'highway': 'crossing'}, {'traffic_calming': 'bump'}, {'traffic_calming': 'hump'},
+            {'traffic_calming': 'table'}, {'traffic_calming': 'cushion'}, {'traffic_calming': 'choker'}, {'traffic_calming': 'island'},
+            {'amenity': 'parking'}, {'amenity': 'parking', 'access': 'private'}, {'amenity': 'parking', 'access': 'no'},
+            {'amenity': 'parking', 'access': 'customers'}, {'amenity': 'fuel'}, {})],
+            [make_layers.SIGNAL, None, make_layers.BUMP, make_layers.BUMP, make_layers.BUMP, make_layers.BUMP, None, None,
+             make_layers.PARKING, None, None, make_layers.PARKING, None, None])
+        self.assertEqual([make_layers.fee_of(t) for t in (
+            {}, {'fee': 'yes'}, {'fee': 'no'}, {'fee': 'no', 'fee:conditional': 'yes @ (Mo-Fr 08:00-21:00)'},
+            {'fee:conditional': 'yes @ (Mo-Fr)'}, {'fee': 'interval'}, {'fee': '200 руб/час'})],
+            [make_layers.FEE_UNKNOWN, make_layers.FEE_PAID, make_layers.FEE_FREE, make_layers.FEE_PAID, make_layers.FEE_PAID,
+             make_layers.FEE_UNKNOWN, make_layers.FEE_PAID])
+        self.assertEqual([make_layers.places_of(t) for t in (
+            {}, {'capacity': '12'}, {'capacity': '~30'}, {'capacity': '70000'}, {'capacity': '-1'}, {'capacity': '0'})],
+            [0, 12, 0, 65535, 0, 0])
+
+    def test_layers_file(self):
+        osm = os.path.join(self.tmp, 'layers.osm')
+        with open(osm, 'w', encoding='utf-8') as f:
+            f.write('''<?xml version="1.0" encoding="UTF-8"?><osm version="0.6" generator="t">
+<node id="1" lat="53.0000" lon="50.0000" version="1"><tag k="highway" v="traffic_signals"/></node>
+<node id="2" lat="53.0050" lon="50.0050" version="1"><tag k="traffic_calming" v="bump"/></node>
+<node id="3" lat="53.0200" lon="50.0000" version="1"><tag k="amenity" v="parking"/><tag k="fee" v="yes"/><tag k="capacity" v="40"/></node>
+<node id="4" lat="53.0400" lon="50.0000" version="1"><tag k="amenity" v="fuel"/></node>
+<node id="5" lat="53.0400" lon="50.0400" version="1"/><node id="6" lat="53.0400" lon="50.0420" version="1"/>
+<node id="7" lat="53.0420" lon="50.0420" version="1"/><node id="8" lat="53.0420" lon="50.0400" version="1"/>
+<way id="1" version="1"><nd ref="5"/><nd ref="6"/><nd ref="7"/><nd ref="8"/><nd ref="5"/><tag k="amenity" v="parking"/><tag k="fee" v="no"/></way>
+<way id="2" version="1"><nd ref="5"/><nd ref="6"/><tag k="traffic_calming" v="hump"/></way>
+<way id="3" version="1"><nd ref="5"/><nd ref="7"/><tag k="highway" v="residential"/></way>
+</osm>''')
+        out = os.path.join(self.tmp, 'layers.lay')
+        make_layers.build(osm, out)
+        cells = self.layers(out)
+        key = make_layers.cell_of(53000000, 50000000)
+        self.assertEqual(key, (14300 << 16) | 23000)
+        self.assertEqual(sorted(cells[key]), [(53000000, 50000000, make_layers.SIGNAL, 0, 0),
+                                              (53005000, 50005000, make_layers.BUMP, 0, 0)])
+        self.assertEqual(cells[make_layers.cell_of(53020000, 50000000)],
+                         [(53020000, 50000000, make_layers.PARKING, make_layers.FEE_PAID, 40)])
+        pts = [p for c in cells.values() for p in c]
+        self.assertEqual(len(pts), 5)   # (the fuel station and the road not; the closed outline's first node once)
+        park = [p for p in pts if p[3] == make_layers.FEE_FREE]
+        self.assertEqual(len(park), 1)
+        self.assertEqual(park[0][:2], (53041000, 50041000))
+        self.assertIn((53040000, 50041000, make_layers.BUMP, 0, 0), pts)
+
+    def test_layers_empty_region(self):
+        osm = os.path.join(self.tmp, 'none.osm')
+        with open(osm, 'w', encoding='utf-8') as f:
+            f.write('<?xml version="1.0" encoding="UTF-8"?><osm version="0.6" generator="t"></osm>')
+        out = os.path.join(self.tmp, 'none.lay')
+        make_layers.build(osm, out)
+        self.assertEqual(self.layers(out), {})
+
+    def test_layers_format(self):
+        """What layers.h reads: the numbers are the file's, the cells' order holds whichever way the points lie."""
+        self.assertEqual((make_layers.SIGNAL, make_layers.BUMP, make_layers.PARKING), (1, 2, 3))
+        self.assertEqual((make_layers.FEE_UNKNOWN, make_layers.FEE_FREE, make_layers.FEE_PAID), (0, 1, 2))
+        self.assertEqual(make_layers.cell_of(53009999, 50009999), (14300 << 16) | 23000)
+        out = os.path.join(self.tmp, 'order.lay')
+        make_layers.write([(53020000, 50000000, 1, 0, 0), (53000000, 50020000, 1, 0, 0), (53000100, 50010000, 1, 0, 0),
+                           (53000200, 50000000, 1, 0, 0)], out)
+        self.assertEqual(len(self.layers(out)), 4)
+
+    def test_parklines_prices(self):
+        """A car's rubles an hour, in tens: weekdays, the weekend x before 8, 8-21, after 21. The other vehicles and the
+        holidays not read; a differentiated tariff by its price after the first minutes; of two rates the higher (never
+        less than it may cost); a price not in tens up."""
+        kCar = 'Легковой автомобиль'
+        def row(period, hours, price=None, rest=None, car=kCar):
+            return {'TariffPeriod': period, 'TimeRange': hours, 'HourPrice': price, 'RestOfTheDayPrice': rest, 'VehicleTypeForThisTariff': car}
+        self.assertEqual(make_parklines.prices_of([]), (0, 0, 0, 0, 0, 0))
+        self.assertEqual(make_parklines.prices_of([row('будни', 'круглосуточно', 40), row('выходные дни', 'круглосуточно', 0)]), (4, 4, 4, 0, 0, 0))
+        self.assertEqual(make_parklines.prices_of([row('будни', '00:00-08:00', 60), row('будни', '08:00-21:00', 80), row('будни', '21:00-23:59', 70),
+                                                   row('выходные дни', '00:00-08:00', 10), row('выходные дни', '08:00-21:00', 20), row('выходные дни', '21:00-23:59', 30)]),
+                         (6, 8, 7, 1, 2, 3))
+        self.assertEqual(make_parklines.prices_of([row('будни', '08:00-21:00', None, 150)]), (0, 15, 0, 0, 0, 0))
+        self.assertEqual(make_parklines.prices_of([row('будни', '08:00-21:00', 380), row('будни', '08:00-21:00', 450), row('будни', '08:00-21:00', 200)]), (0, 45, 0, 0, 0, 0))
+        self.assertEqual(make_parklines.prices_of([row('будни', '08:00-21:00', 41)]), (0, 5, 0, 0, 0, 0))
+        self.assertEqual(make_parklines.prices_of([row('будни', '08:00-21:00', 9999)]), (0, 255, 0, 0, 0, 0))
+        self.assertEqual(make_parklines.prices_of([row('будни', '08:00-21:00', None, None)]), (0, 0, 0, 0, 0, 0))
+        self.assertEqual(make_parklines.prices_of([row('будни', 'круглосуточно', 600, None, 'Мотоцикл'), row('праздничные дни', 'круглосуточно', 900)]), (0, 0, 0, 0, 0, 0))
+
+    def test_parklines_file(self):
+        """The test feed: a line of two points, of three, one with an empty piece beside a real one; the bytes as layers.cpp reads them."""
+        with open(os.path.join(HERE, 'parklines.json'), encoding='utf-8') as f:
+            features = json.load(f)
+        segs = make_parklines.segments_of(features)
+        self.assertEqual(segs, [(53000500, 50001000, 0, 1000, 4, 4, 4, 0, 0, 0),
+                                (53001000, 50011000, 0, 1000, 20, 38, 20, 0, 45, 0),
+                                (53001000, 50012000, 200, 500, 20, 38, 20, 0, 45, 0),
+                                (53010500, 50001000, 0, 1000, 0, 15, 0, 0, 0, 0)])
+        out = os.path.join(self.tmp, 'parking.lay')
+        make_parklines.write(segs, out)
+        d = read(out)
+        self.assertEqual(struct.unpack_from(make_layers.HEADER, d, 0), (b'OSMP', 1, 3, 4))   # (the two east pieces in one cell)
+        cells = [struct.unpack_from('<II', d, 16 + i * 8) for i in range(3)]
+        self.assertEqual(cells, [((14300 << 16) | 23000, 0), ((14300 << 16) | 23001, 1), ((14301 << 16) | 23000, 3)])
+        at = 16 + 3 * 8
+        self.assertEqual(len(d), at + 4 * 20)
+        self.assertEqual(struct.unpack_from('<iihh6B2x', d, at), segs[0])
+
+    def test_parklines_cell_by_the_middle(self):
+        """A piece goes to the cell of its middle: cell_of of the point half way, whichever way it runs."""
+        self.assertEqual(make_parklines.cell_key((53009000, 50000000, 2000, 0)), make_layers.cell_of(53010000, 50000000))
+        self.assertEqual(make_parklines.cell_key((53000000, 50000000, 0, 2000)), make_layers.cell_of(53000000, 50001000))
+        self.assertEqual(make_parklines.cell_key((53010000, 50001000, -2000, -2000)), make_layers.cell_of(53009000, 50000000))
+
+    def test_parklines_download(self):
+        """All the feed's pages, up to an empty one; a page again (the server's end) stops it, each once."""
+        pages = {0: [{'id': 1}, {'id': 2}], 2: [{'id': 3}], 3: []}
+        self.assertEqual(make_parklines.download(lambda skip: pages[skip]), [{'id': 1}, {'id': 2}, {'id': 3}])
+        self.assertEqual(make_parklines.download(lambda skip: [{'id': 1}]), [{'id': 1}])
+
+    def test_parklines_portal(self):
+        """The key from .mosapi, a page by its offset, gzip or not; a failure never shows the url (the key is in it)."""
+        class Reply(io.BytesIO):
+            headers = {}
+
+        class Zipped(Reply):
+            headers = {'Content-Encoding': 'gzip'}
+
+        class Refused(OSError):
+            code = 403
+        asked = []
+
+        def portal(request, timeout):
+            asked.append((request, timeout))
+            return Zipped(gzip.compress(b'{"features": [{"id": 1}]}')) if len(asked) == 1 else Reply(b'{"features": []}')
+        pathlib.Path(self.tmp, '.mosapi').write_text('KEY\n', encoding='utf-8')
+        with mock.patch.object(make_parklines, 'HERE', os.path.join(self.tmp, 'offline')), mock.patch('urllib.request.urlopen', portal):
+            self.assertEqual(make_parklines.features_from(['make_parklines.py', 'out.lay']), [{'id': 1}])
+        request, timeout = asked[1]
+        self.assertTrue(request.full_url.startswith(make_parklines.kUrl))
+        self.assertEqual(parse_qs(urlsplit(request.full_url).query), {'$top': ['1000'], '$skip': ['1'], 'api_key': ['KEY']})
+        self.assertEqual((request.get_header('Accept-encoding'), timeout), ('gzip', 300))
+        with mock.patch('urllib.request.urlopen', side_effect=Refused), self.assertRaises(SystemExit) as failed:
+            make_parklines.mos_page('KEY')(7)
+        self.assertEqual(str(failed.exception), 'data.mos.ru: Refused 403 at 7')
+
+    def test_parklines_command(self):
+        """On a copy of the feed: the tool's arguments confused must not write over the test's source."""
+        script = os.path.join(HERE, '..', 'make_parklines.py')
+        src, out = os.path.join(self.tmp, 'feed.json'), os.path.join(self.tmp, 'cmd.lay')
+        shutil.copy(os.path.join(HERE, 'parklines.json'), src)
+        self.assertEqual(subprocess.run([sys.executable, script, out, src], stdout=subprocess.DEVNULL).returncode, 0)
+        self.assertEqual(struct.unpack_from(make_layers.HEADER, read(out), 0)[3], 4)
+        self.assertNotEqual(subprocess.run([sys.executable, script], stderr=subprocess.DEVNULL).returncode, 0)
+        # without a feed it goes to the portal: here a copy of the tool with no .mosapi above it
+        tool = os.path.join(self.tmp, 'tool')
+        os.mkdir(tool)
+        shutil.copy(script, tool)
+        run = subprocess.run([sys.executable, os.path.join(tool, 'make_parklines.py'), out], capture_output=True, text=True,
+                             env=dict(os.environ, PYTHONPATH=os.path.dirname(script)))
+        self.assertIn('FileNotFoundError', run.stderr)
+
+    def test_layers_command(self):
+        """The line make_region's steps and test_offline.bat run."""
+        script = os.path.join(HERE, '..', 'make_layers.py')
+        osm, out = os.path.join(HERE, 'layers.osm'), os.path.join(self.tmp, 'cmd.lay')
+        self.assertEqual(subprocess.run([sys.executable, script, osm, out]).returncode, 0)
+        self.assertEqual(sum(len(c) for c in self.layers(out).values()), 7)
+        self.assertNotEqual(subprocess.run([sys.executable, script, osm], stderr=subprocess.DEVNULL).returncode, 0)
 
     def test_graph_barriers(self):
         """The barriers on roads (the user 2026-10-29: a route through a hospital's grounds, closed by gates): a gate
@@ -713,8 +903,9 @@ class Tools(unittest.TestCase):
         out = os.path.join(self.tmp, 'search.idx')
         make_search.build(TINY, out)
         h = struct.unpack_from(make_search.HEADER, read(out), 0)
-        self.assertEqual(h[2:6], (1, 10, 2, 1))       # places, streets (the ring has no name; Островная too:
-                                                      # only the graph leaves it out), houses, places to go
+        self.assertEqual(h[2:6], (1, 12, 2, 1))       # places, streets (the ring has no name; Островная too:
+                                                      # only the graph leaves it out; Западный, Дальняя),
+                                                      # houses, places to go
         self.assertEqual(make_search.norm('Улица 22-го Партсъезда, ё'), 'улица 22 го партсъезда е')
 
     def test_search_building_address(self):

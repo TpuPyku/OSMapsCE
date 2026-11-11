@@ -23,6 +23,7 @@ import urllib.request
 import osmium
 
 import make_graph
+import make_layers
 import make_search
 import make_tiles
 
@@ -54,6 +55,8 @@ COUNTRIES = {n: GEOFABRIK % (part + '/' + n) for part, names in (
     ('asia', ('kazakhstan', 'uzbekistan', 'kyrgyzstan', 'tajikistan', 'turkmenistan', 'azerbaijan', 'armenia')))
     for n in names}
 UA = {'User-Agent': 'OSMapsCE-make_region (+https://github.com/TpuPyku/OSMapsCE)'}
+# Moscow's paid street parking, kept in the repo (make_parklines.py: data.mos.ru, its key not needed here)
+PARKING = {'moscow_oblast': os.path.join(HERE, 'data', 'moscow_parking.lay')}
 
 
 def get(url):
@@ -182,7 +185,7 @@ def build(name, url, work=WORK, data=DATA, run=subprocess.check_call):
     os.makedirs(out, exist_ok=True)
     urls = [url] if isinstance(url, str) else url
     pbf, parts, new = extract(name, urls, work)
-    steps = [(make_graph.build, 'route.grf'), (make_search.build, 'search.idx')]
+    steps = [(make_graph.build, 'route.grf'), (make_search.build, 'search.idx'), (make_layers.build, 'layers.lay')]
     tiles = tile_builder(work, run)
     if tiles:
         steps.append((tiles, 'tiles.vtp'))
@@ -191,6 +194,8 @@ def build(name, url, work=WORK, data=DATA, run=subprocess.check_call):
         if new or not os.path.exists(target):
             step(pbf, target + '.part')   # (a half-built file never takes the place of a good one)
             os.replace(target + '.part', target)
+    if name in PARKING:
+        shutil.copy2(PARKING[name], os.path.join(out, 'parking.lay'))
     day = time.strftime('%Y-%m-%d', time.gmtime(min(os.path.getmtime(p) for p in parts)))   # (the oldest part's)
     with open(os.path.join(out, 'region.txt'), 'w', encoding='utf-8') as f:
         f.write('name=%s\ndate=%s\nsource=%s\n' % (name, day, ' '.join(urls)))

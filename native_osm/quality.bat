@@ -3,7 +3,8 @@ rem The ub-mode checks (SKILL.md): the tests with coverage (OpenCppCoverage for 
 rem tools), crapper (CRAP < 10 per function), dryer (no duplicates ranked 0.8+); "mutate": mutator too (slow).
 rem   quality.bat offline [mutate]   offline.cpp, offsearch.cpp (+ offdata.cpp) and the region tools
 rem   quality.bat vtile [mutate]     vtile.cpp
-rem   quality.bat                    both
+rem   quality.bat voice [mutate]     voice.cpp (the voice prompts)
+rem   quality.bat                    all three
 rem The tools: VestaHome\tools (the sibling repo). Needs: pip install lizard coverage;
 rem OpenCppCoverage (winget install OpenCppCoverage.OpenCppCoverage). Exit code: the findings.
 setlocal
@@ -12,10 +13,11 @@ set TOOLS=..\..\VestaHome\tools
 set OCC=%ProgramFiles%\OpenCppCoverage\OpenCppCoverage.exe
 set BAD=0
 if "%1"=="vtile" goto vtile
+if "%1"=="voice" goto voice
 
 :offline
-set CPP=fling.cpp zoomanim.cpp trafshade.cpp offline.cpp offsearch.cpp offdata.cpp vpack.cpp offmaps.cpp lang.cpp
-set PY=..\offline\make_graph.py ..\offline\make_search.py ..\offline\make_region.py ..\offline\make_tiles.py ..\offline\pmextract.py ^
+set CPP=fling.cpp zoomanim.cpp trafshade.cpp layers.cpp offline.cpp offsearch.cpp offdata.cpp vpack.cpp offmaps.cpp lang.cpp
+set PY=..\offline\make_layers.py ..\offline\make_parklines.py ..\offline\make_graph.py ..\offline\make_search.py ..\offline\make_region.py ..\offline\make_tiles.py ..\offline\pmextract.py ^
   ..\offline\release_regions.py ..\offline\maps_app.py ..\offline\make_outlines.py
 set COVER=1
 call .\test_offline.bat >obj\test_offline.log 2>&1 || (type obj\test_offline.log & echo === the offline tests fail & exit /b 1)
@@ -57,4 +59,24 @@ if "%2"=="mutate" (
   set /a BAD=%BAD%+%errorlevel%
 )
 call .\test_vtile.bat build >nul
+if "%1"=="vtile" exit /b %BAD%
+
+:voice
+set COVER=1
+call .\test_voice.bat >obj\test_voice.log 2>&1 || (type obj\test_voice.log & echo === the voice tests fail & exit /b 1)
+set COVER=
+"%OCC%" --quiet --sources "%CD%\voice.cpp" --export_type cobertura:obj\voice\cov.xml -- obj\voice\test_voice.exe >nul
+echo === crapper: voice
+python %TOOLS%\crapper.py --cobertura obj\voice\cov.xml voice.cpp
+set /a BAD=%BAD%+%errorlevel%
+echo === dryer: voice
+python %TOOLS%\dryer.py voice.cpp say.cpp
+set /a BAD=%BAD%+%errorlevel%
+if "%2"=="mutate" (
+  echo === mutator: voice
+  python %TOOLS%\mutator.py --build ".\test_voice.bat build" --test "obj\voice\test_voice.exe" ^
+    --cobertura obj\voice\cov.xml --max 120 voice.cpp
+  set /a BAD=%BAD%+%errorlevel%
+)
+call .\test_voice.bat build >nul
 exit /b %BAD%

@@ -2,6 +2,7 @@
 #include "fling.h"
 #include "zoomanim.h"
 #include "trafshade.h"
+#include "layers.h"
 #include "vkeys.h"     // VestaCore: the keyboard's text and cursor (VestaHome's)
 #include "vfavs.h"     // VestaCore: the favourite places (VestaHome reads them too)
 #include "vversion.h"   // VestaCore: the version "major.minor.YYMMDD" (the date: this file's build)
@@ -135,6 +136,9 @@ static HWND       s_taskbar;
 static HBITMAP    s_back;
 static Image      s_backImg;            // s_back as a 16bpp DIB: the night filter edits its pixels
 static unsigned short* s_backBits;
+static HBITMAP    s_strip;              // a 32-bit screen (the unit): kStripH rows of the frame in its format (OutFrame)
+static unsigned long* s_stripBits;
+enum { kStripH = 48 };
 static unsigned short* s_nightLut;      // RGB565 -> night color, only while night is on
 static int        s_cw, s_ch;
 static Image      s_bg;
@@ -190,7 +194,8 @@ static DWORD      s_freeTick;           // the third person's view moved by hand
 static const DWORD kFreeMs = 5000;      // then back to the car (the user 2026-10-29)
 
 static GpsState   s_gps;               // as shown: the car driving on by the prediction (GlideApply)
-static GpsState   s_fix;               // the last fix as it came
+static GpsState   s_raw;               // the last fix as it came (what the route's progress goes by)
+static GpsState   s_fix;               // the same as shown: on the route's line when near it (RouteMagnet)
 static double     s_showLon, s_showLat, s_showCourse;   // the car shown
 static DWORD      s_showTick;          // its last step (0: none - put on the fix)
 static DWORD      s_paintMs;           // the last frame's drawing (the glide's frames: not more than the CPU allows)
@@ -271,7 +276,8 @@ enum { S_MAPS, S_ROUTE, S_CACHE_PREV, S_CACHE_NEXT, S_LOG_PREV, S_LOG_NEXT, S_GP
        S_INFO, S_LANG_PREV, S_LANG_NEXT, S_EXIT, S_BACK, S_PAGE_END,
        S_PORT_PREV = S_PAGE_END, S_PORT_NEXT, S_BAUD_PREV, S_BAUD_NEXT, S_SCAN, S_GPS_DONE, S_GPS_END,
        S_INFO_DONE = S_GPS_END, S_INFO_END,
-       S_JUNC_PREV = S_INFO_END, S_JUNC_NEXT, S_TOLL_PREV, S_TOLL_NEXT, S_ROUTE_DONE, S_ROUTE_END,
+       S_JUNC_PREV = S_INFO_END, S_JUNC_NEXT, S_TOLL_PREV, S_TOLL_NEXT, S_VOICE_PREV, S_VOICE_NEXT, S_ROUTE_DONE,
+       S_ROUTE_END,
        S_EXIT_YES = S_ROUTE_END, S_EXIT_NO, S_COUNT };
 enum { SHEET_NONE, SHEET_GPS, SHEET_INFO, SHEET_ROUTE, SHEET_EXIT };
 enum { kSetRow0 = 76, kSetRowH = 50, kMainRowH = 46, kSheetY = 200 };
@@ -290,8 +296,9 @@ static const RECT kSetCtl[S_COUNT] = {
     { 416, 416, 592, 468 },                            // ... find GPS
     { 600, 416, 784, 468 },                            // ... done
     { 600, 416, 784, 468 },                            // the requests' sheet: done
-    { 512, 259, 560, 303 }, { 712, 259, 760, 303 },   // the route's sheet: the junction card, the tolls
+    { 512, 259, 560, 303 }, { 712, 259, 760, 303 },   // the route's sheet: the junction card, the tolls, the voice
     { 512, 309, 560, 353 }, { 712, 309, 760, 353 },
+    { 512, 359, 560, 403 }, { 712, 359, 760, 403 },
     { 600, 416, 784, 468 },                            // ... done
     { 600, 416, 784, 468 }, { 416, 416, 592, 468 },   // the exit's sheet: exit, cancel (a tap beside it too)
 };
@@ -302,12 +309,15 @@ static int s_setSheet;   // SHEET_*
 // 2026-10-29: the graphs for the routes and the search without the internet) - the release's catalog by its titles,
 // kMapsRows a page, a row's button downloads it (the trunk roads after the first one), "ОТМЕНА" while it goes;
 // "ЗАГРУЗИТЬ" and "ОК" (the same again) asked "ТОЧНО?"
-enum { M_KIND_PREV, M_KIND_NEXT, M_DETAIL_PREV, M_DETAIL_NEXT, M_TRF_PREV, M_TRF_NEXT, M_REGIONS, M_BACK, M_COUNT };
+enum { M_KIND_PREV, M_KIND_NEXT, M_DETAIL_PREV, M_DETAIL_NEXT, M_TRF_PREV, M_TRF_NEXT, M_SIGNAL_PREV, M_SIGNAL_NEXT, M_BUMP_PREV,
+       M_BUMP_NEXT, M_REGIONS, M_BACK, M_COUNT };
 static const RECT kMapsCtl[M_COUNT] = {
     { 512, 79, 560, 123 }, { 712, 79, 760, 123 },     // the steppers: the kind, the detail
     { 512, 129, 560, 173 }, { 712, 129, 760, 173 },
     { 512, 179, 560, 223 }, { 712, 179, 760, 223 },   // the traffic: on the map / on the route alone
-    { 576, 229, 760, 273 },                            // the regions' page
+    { 512, 229, 560, 273 }, { 712, 229, 760, 273 },   // the layers of a downloaded region: traffic lights, speed bumps
+    { 512, 279, 560, 323 }, { 712, 279, 760, 323 },
+    { 576, 329, 760, 373 },                            // the regions' page
     { 8, 412, 80, 480 },                               // back to the settings
 };
 enum { kMapsRows = 6 };
@@ -343,6 +353,9 @@ static double ViewAngle()
 static void GpsTake()
 {
     GpsGet(&s_fix);
+    s_raw = s_fix;
+    if (s_fix.valid)
+        RouteMagnet(&s_fix.lon, &s_fix.lat, s_fix.speedKmh, &s_fix.course);
     s_gps = s_fix;
     if (s_gps.valid) {   // (saved with the view, each 5 minutes: StartFrom)
         g_cfg.lastLon = s_gps.lon;
@@ -994,6 +1007,8 @@ static void OnSettingsCtl(int id)
     case S_JUNC_NEXT:  g_cfg.junction = !g_cfg.junction; ConfigSave(); break;
     case S_TOLL_PREV:
     case S_TOLL_NEXT:  g_cfg.noToll = !g_cfg.noToll; ConfigSave(); break;
+    case S_VOICE_PREV:
+    case S_VOICE_NEXT: g_cfg.voice = !g_cfg.voice; ConfigSave(); break;
     case S_ROUTE:      s_setSheet = SHEET_ROUTE; break;
     case S_LOG_PREV:
     case S_LOG_NEXT:   g_cfg.log = !g_cfg.log; LogEnable(g_cfg.log != 0); ConfigSave(); break;
@@ -1076,6 +1091,10 @@ static void OnMapsCtl(int id)
         ConfigSave();
         Ensure(REQ_AUTO);   // (the route alone, none: no requests)
         break;
+    case M_SIGNAL_PREV:
+    case M_SIGNAL_NEXT: g_cfg.layerSignals = !g_cfg.layerSignals; ConfigSave(); break;
+    case M_BUMP_PREV:
+    case M_BUMP_NEXT:   g_cfg.layerBumps = !g_cfg.layerBumps; ConfigSave(); break;
     case M_BACK:        s_maps = false; break;
     case M_REGIONS:
         s_regions = true;
@@ -1317,7 +1336,7 @@ static void OnButton(int b)
         NightShare(g_cfg.night != 0);   // VestaHome follows (VestaCore vnight)
         return;
     case B_EXIT:   DestroyWindow(s_wnd); return;
-    case B_TRF:    g_cfg.traffic = !g_cfg.traffic; break;
+    case B_TRF:    OverlayNext(&g_cfg.traffic, &g_cfg.parking); break;
     case B_TSRC:   g_cfg.trafficSrc = (g_cfg.trafficSrc + 1) % TRF_COUNT; s_limitHit = false; break;
     case B_GPS:    NextFollowMode(); break;
     case B_LEFT:   PanBy(-g_cfg.mapW / 3.0, 0); break;
@@ -1558,19 +1577,31 @@ static void Blit(HDC dc, const Image* im, int x, int y)
     DeleteDC(src);
 }
 
+struct TextArg { HFONT font; COLORREF color; const wchar_t* s; int w, h; UINT align; };
+
+static void TextPaint(HDC dc, int x, int y, void* arg)
+{
+    const TextArg* a = (const TextArg*)arg;
+    RECT rc = { x, y, x + a->w, y + a->h };
+    SelectObject(dc, a->font);
+    SetTextColor(dc, a->color);
+    DrawText(dc, a->s, -1, &rc, a->align | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+}
+
 static void Text(HDC dc, HFONT font, COLORREF color, int l, int t, int r, int b, UINT align, const wchar_t* s)
 {
     s = Tr(s);
-    RECT rc = { l, t, r, b };
-    SelectObject(dc, font);
-    SetTextColor(dc, color);
     wchar_t ye[256];
     if (g_noYo && wcslen(s) < 256) {
         wcscpy(ye, s);
         NoYo(ye);
         s = ye;
     }
-    DrawText(dc, s, -1, &rc, align | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+    SelectObject(dc, font);   // (the dc as this always left it: some drawing goes on with its font and colour)
+    SetTextColor(dc, color);
+    TextArg a = { font, color, s, r - l, b - t, align };
+    StampKey key = { s, (int)wcslen(s), (int)(INT_PTR)font, (int)color, (r - l) << 16 | (b - t), (int)align };
+    StampDraw(dc, key, l, t, r - l, b - t, TextPaint, &a, 0, 0);
 }
 
 // ---- see-through bars and tiles, drawn straight into the frame's pixels (s_backBits)
@@ -2682,18 +2713,25 @@ static void DrawPin(HDC dc, int x, int y)
 }
 
 // A round marker with a letter or a digit (the start, the stops).
-static void RouteMarker(HDC dc, int x, int y, COLORREF fill, const wchar_t* t)
+// A filled shape with a white edge and white text in it (t may be NULL). round: the corners' size
+static void Badge(HDC dc, HFONT font, COLORREF fill, int edge, const RECT& r, int round, const wchar_t* t)
 {
-    HPEN pen = CreatePen(PS_SOLID, 3, RGB(255, 255, 255));
+    HPEN pen = CreatePen(PS_SOLID, edge, RGB(255, 255, 255));
     HBRUSH br = CreateSolidBrush(fill);
     HGDIOBJ op = SelectObject(dc, pen), ob = SelectObject(dc, br);
-    Ellipse(dc, x - 13, y - 13, x + 14, y + 14);
+    RoundRect(dc, r.left, r.top, r.right, r.bottom, round, round);
     SelectObject(dc, ob);
     SelectObject(dc, op);
     DeleteObject(br);
     DeleteObject(pen);
     if (t)
-        Text(dc, s_fontCap, RGB(255, 255, 255), x - 13, y - 13, x + 14, y + 14, DT_CENTER, t);
+        Text(dc, font, RGB(255, 255, 255), r.left, r.top, r.right, r.bottom, DT_CENTER, t);
+}
+
+static void RouteMarker(HDC dc, int x, int y, COLORREF fill, const wchar_t* t)
+{
+    RECT r = { x - 13, y - 13, x + 14, y + 14 };
+    Badge(dc, s_fontCap, fill, 3, r, 27, t);
 }
 
 // Where the line starts (the user 2026-11-03: a long tail stayed behind the car): the car shown - a fix late - on
@@ -2955,6 +2993,231 @@ static void DrawFavMarks(HDC dc, double cx, double cy, double vx, double vy, dou
     }
 }
 
+// ---- the layers of a downloaded region (layers.h): traffic lights, speed bumps, car parks
+
+enum { kParkPriceZ = 16, kParkPriceMinPx = 48, kParkCullPx = 480 };
+enum { kLayerZ = 15, kParkingZ = 14, kLayerViewPx = 900, kLayerCarDeg = 4000, kWarnKmh = 15, kWarnMinM = 100, kWarnSec = 10 };
+static const LayerPoint* s_layer;
+static int s_layerN, s_layerParks, s_parkLines;
+static const COLORREF kParkPaid = RGB(205, 60, 50), kParkFree = RGB(40, 150, 75);
+
+// What is wanted of the region now: the view's points when they are shown; else, for the warning, those around the car
+static bool LayerBox(int* box, double vx, double vy)
+{
+    bool shown = (g_cfg.parking && !g_cfg.traffic && g_cfg.z >= kParkingZ) || ((g_cfg.layerSignals || g_cfg.layerBumps) && g_cfg.z >= kLayerZ);
+    if (shown) {
+        double lon0, lat0, lon1, lat1;
+        WorldToGeo(vx - kLayerViewPx, vy - kLayerViewPx, g_cfg.z, &lon0, &lat1);
+        WorldToGeo(vx + kLayerViewPx, vy + kLayerViewPx, g_cfg.z, &lon1, &lat0);
+        box[0] = (int)(lat0 * 1e6);
+        box[1] = (int)(lon0 * 1e6);
+        box[2] = (int)(lat1 * 1e6);
+        box[3] = (int)(lon1 * 1e6);
+        return true;
+    }
+    if (!g_cfg.layerBumps || !s_gps.valid)
+        return false;
+    int lat = (int)(s_gps.lat * 1e6), lon = (int)(s_gps.lon * 1e6);
+    box[0] = lat - kLayerCarDeg;
+    box[1] = lon - kLayerCarDeg;
+    box[2] = lat + kLayerCarDeg;
+    box[3] = lon + kLayerCarDeg;
+    return true;
+}
+
+static void SignalMark(HDC dc, int x, int y)   // a dark box of three lights
+{
+    static const COLORREF kLights[3] = { RGB(230, 60, 50), RGB(245, 190, 40), RGB(60, 190, 90) };
+    HBRUSH box = CreateSolidBrush(RGB(30, 34, 40));
+    HGDIOBJ ob = SelectObject(dc, box), op = SelectObject(dc, GetStockObject(WHITE_PEN));
+    RoundRect(dc, x - 6, y - 12, x + 7, y + 13, 5, 5);
+    SelectObject(dc, GetStockObject(NULL_PEN));
+    for (int i = 0; i < 3; i++) {
+        HBRUSH b = CreateSolidBrush(kLights[i]);
+        SelectObject(dc, b);
+        Ellipse(dc, x - 3, y - 10 + i * 7, x + 5, y - 2 + i * 7);
+        SelectObject(dc, box);
+        DeleteObject(b);
+    }
+    SelectObject(dc, op);
+    SelectObject(dc, ob);
+    DeleteObject(box);
+}
+
+static void BumpSign(HDC dc, int x, int y)   // the road sign's look: a warning triangle with the bump in it
+{
+    POINT tri[3] = { { x, y - 12 }, { x + 13, y + 10 }, { x - 13, y + 10 } };
+    POINT hump[5] = { { x - 7, y + 7 }, { x - 3, y + 1 }, { x + 3, y + 1 }, { x + 7, y + 7 }, { x - 7, y + 7 } };
+    HBRUSH y1 = CreateSolidBrush(RGB(250, 205, 50)), ink = CreateSolidBrush(RGB(25, 25, 25));
+    HPEN pen = CreatePen(PS_SOLID, 2, RGB(190, 40, 40));
+    HGDIOBJ ob = SelectObject(dc, y1), op = SelectObject(dc, pen);
+    Polygon(dc, tri, 3);
+    SelectObject(dc, ink);
+    SelectObject(dc, GetStockObject(NULL_PEN));
+    Polygon(dc, hump, 5);
+    SelectObject(dc, op);
+    SelectObject(dc, ob);
+    DeleteObject(pen);
+    DeleteObject(ink);
+    DeleteObject(y1);
+}
+
+static void ParkingMark(HDC dc, int x, int y, int fee)   // red paid, green free, grey: not told (never as free: a fine)
+{
+    COLORREF c = fee == FEE_PAID ? kParkPaid : fee == FEE_FREE ? kParkFree : RGB(110, 120, 130);
+    HBRUSH b = CreateSolidBrush(c);
+    HGDIOBJ ob = SelectObject(dc, b), op = SelectObject(dc, GetStockObject(WHITE_PEN));
+    RoundRect(dc, x - 11, y - 11, x + 12, y + 12, 7, 7);
+    SelectObject(dc, op);
+    SelectObject(dc, ob);
+    DeleteObject(b);
+    FavSign(dc, VFAV_PARKING, x, y, 8, RGB(255, 255, 255), c);
+}
+
+static void LayerMark(HDC dc, const LayerPoint& p, int x, int y)
+{
+    if (p.kind == LAY_PARKING)
+        ParkingMark(dc, x, y, p.fee);
+    else if (p.kind == LAY_BUMP)
+        BumpSign(dc, x, y);
+    else
+        SignalMark(dc, x, y);
+}
+
+static bool LayerShown(const LayerPoint& p)
+{
+    if (p.kind == LAY_PARKING)
+        return g_cfg.parking && !g_cfg.traffic && g_cfg.z >= kParkingZ;
+    return (p.kind == LAY_BUMP ? g_cfg.layerBumps : g_cfg.layerSignals) && g_cfg.z >= kLayerZ;
+}
+
+static void ParkPriceTag(HDC dc, int x, int y, int rub)
+{
+    wchar_t s[8];
+    _snwprintf(s, 8, L"%d", rub);
+    s[7] = 0;
+    RECT r = { x - 17, y - 9, x + 18, y + 10 };
+    Badge(dc, s_fontTiny, kParkPaid, 1, r, 6, s);
+}
+
+// The world around the box's middle is linear enough (under a pixel over the box), and the unit has no FPU: no logarithm a piece
+struct ParkView {
+    int lat0, lon0;
+    double gx0, gy0, kx, ky, rc, rs, cx, cy;
+    const Tilt* tilt;
+};
+
+static void ParkViewOf(ParkView* v, const int* box, double cx, double cy, double vx, double vy, double angle)
+{
+    double gx1, gy1, ra = angle * M_PI / 180.0;
+    v->lat0 = box[0] / 2 + box[2] / 2;
+    v->lon0 = box[1] / 2 + box[3] / 2;
+    GeoToWorld(v->lon0 * 1e-6, v->lat0 * 1e-6, g_cfg.z, &v->gx0, &v->gy0);
+    GeoToWorld(v->lon0 * 1e-6 + 0.01, v->lat0 * 1e-6 + 0.01, g_cfg.z, &gx1, &gy1);
+    v->kx = (gx1 - v->gx0) * 1e-4;
+    v->ky = (gy1 - v->gy0) * 1e-4;
+    v->gx0 -= vx;
+    v->gy0 -= vy;
+    v->rc = cos(ra);
+    v->rs = sin(ra);
+    v->cx = cx;
+    v->cy = cy;
+    v->tilt = ViewTilt();
+}
+
+static void ParkEnd(const ParkView& v, int lat, int lon, double* x, double* y)
+{
+    double dx = v.gx0 + (lon - v.lon0) * v.kx, dy = v.gy0 + (lat - v.lat0) * v.ky;
+    *x = dx * v.rc + dy * v.rs;
+    *y = -dx * v.rs + dy * v.rc;
+}
+
+// One piece on the screen: false - not to be seen
+static bool ParkPiece(const ParkView& v, const ParkLine& l, POINT* seg)
+{
+    double ax, ay, bx, by;
+    ParkEnd(v, l.lat, l.lon, &ax, &ay);
+    ParkEnd(v, l.lat + l.dLat, l.lon + l.dLon, &bx, &by);
+    if (!v.tilt && ((ax < -kParkCullPx && bx < -kParkCullPx) || (ax > kParkCullPx && bx > kParkCullPx) ||
+                   (ay < -kParkCullPx && by < -kParkCullPx) || (ay > kParkCullPx && by > kParkCullPx)))
+        return false;
+    bool cut;
+    if (!LiftSeg(v.tilt, &ax, &ay, &bx, &by, &cut))
+        return false;
+    seg[0].x = Round(ax + v.cx);
+    seg[0].y = Round(ay + v.cy);
+    seg[1].x = Round(bx + v.cx);
+    seg[1].y = Round(by + v.cy);
+    return true;
+}
+
+// Moscow's paid street parking (the user 2026-11-07: lines): by what it costs now, red or green; its price from z16
+static void DrawParkLines(HDC dc, const int* box, double cx, double cy, double vx, double vy, double angle)
+{
+    const ParkLine* l = ParkLinesIn(box, &s_parkLines);
+    if (!s_parkLines)
+        return;
+    ParkView v;
+    ParkViewOf(&v, box, cx, cy, vx, vy, angle);
+    SYSTEMTIME now;
+    GetLocalTime(&now);
+    HPEN paid = CreatePen(PS_SOLID, 4, kParkPaid), none = CreatePen(PS_SOLID, 4, kParkFree);
+    HGDIOBJ op = SelectObject(dc, paid);
+    for (int i = 0; i < s_parkLines; i++) {
+        POINT seg[2];
+        if (!ParkPiece(v, l[i], seg))
+            continue;
+        int rub = ParkPrice(l[i], now.wDayOfWeek, now.wHour);
+        SelectObject(dc, rub ? paid : none);
+        Polyline(dc, seg, 2);
+        if (rub && g_cfg.z >= kParkPriceZ && abs(seg[1].x - seg[0].x) + abs(seg[1].y - seg[0].y) >= kParkPriceMinPx) {
+            ParkPriceTag(dc, (seg[0].x + seg[1].x) / 2, (seg[0].y + seg[1].y) / 2, rub);
+            SelectObject(dc, paid);
+        }
+    }
+    SelectObject(dc, op);
+    DeleteObject(paid);
+    DeleteObject(none);
+}
+
+static void DrawLayers(HDC dc, double cx, double cy, double vx, double vy, double angle)
+{
+    int box[4];
+    s_layerN = s_layerParks = s_parkLines = 0;
+    if (!LayerBox(box, vx, vy))
+        return;
+    if (g_cfg.parking && !g_cfg.traffic && g_cfg.z >= kLayerZ)
+        DrawParkLines(dc, box, cx, cy, vx, vy, angle);
+    s_layer = LayersIn(box, &s_layerN);
+    for (int i = 0; i < s_layerN; i++) {
+        const LayerPoint& p = s_layer[i];
+        s_layerParks += p.kind == LAY_PARKING;
+        double gx, gy, sx, sy;
+        if (!LayerShown(p))
+            continue;
+        GeoToWorld(p.lon * 1e-6, p.lat * 1e-6, g_cfg.z, &gx, &gy);
+        if (ScreenOf(gx, gy, vx, vy, cx, cy, angle, &sx, &sy) && (!s_dockShown || sy + 16 <= kDockY + s_dockOff))
+            LayerMark(dc, p, Round(sx), Round(sy));
+    }
+}
+
+// A speed bump on the way ahead (the user 2026-11-06: with a warning): at 10 s of the speed, at least 100 m
+static void DrawBumpWarning(HDC dc)
+{
+    double m = s_gps.speedKmh / 3.6 * kWarnSec;
+    int d;
+    if (!g_cfg.layerBumps || !s_gps.valid || s_gps.speedKmh < kWarnKmh ||
+        !LayerAhead(s_layer, s_layerN, LAY_BUMP, (int)(s_gps.lat * 1e6), (int)(s_gps.lon * 1e6), s_gps.course, m > kWarnMinM ? (int)m : kWarnMinM, &d))
+        return;
+    RECT r = { 470, 56, 712, 104 };
+    Card(dc, r, 16);
+    BumpSign(dc, r.left + 26, r.top + 24);
+    wchar_t s[48];
+    _snwprintf(s, 48, Tr(L"Неровность · %d м"), d);
+    s[47] = 0;
+    Text(dc, s_fontLabel, kText, r.left + 46, r.top, r.right - 8, r.bottom, DT_LEFT, s);
+}
+
 static int FavAt(int x, int y)   // the mark under the finger (the nearest within 26 px), -1: none
 {
     int best = -1, bd = 26 * 26;
@@ -3100,6 +3363,7 @@ static void DrawMap(HDC dc)
     }
     PartLap(PT_LABELS);
     DrawAttribution(dc, mr);
+    DrawLayers(dc, cx, cy, vx, vy, angle);
     DrawRoute(dc, cx, cy, vx, vy, angle);
     DrawFavMarks(dc, cx, cy, vx, vy, angle);
     ZoomKeep(dc, mr);
@@ -3230,8 +3494,9 @@ static void DrawSettings(HDC dc)
         _snwprintf(s, 160, Tr(L"векторная · детализация: авто (%s)"), Tr(kDetailLow[VTileDetail()]));
     MainRow(dc, 0, L"Карта", s, true);
     DrawCtl(dc, kSetCtl[S_MAPS], s_setPressed == S_MAPS, s_fontLabel, L"КАРТЫ");
-    _snwprintf(s, 160, Tr(L"схема развязки: %s · платные: %s"), g_cfg.junction ? Tr(L"вкл") : Tr(L"выкл"),
-               g_cfg.noToll ? Tr(L"объезжать") : Tr(L"можно"));
+    // (the voice's switch is in the route's sheet - no room for an eighth row here: its state said in this one)
+    _snwprintf(s, 160, Tr(L"голос: %s · развязка: %s · платные: %s"), g_cfg.voice ? Tr(L"вкл") : Tr(L"выкл"),
+               g_cfg.junction ? Tr(L"вкл") : Tr(L"выкл"), g_cfg.noToll ? Tr(L"объезжать") : Tr(L"можно"));
     MainRow(dc, 1, L"Маршрут", s, true);
     DrawCtl(dc, kSetCtl[S_ROUTE], s_setPressed == S_ROUTE, s_fontLabel, L"НАСТРОИТЬ");
     if (g_cfg.cacheKb >= 0)
@@ -3333,10 +3598,11 @@ static void DrawRouteSheet(HDC dc)
     Sheet(dc, L"Маршрут");
     SetRow(dc, kSetCtl[S_JUNC_PREV].top - 3, L"Схема развязки", L"перед съездом, развилкой, кольцом", true);
     Stepper(dc, S_JUNC_PREV, S_JUNC_NEXT, g_cfg.junction ? L"Вкл" : L"Выкл");
-    SetRow(dc, kSetCtl[S_TOLL_PREV].top - 3, L"Платные дороги", L"объезд — по картам на флешке", false);
+    // (the server's routes keep the tolls: said in the row - the voice took the note's place)
+    SetRow(dc, kSetCtl[S_TOLL_PREV].top - 3, L"Платные дороги", L"объезд — только по картам на флешке", true);
     Stepper(dc, S_TOLL_PREV, S_TOLL_NEXT, g_cfg.noToll ? L"Объезжать" : L"Можно");
-    Text(dc, s_fontSmall, kTextDim, 36, 362, s_cw - 36, 404, DT_LEFT,
-         L"Без карт области и магистралей маршрут строит сервер — он платные не исключает.");
+    SetRow(dc, kSetCtl[S_VOICE_PREV].top - 3, L"Голосовые подсказки", L"на языке программы", false);
+    Stepper(dc, S_VOICE_PREV, S_VOICE_NEXT, g_cfg.voice ? L"Вкл" : L"Выкл");
     DoneButton(dc, S_ROUTE_DONE);
 }
 
@@ -3472,7 +3738,11 @@ static void MapsLook(HDC dc)
                                                                    : L"на карте и на маршруте", true);
     StepperAt(dc, kMapsCtl[M_TRF_PREV], kMapsCtl[M_TRF_NEXT], s_mapsPressed - M_TRF_PREV,
               g_cfg.trafficRoute ? L"Маршрут" : L"Везде");
-    SetRow(dc, kSetRow0 + 3 * kSetRowH, L"Карты областей", L"маршрут и поиск без интернета", false);
+    SetRow(dc, kSetRow0 + 3 * kSetRowH, L"Светофоры", L"значки на карте, из скачанной области", true);
+    StepperAt(dc, kMapsCtl[M_SIGNAL_PREV], kMapsCtl[M_SIGNAL_NEXT], s_mapsPressed - M_SIGNAL_PREV, g_cfg.layerSignals ? L"Вкл" : L"Выкл");
+    SetRow(dc, kSetRow0 + 4 * kSetRowH, L"Неровности", L"значки и предупреждение в пути", true);
+    StepperAt(dc, kMapsCtl[M_BUMP_PREV], kMapsCtl[M_BUMP_NEXT], s_mapsPressed - M_BUMP_PREV, g_cfg.layerBumps ? L"Вкл" : L"Выкл");
+    SetRow(dc, kSetRow0 + 5 * kSetRowH, L"Карты областей", L"маршрут и поиск без интернета", false);
     DrawCtl(dc, kMapsCtl[M_REGIONS], s_mapsPressed == M_REGIONS, s_fontLabel, L"СКАЧАТЬ");
 }
 
@@ -3509,7 +3779,7 @@ static void DrawMaps(HDC dc)
     _snwprintf(s, 32, L"%02d:%02d", t.wHour, t.wMinute);
     Text(dc, s_fontClock, kText, s_cw - 160, 0, s_cw - 16, 56, DT_RIGHT, s);
     BackDisc(dc, s_mapsPressed == (s_regions ? R_BACK : M_BACK));
-    RECT panel = { 16, 64, s_cw - 16, s_regions ? 412 : 276 };
+    RECT panel = { 16, 64, s_cw - 16, s_regions ? 412 : 376 };
     Tile(dc, panel, kPanel, kPanel, 32);
     if (s_regions)
         DrawRegions(dc);
@@ -5225,6 +5495,8 @@ static void DrawStatus(HDC dc)
         bg = errBg;
     } else if (s_inflight) {
         wcscpy(s, L"Загрузка…");
+    } else if (g_cfg.parking && !g_cfg.traffic) {
+        wcscpy(s, g_cfg.z < kParkingZ ? L"Парковки · приблизьте карту" : s_parkLines ? L"Парковки · data.mos.ru" : s_layerParks ? L"Парковки" : L"Парковки · нет в этом месте");
     } else if (!g_cfg.traffic) {
         wcscpy(s, L"Пробки выкл.");
     } else if (!TrafficWanted()) {   // (on the route alone, no route)
@@ -5246,7 +5518,9 @@ static void DrawStatus(HDC dc)
 static void DrawSign(HDC dc, int b, const RECT& r, int pressed)
 {
     const Overlay* ov = s_btn[b].ov[ButtonState(b)][pressed];
-    if (ov)
+    if (b == B_TRF && g_cfg.parking && !g_cfg.traffic)
+        FavSign(dc, VFAV_PARKING, (r.left + r.right) / 2, (r.top + r.bottom) / 2, 13, pressed ? kInk : kOrange, kPanel);
+    else if (ov)
         BlendSign(dc, ov, (r.left + r.right - ov->w) / 2, (r.top + r.bottom - ov->h) / 2);
     else
         Text(dc, s_fontSmall, kText, r.left, r.top, r.right, r.bottom, DT_CENTER, s_btn[b].name[0] + 1);
@@ -5257,7 +5531,7 @@ static const wchar_t* DockCaption(int b)
 {
     switch (b) {
     case B_HOME:     return L"ДОМОЙ";
-    case B_TRF:      return L"ПРОБКИ";
+    case B_TRF:      return g_cfg.parking && !g_cfg.traffic ? L"ПАРКОВКИ" : L"ПРОБКИ";
     case B_TSRC:     return g_cfg.trafficSrc == TRF_2GIS ? L"2ГИС" : L"ЯНДЕКС";
     case B_NIGHT:    return g_cfg.night ? L"ДЕНЬ" : L"НОЧЬ";   // as VestaHome: what a tap turns on
     case B_SETTINGS: return L"НАСТРОЙКИ";
@@ -5310,12 +5584,34 @@ static void DrawButtons(HDC dc)
         // bold caption under it
         RECT ic = { r.left, r.top - 2, r.right, r.top + 42 };
         DrawSign(dc, i, ic, pressed);
-        bool on = i == B_TRF && g_cfg.traffic;
+        bool on = i == B_TRF && (g_cfg.traffic || g_cfg.parking);
         Text(dc, s_fontCap, pressed ? kInk : on ? kOrange : kTextDim, r.left, r.top + 39, r.right, r.bottom,
              DT_CENTER, DockCaption(i));
     }
 }
 
+
+// The frame to the screen. A 32-bit screen (the unit) with our 16-bit frame: GDI converted each pixel itself - 42 ms a
+// frame (paint: out; sheet 29 p. 25-26, no smoothness), so the rows are converted here (Rgb565To32) a strip at a time
+// into s_strip (150 KB, not a second frame) and copied as they are.
+static void OutFrame(HDC hdc, HDC dc)
+{
+    if (!s_strip || !s_backBits) {
+        BitBlt(hdc, 0, 0, s_cw, s_ch, dc, 0, 0, SRCCOPY);
+        return;
+    }
+    HDC sdc = CreateCompatibleDC(hdc);
+    HGDIOBJ old = SelectObject(sdc, s_strip);
+    int stride = BackStride();
+    for (int y0 = 0; y0 < s_ch; y0 += kStripH) {
+        int h = s_ch - y0 < kStripH ? s_ch - y0 : kStripH;
+        for (int y = 0; y < h; y++)   // (the frame's rows bottom-up, the strip's top-down)
+            Rgb565To32(s_backBits + (s_ch - 1 - y0 - y) * stride, s_stripBits + y * s_cw, s_cw);
+        BitBlt(hdc, 0, y0, s_cw, h, sdc, 0, 0, SRCCOPY);
+    }
+    SelectObject(sdc, old);
+    DeleteDC(sdc);
+}
 
 static void Paint(HDC hdc)
 {
@@ -5324,6 +5620,8 @@ static void Paint(HDC hdc)
     HGDIOBJ oldBmp = SelectObject(dc, s_back);
     HGDIOBJ oldFont = SelectObject(dc, s_fontSmall);
     SetBkMode(dc, TRANSPARENT);
+    if (s_backBits)   // (the frame's rows lie bottom-up)
+        StampTarget(dc, s_backBits + (s_ch - 1) * BackStride(), -BackStride(), s_cw, s_ch);
 
     if (s_bg.bmp) {
         Blit(dc, &s_bg, 0, 0);
@@ -5345,6 +5643,7 @@ static void Paint(HDC hdc)
         DrawStatus(dc);
         if (s_pickSlot < 0 && RouteAlts() < 2)   // (not over the alternatives' panel)
             DrawGuide(dc);
+        DrawBumpWarning(dc);
         AltFit();
         DrawTrip(dc);
         DrawButtons(dc);
@@ -5352,8 +5651,9 @@ static void Paint(HDC hdc)
     }
     PartLap(PT_UI);
 
-    BitBlt(hdc, 0, 0, s_cw, s_ch, dc, 0, 0, SRCCOPY);
+    OutFrame(hdc, dc);
     PartLap(PT_OUT);
+    StampTarget(NULL, NULL, 0, 0, 0);
     SelectObject(dc, oldFont);
     SelectObject(dc, oldBmp);
     DeleteDC(dc);
@@ -5405,6 +5705,9 @@ static void LogStat()
         ms.dwMemoryLoad, ms.dwAvailPhys / 1024, ms.dwAvailVirtual / 1024, CacheBytes() / 1024,
         s_statPaints, s_statPaintMax, s_statSlots,
         s_gps.bytes - s_statGpsBytes, s_gps.lines - s_statGpsLines, s_gps.badLines - s_statGpsBad);
+    int stHit, stMiss, stDirect;
+    StampStats(&stHit, &stMiss, &stDirect);
+    Log("stamps: %d KB; ready %d, new %d, by GDI %d", StampWords() * 2 / 1024, stHit, stMiss, stDirect);
     if (s_statPaints) {   // the frame's parts: the average and the longest, ms
         DWORD n = (DWORD)s_statPaints;
         Log("paint: avg/max ms - bg %lu/%lu, tiles %lu/%lu, frame %lu/%lu, names %lu/%lu, marks %lu/%lu, "
@@ -5448,15 +5751,36 @@ static void OnCreate(HWND hwnd)
         VFavsLoad(&s_favs, path);
     }
     s_wnd = hwnd;
+    SayInit(hwnd);
     RECT rc;
     GetClientRect(hwnd, &rc);
     s_cw = rc.right;
     s_ch = rc.bottom;
     s_backBits = ImageCreate(s_cw, s_ch, &s_backImg);
     s_back = s_backImg.bmp;
-    if (!s_back) {   // still works, just without the night filter
+    {
         HDC hdc = GetDC(hwnd);
-        s_back = CreateCompatibleBitmap(hdc, s_cw, s_ch);
+        if (!s_back)   // still works, just without the night filter
+            s_back = CreateCompatibleBitmap(hdc, s_cw, s_ch);
+        int bpp = GetDeviceCaps(hdc, BITSPIXEL) * GetDeviceCaps(hdc, PLANES);
+        if (s_backBits && bpp == 32) {   // (OutFrame)
+            BITMAPINFO bi;
+            memset(&bi, 0, sizeof(bi));
+            bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+            bi.bmiHeader.biWidth = s_cw;
+            bi.bmiHeader.biHeight = -kStripH;   // top-down
+            bi.bmiHeader.biPlanes = 1;
+            bi.bmiHeader.biBitCount = 32;
+            bi.bmiHeader.biCompression = BI_RGB;
+            void* bits = NULL;
+            s_strip = CreateDIBSection(hdc, &bi, DIB_RGB_COLORS, &bits, NULL, 0);
+            s_stripBits = (unsigned long*)bits;
+            if (!s_stripBits && s_strip) {
+                DeleteObject(s_strip);
+                s_strip = NULL;
+            }
+        }
+        Log("screen: %dx%d, %d bits a pixel%s", s_cw, s_ch, bpp, s_strip ? " - the frame converted by strips" : "");
         ReleaseDC(hwnd, hdc);
     }
 
@@ -5502,6 +5826,7 @@ static void OnCreate(HWND hwnd)
 
 static void OnDestroy(HWND hwnd)
 {
+    SayStop();
     KillTimer(hwnd, TIMER_TICK);
     KillTimer(hwnd, TIMER_GLIDE);
     KillTimer(hwnd, TIMER_USER);
@@ -5618,6 +5943,20 @@ static int VhReceive(const wchar_t* cmd)   // 2 = a button taken (VestaHome leav
         s_vh = NULL;
     }
     return 1;
+}
+
+// A voice prompt over the radio (say.cpp), as an external navigator asks it: the stock shell's window gets
+// WM_NAVIGATION_VOICE 0x101D (PROJECT.md, Ghidra); without the shell VestaHome asks the MCU ("voice", plugin-api.md).
+int VoiceChannel(bool on)
+{
+    HWND h = FindWindow(NULL, L"RadioCommWindow");
+    if (h) {
+        PostMessage(h, 0x101D, on ? 1 : 0, 0);
+        return 1;
+    }
+    if (!s_vh || !IsWindow(s_vh))
+        return 0;
+    return VhapSend(s_vh, s_wnd, L"voice\ton=%d", on ? 1 : 0) == 1 ? 2 : 0;
 }
 
 // The route's next manoeuvre to VestaHome (its top bar's chip), when it changes
@@ -5742,7 +6081,15 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         return 0;
     }
 
+    case MM_WOM_DONE:
+        SayDone();
+        return 0;
+
     case WM_TIMER:
+        if (wp == TIMER_VOICE) {
+            SayTimer();
+            return 0;
+        }
         if (wp == TIMER_GLIDE) {   // a frame between the fixes: the map on screen (following or not - the car moves on
             // it then), the CPU not taken over
             if (!MapHeld() && !s_settings && !s_search && !s_plan &&
@@ -5844,7 +6191,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         if (s_gps.valid) {
             if (RouteAlts() >= 2 && s_gps.speedKmh > 15)
                 RouteAltsDone();   // driving: the route chosen is the one on
-            RouteGps(s_gps.lon, s_gps.lat, s_gps.speedKmh, s_gps.course);
+            RouteGps(s_raw.lon, s_raw.lat, s_raw.speedKmh, s_raw.course);
+            SayTick((int)s_raw.speedKmh);
         }
         if (!MapHeld()) {
             GlideApply();
@@ -6019,6 +6367,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             } else if (RouteAlts() >= 2) {
                 RouteAltsDone();
             } else if ((s_favMenu = FavAt(x, y)) >= 0) {   // a favourite's mark: its menu
+                // (the user 2026-11-08, a Shturmann: "any tap at z16-z17 opens a favourite" - where it was, where the mark)
+                Log("ui: tap %d,%d - favourite %d, its mark at %d,%d, z%d", x, y, s_favMenu, s_favPt[s_favMenu].x,
+                    s_favPt[s_favMenu].y, g_cfg.z);
             } else {   // a tap on the map raises (and refreshes the traffic) / lowers the bottom bar
                 bool up = !DockUp();
                 DockShow(up);
