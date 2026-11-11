@@ -177,8 +177,8 @@ def install(entry, drive, get_file, get_bytes, maxzoom, progress=None, tiles_dat
     os.makedirs(dst, exist_ok=True)
     tiles = os.path.join(dst, 'tiles.vtp')
     pmextract.extract(get_bytes, entry['bbox'], maxzoom, tiles + '.part',
-                      lambda part, text: tell(part * kTilesPart, text), pmextract.slim,
-                      deepest=pmextract.numbers if maxzoom >= 15 else None)   # (z15: the house numbers only)
+                      lambda part, text: tell(part * kTilesPart, text), pmextract.slim)
+    # (z15 whole for now, as release_regions: deepest=pmextract.numbers with the OSMapsCE release drawing z15+ from z14)
     os.replace(tiles + '.part', tiles)
     data = get_file(release_regions.ASSETS + entry['zip'],
                     lambda part, text: tell(kTilesPart + (1 - kTilesPart) * part, 'граф и поиск: ' + text))
