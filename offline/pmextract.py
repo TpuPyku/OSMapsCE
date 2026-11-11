@@ -187,9 +187,10 @@ def processed(items, total, tell):
             tell(kDataEnd + (1 - kDataEnd) * i / total, 'обработка: %d из %d плиток' % (i, total))
 
 
-def extract(get_bytes, bbox, maxzoom, out, progress=None, keep=lambda tile: tile, rings=None, margin=1):
+def extract(get_bytes, bbox, maxzoom, out, progress=None, keep=lambda tile: tile, rings=None, margin=1, deepest=None):
     """The region's tiles into the pack out - its box's, or its outline's (rings of (lon, lat)); keep: what of a tile
-    is kept (slim); progress(part 0..1, text) from the start: the archive's directories first, then the data."""
+    is kept (slim), deepest: of a tile at maxzoom instead (numbers: the house numbers only); progress(part 0..1, text)
+    from the start: the archive's directories first, then the data."""
     tell = progress or (lambda part, text: None)
     tell(0, 'каталог архива…')
     with ThreadPoolExecutor(kThreads) as pool:
@@ -199,8 +200,9 @@ def extract(get_bytes, bbox, maxzoom, out, progress=None, keep=lambda tile: tile
         tell(kDirsPart, 'каталог: %d плиток' % len(located))
         data = fetch(archive, located, pool, tell)
     unzip = archive.h['tile_compression'] == Compression.GZIP
-    make_tiles.write_pack(out, processed(((make_tiles.key(*t), keep(gzip.decompress(data[s]) if unzip else data[s]))
-                                          for t, s in located.items()), len(located), tell))
+    top = deepest or keep
+    make_tiles.write_pack(out, processed(((make_tiles.key(*t), (top if t[0] == maxzoom else keep)(
+        gzip.decompress(data[s]) if unzip else data[s])) for t, s in located.items()), len(located), tell))
     tell(1.0, 'плитки записаны')
 
 
@@ -296,6 +298,28 @@ def slim_layer(layer, raw):
 
 def slim(tile):
     return b''.join(slim_layer(v, r) if f == 3 else r for f, v, r in spans(tile))
+
+
+# ---- the deepest zoom's tiles of a pack (z15): the house numbers only - the map itself drawn from z14 there (vtile.cpp;
+# 2026-11-11: z15 was 300 of the Moscow oblast's 530 MB, the same roads and houses as z14 again)
+NUMBER_LAYERS = {b'housenumber'}   # (OpenMapTiles' own layer: kept whole)
+
+
+def numbers_layer(layer, raw):
+    name, keys, vals = layer_head(layer)
+    if name in NUMBER_LAYERS:
+        return raw
+    if name != b'buildings':
+        return b''
+    kept = [r for f, v, r in spans(layer) if f != 2 or b'address' in feature_kinds(v, keys, vals)]
+    if len(kept) == sum(1 for _ in spans(layer)):
+        return raw
+    left = any(f == 2 for f, _, _ in spans(b''.join(kept)))
+    return length_field(3, b''.join(kept)) if left else b''
+
+
+def numbers(tile):
+    return b''.join(numbers_layer(v, r) if f == 3 else r for f, v, r in spans(tile))
 
 
 def http_bytes(url):

@@ -92,3 +92,12 @@ bool TiltClip(const Tilt& t, double* x0, double* y0, double* x1, double* y1)
     *y1 = ay + s1 * dy;
     return true;
 }
+
+double TiltEase(double shown, double target, DWORD ms)
+{
+    if (shown < 0)
+        return target;
+    double step = kTiltDegPerS * ms / 1000.0;
+    return shown < target ? (shown + step < target ? shown + step : target)
+                          : (shown - step > target ? shown - step : target);
+}

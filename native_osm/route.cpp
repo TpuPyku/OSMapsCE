@@ -692,10 +692,11 @@ void RouteAltChoose(int k)
     s_sig++;
 }
 
-void RouteMagnet(double* lon, double* lat, double kmh, double* course)
+bool RouteMagnet(double* lon, double* lat, double kmh, double* course)
 {
     static bool on;
     on = s_state == ROUTE_ON && s_np && MagnetSnap(s_pts, s_np, s_seg, lon, lat, kmh, course, on);
+    return on;
 }
 
 void RouteGps(double lon, double lat, double kmh, double course)

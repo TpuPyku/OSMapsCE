@@ -36,6 +36,7 @@ struct Graph {
     GEdge*  edges;
     char*   names;
     BYTE*   bear;      // each edge's bearings out of its start and into its end (NULL: a graph made before them)
+    BYTE*   limit;     // each edge's posted speed limit, km/h, 0 none (NULL: a graph made before them)
     DWORD*  cstart;    // gw * gh + 1
     DWORD*  items;
     OffFile d;         // the parts above; the geometry is read from its file
@@ -78,8 +79,12 @@ static bool Load(const wchar_t* path)
     s_g.items = (DWORD*)OffPart(f, h.off[5] + (h.gw * h.gh + 1) * 4, h.items * 4);
     DWORD end = h.off[5] + (h.gw * h.gh + 1 + h.items) * 4;   // the bearings after the grid, if made with them
     char tag[4];
-    if (OffRead(f->file, end, tag, 4) && !memcmp(tag, "OSMB", 4))
+    if (OffRead(f->file, end, tag, 4) && !memcmp(tag, "OSMB", 4)) {
         s_g.bear = (BYTE*)OffPart(f, end + 4, h.edges * 2);
+        DWORD lim = end + 4 + ((h.edges * 2 + 3) & ~3);   // the limits after them, 4-byte aligned
+        if (OffRead(f->file, lim, tag, 4) && !memcmp(tag, "OSMS", 4))
+            s_g.limit = (BYTE*)OffPart(f, lim + 4, h.edges);
+    }
     if (f->bad) {
         Log("offline: cannot load %S (memory?)", path);
         Unload();
@@ -230,6 +235,23 @@ static double SegM(const int* p)   // a segment's metres (p: its two points' lat
 
 static bool s_noToll;   // the request's "exclude=toll" (the user 2026-10-29): the toll roads' edges not taken
 static bool s_snapToll;   // SnapTo's pass: the toll roads too (none free near, or tolls allowed)
+static double s_snapCourse = -1;   // SnapEdge: only the segments going this way (degrees, either direction; < 0 any)
+static double s_snapTol;           // ... within this many degrees
+enum { kLimitTolDeg = 35 };        // the speed limit's road: close to the course (not the crossing one at a junction)
+
+static double SegBearing(const int* p)   // a segment's way, degrees from north clockwise (-180..180)
+{
+    return atan2((p[3] - p[1]) * s_kx, (p[2] - p[0]) * 0.111195) * 180 / M_PI;
+}
+
+// A segment (p: its two points) goes the course's way, either direction, within s_snapTol
+static bool AlongCourse(const int* p, double course)
+{
+    if (p[0] == p[2] && p[1] == p[3])
+        return false;
+    double d = fmod(fabs(SegBearing(p) - course), 180.0);
+    return (d < 90 ? d : 180 - d) <= s_snapTol;
+}
 
 // The point's projection onto a segment (p: its two points): u = its share of the segment; returns the distance, m.
 static double Project(int lat, int lon, const int* p, double* u)
@@ -258,7 +280,7 @@ static void SnapEdge(int lat, int lon, DWORD e, Snap* best)
     for (int k = 0; k + 1 < n; k++) {
         const int* p = s_pts + k * 2;
         double u, d = Project(lat, lon, p, &u), sl = SegM(p);
-        if (d < best->distM) {
+        if (d < best->distM && (s_snapCourse < 0 || AlongCourse(p, s_snapCourse))) {
             best->distM = d;
             best->e = e;
             best->from = from;
@@ -996,6 +1018,52 @@ bool OfflineRoadAt(int lat, int lon, double maxM, char* name, int cap)
     memcpy(name, n, len);
     name[len] = 0;
     return true;
+}
+
+int OfflineSnapFix(int* lat, int* lon, double* course, double maxM, double tolDeg)
+{
+    if (!OffTryUse())
+        return -1;
+    int pt[2] = { *lat, *lon }, moved = 0;
+    if (Region(pt, 1)) {
+        s_kx = 0.111195 * cos(*lat / 1e6 * M_PI / 180);
+        s_snapCourse = tolDeg < 0 ? -1 : *course;
+        s_snapTol = tolDeg;
+        s_snapToll = true;
+        Snap s;
+        if (SnapNear(*lat, *lon, &s) && s.distM <= maxM) {
+            *lat = s.lat;
+            *lon = s.lon;
+            if (tolDeg >= 0 && EdgePts(s.from, s.e, s_pts, kPtsCap) > s.seg + 1) {   // the road's way, the car's side
+                double b = SegBearing(s_pts + s.seg * 2), d = fmod(*course - b + 540, 360) - 180;
+                b = d > 90 || d < -90 ? b + 180 : b;
+                *course = b < 0 ? b + 360 : b >= 360 ? b - 360 : b;
+            }
+            moved = 1;
+        }
+        s_snapCourse = -1;
+    }
+    OffUse(false);
+    return moved;
+}
+
+int OfflineLimitAt(int lat, int lon, double course, double maxM)
+{
+    if (!OffTryUse())
+        return -1;
+    int pt[2] = { lat, lon }, v = 0;
+    if (Region(pt, 1) && s_g.limit) {
+        s_kx = 0.111195 * cos(lat / 1e6 * M_PI / 180);
+        s_snapCourse = course;
+        s_snapTol = kLimitTolDeg;
+        s_snapToll = true;
+        Snap s;
+        if (SnapNear(lat, lon, &s) && s.distM <= maxM)
+            v = s_g.limit[s.e];
+        s_snapCourse = -1;
+    }
+    OffUse(false);
+    return v;
 }
 
 // ---------------------------------------------------------------- the request

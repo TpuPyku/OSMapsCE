@@ -1,3 +1,6 @@
+#if !defined(UNDER_CE) && !defined(_WIN32_WINNT)
+#define _WIN32_WINNT 0x0400   // (the PC: TryEnterCriticalSection, OffTryUse)
+#endif
 #include "yamaps.h"
 
 // The offline data's files and answers, shared by the router (offline.cpp, route.grf) and the search (offsearch.cpp,
@@ -100,6 +103,11 @@ void OffUse(bool on)
         EnterCriticalSection(&s_use.cs);
     else
         LeaveCriticalSection(&s_use.cs);
+}
+
+bool OffTryUse()
+{
+    return TryEnterCriticalSection(&s_use.cs) != 0;
 }
 
 void OffClose(OffFile* f)

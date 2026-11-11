@@ -218,7 +218,8 @@ GOLOS = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'OSMapsCE
 # picture name -> (Lucide icon or 'T:text', on: drawn in the accent, filled)
 LUCIDE_SIGNS = {'Bplus': ('plus', False, False), 'Bminus': ('minus', False, False),
                 'Bgps_on': ('navigation', True, True), 'Bgps_off': ('locate-fixed', False, False),
-                'Bgps_none': ('locate', False, False)}
+                'Bgps_none': ('locate', False, False),
+                'Bsound_on': ('volume-2', False, False), 'Bsound_off': ('volume-x', False, False)}   # the voice
 LUCIDE_DOCK = {'Bhome': ('house', False, False), 'Bset': ('settings', False, False), 'Bnight_on': ('sun', False, False),
                'Bnight_off': ('moon', False, False), 'Btrf_on': ('car-front', True, False),
                'Btrf_off': ('car-front', False, False), 'Btsrc_ya': ('T:Я', False, False),
@@ -272,7 +273,7 @@ def main():
         for group, canvas, muted in ((LUCIDE_SIGNS, 48, False), (LUCIDE_DOCK, 44, True), (LUCIDE_SMALL, 32, False)):
             for name, spec in group.items():
                 for pressed in (False, True):
-                    c = INK if pressed else ORANGE if spec[1] else MUTED if muted or name == 'Bgps_none' else TEXT
+                    c = INK if pressed else ORANGE if spec[1] else MUTED if muted or name in ('Bgps_none', 'Bsound_off') else TEXT
                     lucide_image(spec, c, canvas, 28).save(
                         os.path.join(out, '%s_%s.png' % (name, 'P' if pressed else 'N')))
                     n += 1

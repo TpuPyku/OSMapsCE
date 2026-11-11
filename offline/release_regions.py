@@ -199,7 +199,8 @@ def build_full(entry, folder, dist, get_bytes, day, disk, rings=None):
     size, tiles}."""
     tiles = os.path.join(folder, 'tiles.vtp')
     t0 = time.time()
-    pmextract.extract(get_bytes, entry['bbox'], TILES_Z, tiles + '.part', None, pmextract.slim, rings)
+    pmextract.extract(get_bytes, entry['bbox'], TILES_Z, tiles + '.part', None, pmextract.slim, rings,
+                      deepest=pmextract.numbers)   # (z15: the house numbers only, the map from z14)
     os.replace(tiles + '.part', tiles)
     print('%s: tiles %.0f MB in %.0f s' % (entry['name'], os.path.getsize(tiles) / 1e6, time.time() - t0))   # (the
     t0 = time.time()                                               # workflow's log: which part takes the time)

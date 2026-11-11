@@ -51,6 +51,24 @@ def graph(path):
     return nodes, edges
 
 
+def limits(path):
+    """Each edge's (name, speed limit) in the edges' order, from the 'OSMS' part after 'OSMB'; None: no such part."""
+    d = read(path)
+    h = struct.unpack_from(make_graph.HEADER, d, 0)
+    n_edges, off = h[3], h[-6:]
+    gw, gh, items = h[10], h[11], h[13]
+    end = off[5] + (gw * gh + 1 + items) * 4
+    assert d[end:end + 4] == b'OSMB'
+    end += 4 + (n_edges * 2 + 3) // 4 * 4   # (to a multiple of 4: read in place on the unit)
+    if d[end:end + 4] != b'OSMS':
+        return None
+    out = []
+    for e in range(n_edges):
+        nm = struct.unpack_from('<I', d, off[2] + e * 24 + 20)[0]
+        out.append((d[off[4] + nm:d.index(b'\0', off[4] + nm)].decode().split('\t')[0], d[end + 4 + e]))
+    return out
+
+
 def pack_tiles(path):
     """{(z, x, y): data} as the unit reads tiles.vtp: the header, the sorted index, the blobs."""
     d = read(path)
@@ -154,6 +172,38 @@ class Tools(unittest.TestCase):
         self.assertEqual(one, [((53000000, 50004000), (53002000, 50004000))])   # north only
         main = [dm for a, b, dm, _, n in edges if n == 'Главная улица' and a == (53000000, 50000000)]
         self.assertTrue(1300 < main[0] < 1400)        # ~134 m, in decimetres
+
+    def test_speed_limit_of_tags(self):
+        # the speed limit sign (design v3): the posted limit only - a number, mph, or a country's code for a kind of
+        # road; 0 = not known (the class's typical speed is not a limit)
+        lim = make_graph.limit_of
+        self.assertEqual(lim({'maxspeed': '60'}), 60)
+        self.assertEqual(lim({'maxspeed': '40 mph'}), 64)
+        self.assertEqual(lim({'maxspeed': 'RU:urban'}), 60)
+        self.assertEqual(lim({'maxspeed': 'RU:rural'}), 90)
+        self.assertEqual(lim({'maxspeed': 'RU:motorway'}), 110)
+        self.assertEqual(lim({'maxspeed': 'RU:living_street'}), 20)
+        self.assertEqual(lim({'maxspeed': 'BY:urban'}), 60)
+        self.assertEqual(lim({'maxspeed:type': 'RU:urban'}), 60)
+        self.assertEqual(lim({'source:maxspeed': 'RU:rural'}), 90)
+        self.assertEqual(lim({'zone:maxspeed': 'RU:20'}), 20)
+        self.assertEqual(lim({'maxspeed': '50', 'maxspeed:type': 'RU:urban'}), 50)   # the sign's number wins
+        self.assertEqual(lim({}), 0)
+        self.assertEqual(lim({'maxspeed': 'none'}), 0)
+        self.assertEqual(lim({'maxspeed': 'signals'}), 0)
+        self.assertEqual(lim({'maxspeed': '300'}), 0)                                  # not a real one
+        self.assertEqual(lim({'maxspeed': 'RU:unknown'}), 0)
+
+    def test_graph_speed_limits(self):
+        out = os.path.join(self.tmp, 'route.grf')
+        make_graph.build(TINY, out)
+        got = limits(out)
+        self.assertIsNotNone(got)
+        _, edges = graph(out)
+        self.assertEqual(len(got), len(edges))
+        self.assertEqual({v for n, v in got if n == 'Главная улица'}, {60})       # maxspeed=60
+        self.assertEqual({v for n, v in got if n == 'Боковая улица'}, {60})       # RU:urban
+        self.assertEqual({v for n, v in got if n not in ('Главная улица', 'Боковая улица')}, {0})
 
     def test_graph_nodes_by_place(self):
         # the user's Shturmann 2026-10-31: a 115 km way read most of the 96 MB graph into memory - its nodes numbered in
@@ -435,7 +485,9 @@ class Tools(unittest.TestCase):
         n_nodes, n_edges, off = h[2], h[3], h[-6:]
         end = off[5] + (h[10] * h[11] + 1 + h[13]) * 4
         self.assertEqual(d[end:end + 4], b'OSMB')
-        self.assertEqual(len(d), end + 4 + n_edges * 2)
+        lim = end + 4 + (n_edges * 2 + 3) // 4 * 4   # the speed limits after them (2026-11-11), 4-byte aligned
+        self.assertEqual(d[lim:lim + 4], b'OSMS')
+        self.assertEqual(len(d), lim + 4 + n_edges)
         nodes = [struct.unpack_from('<ii', d, off[0] + i * 8) for i in range(n_nodes)]
         first = struct.unpack_from('<%dI' % (n_nodes + 1), d, off[1])
         bear = {}
@@ -600,6 +652,27 @@ class Tools(unittest.TestCase):
         self.assertGreater(len(got), 300)
         self.assertEqual(pmextract.slim(layer(['wood'], [0])), b'')
         self.assertEqual(pmextract.slim(mvt({'landuse': ['wood', 'farmland']})), b'')
+
+    def test_numbers_tiles(self):
+        """The deepest zoom's tiles (z15) in a pack: only the house numbers (Protomaps' buildings of kind "address",
+        OpenMapTiles' housenumber layer) - the map drawn from z14 there (2026-11-11: z15 was 300 of the Moscow oblast's
+        530 MB, the same roads and houses again)."""
+        tile = mvt({'buildings': ['building', 'address', 'building_part', 'address'], 'roads': ['major_road'],
+                    'housenumber': ['x'], 'water': ['water'], 'places': ['locality']})
+        self.assertEqual(mvt_kinds(pmextract.numbers(tile)), {'buildings': ['address', 'address'], 'housenumber': ['x']})
+        self.assertEqual(pmextract.numbers(mvt({'roads': ['major_road'], 'buildings': ['building']})), b'')
+        only = mvt({'buildings': ['address']})
+        self.assertEqual(pmextract.numbers(only), only)                 # nothing to drop: the same bytes
+
+    def test_pmtiles_extract_deepest(self):
+        """extract's deepest: what of the tiles at the zoom asked is kept (the others: keep)."""
+        src = os.path.join(self.tmp, 'planet.pmtiles')
+        make_pmtiles(src, {(0, 0, 0): b'world', (5, 20, 10): b'samara', (4, 10, 5): b'mid'})
+        data = read(src)
+        out = os.path.join(self.tmp, 'tiles.vtp')
+        pmextract.extract(lambda o, n: data[o:o + n], (45.1, 41.1, 67.4, 55.7), 5, out, keep=lambda t: t.upper(),
+                          deepest=lambda t: b'n' + t)
+        self.assertEqual(pack_tiles(out)[2], {(0, 0, 0): b'WORLD', (4, 10, 5): b'MID', (5, 20, 10): b'nsamara'})
 
     def test_protobuf_fields(self):
         import struct

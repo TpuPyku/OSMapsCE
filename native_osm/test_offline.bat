@@ -32,6 +32,8 @@ if not "%1"=="build" (
   python ..\offline\test\make_twin.py ..\offline\test\tiny.osm obj\test\twin.osm || goto :bad
   python ..\offline\make_search.py obj\test\twin.osm obj\test\OSMapsData\twin\search.idx >nul || goto :bad
   python ..\offline\make_graph.py obj\test\twin.osm obj\test\OSMapsData\twin\route.grf >nul || goto :bad
+  rem (its graph as made before the speed limits: an old region on the card)
+  python ..\offline\test\strip_limits.py obj\test\OSMapsData\twin\route.grf || goto :bad
   rem the toll region: a toll road and a free way round it, 60 degrees north
   if not exist obj\test\OSMapsData\toll mkdir obj\test\OSMapsData\toll
   python ..\offline\test\make_test_toll.py obj\test\toll.osm || goto :bad

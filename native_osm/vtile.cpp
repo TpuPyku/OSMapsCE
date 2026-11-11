@@ -594,7 +594,8 @@ static void FreeParsed(VTile& t)
 // A tile's names: places at their point, streets at the middle of their longest segment (dx, dy: the segment).
 // Only the ones whose point is inside the tile: the tiles' buffers repeat their neighbours' names.
 struct VLabel { unsigned char kind, rank, minz; short x, y, dx, dy; int name; };
-struct VLabelSet { MapRequest key; VLabel* l; int n; wchar_t* names; int nn; DWORD useTick; };
+struct VLabelSet { MapRequest key; VLabel* l; int n; wchar_t* names; int nn; DWORD useTick; unsigned kinds; };
+// (kinds: a bit (1 << kind) for each kind of label it has - Deeper: a z14 label yields only to its own kind)
 enum { kLabelSets = 48 };       // a z13 view needs ~24 data tiles
 static VLabelSet s_labels[kLabelSets];
 
@@ -690,8 +691,10 @@ static void LabelsFrom(const VTile& t)
         return;
     for (int i = 0; i < t.nf; i++) {
         VLabel l;
-        if (t.f[i].name >= 0 && LabelOf(t, t.f[i], l))
+        if (t.f[i].name >= 0 && LabelOf(t, t.f[i], l)) {
             set->l[set->n++] = l;
+            set->kinds |= 1u << l.kind;
+        }
     }
     set->key = t.key;
     set->useTick = GetTickCount();
@@ -1188,12 +1191,33 @@ static bool LocalFrom(const MapRequest& r, const MapRequest& key, bool cached, I
     return ok;
 }
 
+// A pack's z15 tile read for its labels only (the house numbers; parsed once, as a drawn tile's)
+static void PackLabels(const MapRequest& key)
+{
+    EnterCriticalSection(&s_cs);
+    bool have = Parsed(key, NULL, 0) != NULL;
+    LeaveCriticalSection(&s_cs);
+    unsigned char* data = NULL;
+    int len = 0;
+    if (have || !TileData(key, false, &data, &len))
+        return;
+    if (len && data[0] == 0x1A) {
+        EnterCriticalSection(&s_cs);
+        Parsed(key, data, len);
+        LeaveCriticalSection(&s_cs);
+    }
+    free(data);
+}
+
 // A shown tile from the data at hand (the user 2026-10-29: no waiting for the download thread's queue where the data
-// is here): the region's pack's z15 tile (the house numbers), else the z14 one - the pack's, the cache's file
+// is here): the map from the z14 one - the pack's, the cache's file; a pack's z15 tile for its labels only (2026-11-11:
+// the packs' z15 has the house numbers only - the same roads and houses again were 300 of the Moscow oblast's 530 MB)
 bool VTileLocal(const MapRequest& r, Image* out, bool draft)
 {
     MapRequest p = VTileDataAt(r, VEC_PACKZ), d = VTileData(r);
-    return (!SameKey(p, d) && LocalFrom(r, p, false, out, draft)) || LocalFrom(r, d, true, out, draft);
+    if (!SameKey(p, d))
+        PackLabels(p);
+    return LocalFrom(r, d, true, out, draft);
 }
 
 void VTileInit()   // before the download thread starts
@@ -1548,7 +1572,8 @@ static void PlaceLabel(LabelView& v, int kind, HFONT pf, const VLabelSet& set, c
         s_placed[v.np++] = box;
 }
 
-// A z14 tile's label in a quarter a pack's z15 tile has its own labels for (drawn instead: no name twice)
+// A z14 tile's label in a quarter a pack's z15 tile has labels of its kind for (drawn instead: no name twice); of
+// another kind it stays (2026-11-11: a pack's z15 has the house numbers only - the street names are the z14 tile's)
 static bool Deeper(const VLabelSet& set, const VLabel& lb)
 {
     if (set.key.z != VEC_ZBASE + VEC_PACKZ - 1)
@@ -1556,7 +1581,8 @@ static bool Deeper(const VLabelSet& set, const VLabel& lb)
     MapRequest quarter = { SRC_OSM, VEC_ZBASE + VEC_PACKZ, set.key.x * 2 + (lb.x >= kExtent / 2),
                            set.key.y * 2 + (lb.y >= kExtent / 2) };
     VLabelSet* oldest;
-    return Recent(s_labels, kLabelSets, quarter, oldest) != NULL;
+    const VLabelSet* q = Recent(s_labels, kLabelSets, quarter, oldest);
+    return q && (q->kinds & (1u << lb.kind));
 }
 
 static void DrawSet(LabelView& v, const LabelPass& p, HFONT pf, const VLabelSet& set)   // one tile's labels of a pass

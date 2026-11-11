@@ -22,6 +22,9 @@ copy of its via node with only the turns allowed (turn_rules) - the file and the
     bearings 'OSMB', then u8 out, u8 in for each edge: its way off its start and into its end, kBearM along
              (256 = a full circle, 0 = north, clockwise) - the turns' costs (the user 2026-11-09); after the grid,
              so the header (and the readers before it) stay as they were
+    limits   0-2 zero bytes to a multiple of 4 (the bearings' 2 an edge), 'OSMS', then u8 for each edge: its posted
+             speed limit, km/h (limit_of; 0 = not known) - the speed limit sign (design v3, 2026-11-11); after the
+             bearings, for the same reason
 """
 import math
 import struct
@@ -57,9 +60,11 @@ VERSION = 1
 HEADER = '<4s5I4i2IiI6I'
 
 # a car road as read: its node ids, class, one-way (1 forward, -1 backward, 0 both), roundabout, km/h, name, ref
-Way = namedtuple('Way', 'ids cls oneway rb speed name ref toll wid', defaults=(0,))   # wid: its OSM id
+Way = namedtuple('Way', 'ids cls oneway rb speed name ref toll wid limit', defaults=(0, 0))   # wid: its OSM id; limit: km/h
 # a junction-to-junction part of a way: node indices a -> b, inner points, metres, its way's data, lights on it
-Piece = namedtuple('Piece', 'a b inner length cls oneway rb speed name signals gates toll wid', defaults=(0,))
+Piece = namedtuple('Piece', 'a b inner length cls oneway rb speed name signals gates toll wid limit', defaults=(0, 0))
+# the countries' limits by the kind of road (maxspeed's "RU:urban" and the like): Russia's and its neighbours' rules
+kKindLimits = {'urban': 60, 'rural': 90, 'motorway': 110, 'living_street': 20, 'trunk': 90}
 
 
 def maxspeed_kmh(text):
@@ -70,6 +75,24 @@ def maxspeed_kmh(text):
         return None
     m = int(m * 1.609) if 'mph' in text else m
     return m if m >= 5 else None
+
+
+def limit_of(tags):
+    """The posted speed limit, km/h: maxspeed's number (or mph), else a country's code for the kind of road in maxspeed,
+    maxspeed:type, source:maxspeed ("RU:urban") or zone:maxspeed ("RU:20"); 0 = not known (or not a real one)."""
+    m = maxspeed_kmh(tags.get('maxspeed', ''))
+    if m:
+        return m if m <= 250 else 0
+    for key in ('maxspeed', 'maxspeed:type', 'source:maxspeed', 'zone:maxspeed'):
+        code = tags.get(key, '')
+        if ':' not in code:
+            continue
+        kind = code.split(':', 1)[1]
+        if kind in kKindLimits:
+            return kKindLimits[kind]
+        if kind.isdigit() and 5 <= int(kind) <= 250:
+            return int(kind)
+    return 0
 
 
 def speed_of(tags, cls):
@@ -123,7 +146,7 @@ def car_way(tags, ids, wid=0):
     rb = tags.get('junction') in ('roundabout', 'circular')
     cls = kCls[hw]
     return Way(ids, cls, oneway_of(tags, rb), rb, speed_of(tags, cls), tags.get('name', ''), tags.get('ref', ''),
-               toll_of(tags), wid)
+               toll_of(tags), wid, limit_of(tags))
 
 
 kTurnKinds = {'no_left_turn', 'no_right_turn', 'no_straight_on', 'no_u_turn', 'only_left_turn', 'only_right_turn',
@@ -276,7 +299,7 @@ def make_piece(w, seg, nm, loc, signals, nodes, tol_m=0, bars=NONE):
     end = lambda n: nodes.alone(n) if n in bars.blocks else nodes.index(n)   # noqa: E731
     return Piece(end(seg[0]), end(seg[-1]), simplify(pts, tol_m)[1:-1], length, w.cls, w.oneway, w.rb,
                  w.speed, nm, sig, sum(1 if n in bars.gates else kLockedGates if n in bars.locked else 0 for n in seg), w.toll,
-                 w.wid)
+                 w.wid, w.limit)
 
 
 def make_pieces(ways, loc, signals, junction, tol_m=0, bars=NONE):
@@ -523,7 +546,7 @@ def bearings(nodes, first, flat, geom):
     return bytes(out)
 
 
-def write(out, nodes, first, flat, geom, names, bbox, grid, cell=kCell):
+def write(out, nodes, first, flat, geom, names, bbox, grid, cell=kCell, limits=b''):
     (min_lat, min_lon, max_lat, max_lon), (gw, gh, cstart, items) = bbox, grid
     off = [struct.calcsize(HEADER)]
     for size in (len(nodes) * 8, (len(nodes) + 1) * 4, len(flat) * 24, len(geom) * 8, (len(names) + 3) & ~3):
@@ -539,7 +562,10 @@ def write(out, nodes, first, flat, geom, names, bbox, grid, cell=kCell):
         f.write(struct.pack('<%dI' % len(cstart), *cstart))
         f.write(struct.pack('<%dI' % len(items), *items))
         f.write(b'OSMB' + bearings(nodes, first, flat, geom))
-    return off[-1] + (len(cstart) + len(items)) * 4 + 4 + len(flat) * 2
+        pad = (len(flat) * 2) % 4
+        if limits:
+            f.write(b'\0' * pad + b'OSMS' + limits)
+    return off[-1] + (len(cstart) + len(items)) * 4 + 4 + len(flat) * 2 + (pad + 4 + len(limits) if limits else 0)
 
 
 def build(src, out, classes=None, simplify_m=0, cell=kCell, west=None, max_cells=kMaxCells):
@@ -561,7 +587,8 @@ def build(src, out, classes=None, simplify_m=0, cell=kCell, west=None, max_cells
         cell *= 2
         gw, gh = (bbox[3] - bbox[1]) // cell + 1, (bbox[2] - bbox[0]) // cell + 1
     cstart, items = make_grid(pieces, nodes, piece_edge, (bbox[0], bbox[1], gw, cell), gw * gh)
-    size = write(out, nodes, first, flat, geom, names, bbox, (gw, gh, cstart, items), cell)
+    limits = bytes(pieces[e[8]].limit for e in flat)
+    size = write(out, nodes, first, flat, geom, names, bbox, (gw, gh, cstart, items), cell, limits)
     print('nodes %d, edges %d, geom %d, names %d B, grid %dx%d (%d items); file %.1f MB' % (
         len(nodes), len(flat), len(geom), len(names), gw, gh, len(items), size / 1e6))
 

@@ -1077,6 +1077,113 @@ static void LayerAheadChecks()
     Check(t && !c, "overlay: neither -> traffic", NULL);
 }
 
+static DWORD WINAPI TryUseThread(LPVOID)   // another thread's look at the data: free?
+{
+    if (!OffTryUse())
+        return 0;
+    OffUse(false);
+    return 1;
+}
+
+static HANDLE s_holdGo, s_holdDone;
+
+static DWORD WINAPI HoldUseThread(LPVOID)   // a route's thread holding the data until told
+{
+    OffUse(true);
+    SetEvent(s_holdGo);
+    WaitForSingleObject(s_holdDone, 5000);
+    OffUse(false);
+    return 0;
+}
+
+static bool Snapped(int lat, int lon, double course, double maxM, double tol, int wantLat, int wantLon, double wantC)
+{
+    int la = lat, lo = lon;
+    double c = course;
+    return OfflineSnapFix(&la, &lo, &c, maxM, tol) == 1 && abs(la - wantLat) <= 1 && abs(lo - wantLon) <= 1 &&
+           fabs(c - wantC) < 0.5;
+}
+
+static void MagnetChecks()   // the magnet with no route, on tiny's main street (lat 53.000, west - east)
+{
+    Check(Snapped(53000090, 50001000, 90, 30, 60, 53000000, 50001000, 90), "magnet: 10 m north of the street going east - "
+          "onto it, east", NULL);
+    Check(Snapped(53000090, 50001000, 265, 30, 60, 53000000, 50001000, 270), "magnet: going west - onto it, the road's "
+          "west", NULL);
+    Check(Snapped(53000090, 50001000, 120, 30, 60, 53000000, 50001000, 90), "magnet: 30 degrees off the road - its way",
+          NULL);
+    int la = 53000090, lo = 50001000;
+    double c = 0;
+    Check(OfflineSnapFix(&la, &lo, &c, 30, 60) == 0 && la == 53000090 && lo == 50001000 && c == 0,
+          "magnet: going north across it - no road that way near, the fix as it was", NULL);
+    Check(Snapped(53000090, 50001000, 0, 30, -1, 53000000, 50001000, 0), "magnet: slow (any way) - onto the nearest, the "
+          "course kept", NULL);
+    la = 53000090;
+    Check(OfflineSnapFix(&la, &lo, &c, 30, 0) == 0 && la == 53000090, "magnet: no slack (0 degrees) going north - "
+          "only that way's roads, none", NULL);
+    la = 53000320;
+    Check(OfflineSnapFix(&la, &lo, &c, 30, 60) == 0 && la == 53000320, "magnet: 35 m off - not on the road", NULL);
+    free(Route("50.000,60.000;50.010,60.000", "&exclude=toll"));   // (a route kept off the tolls just made)
+    Check(Snapped(60000090, 50005000, 90, 30, 60, 60000000, 50005000, 90), "magnet: onto a toll road too", NULL);
+    s_holdGo = CreateEvent(NULL, FALSE, FALSE, NULL);
+    s_holdDone = CreateEvent(NULL, FALSE, FALSE, NULL);
+    HANDLE t = CreateThread(NULL, 0, HoldUseThread, NULL, 0, NULL);
+    WaitForSingleObject(s_holdGo, 5000);
+    la = 53000090;
+    c = 90;
+    Check(OfflineSnapFix(&la, &lo, &c, 30, 60) == -1 && la == 53000090, "magnet: the data busy - -1, as it was", NULL);
+    SetEvent(s_holdDone);
+    WaitForSingleObject(t, 5000);
+    CloseHandle(t);
+    CloseHandle(s_holdGo);
+    CloseHandle(s_holdDone);
+    char name[64] = "";
+    Check(OfflineRoadAt(53000000, 50001000, 400, name, sizeof(name)) && (BYTE)name[1] == 0x93,
+          "magnet: then the routes' snapping any way again", name);
+}
+
+static void LimitChecks()   // the speed limit sign: tiny's main street maxspeed=60, the side one RU:urban
+{
+    Check(OfflineLimitAt(53000000, 50001000, 90, 30) == 60, "limit: on the main street going east - 60", NULL);
+    Check(OfflineLimitAt(53000000, 50001000, 270, 30) == 60, "limit: going west, the same road - 60", NULL);
+    Check(OfflineLimitAt(53000000, 50001000, -1, 30) == 60, "limit: no course - the nearest road's", NULL);
+    Check(OfflineLimitAt(53001000, 50002000, 0, 30) == 60, "limit: the side street (RU:urban) - 60", NULL);
+    Check(OfflineLimitAt(53001000, 50004000, 0, 30) == 0, "limit: the one-way street, none posted - 0", NULL);
+    Check(OfflineLimitAt(53000000, 50001000, 0, 30) == 0, "limit: across the main street, no road that way near - 0",
+          NULL);
+    Check(OfflineLimitAt(53000050, 50004030, 90, 30) == 60,
+          "limit: at a junction going east - the main street, not the nearer one-way street", NULL);
+    Check(OfflineLimitAt(53000050, 50004030, 0, 30) == 0, "limit: there going north - the one-way street's (none)",
+          NULL);
+    Check(OfflineLimitAt(53000400, 50001000, 90, 30) == 0, "limit: 44 m off the road - not on it", NULL);
+    Check(OfflineLimitAt(53050000, 50000000, 90, 30) == 0, "limit: far from any road - 0", NULL);
+    Check(OfflineLimitAt(60000000, 50005000, 90, 30) == 90, "limit: on a toll road too (maxspeed=90)", NULL);
+    // after it: the routes' snapping any way again (not kept to the last course), the data free for another thread
+    char name[64] = "";
+    OfflineLimitAt(53001000, 50002000, 0, 30);
+    Check(OfflineRoadAt(53000000, 50001000, 400, name, sizeof(name)) && (BYTE)name[1] == 0x93,
+          "limit: then the nearest road any way (the main street, Г...), not the course's", name);
+    DWORD ok = 0;
+    HANDLE t = CreateThread(NULL, 0, TryUseThread, NULL, 0, NULL);
+    WaitForSingleObject(t, 5000);
+    GetExitCodeThread(t, &ok);
+    CloseHandle(t);
+    Check(ok == 1, "limit: the data let go after (a route's thread not kept waiting)", NULL);
+    Check(OfflineLimitAt(58000000, 50001000, 90, 30) == 0,
+          "limit: a region's graph made before the limits (twin: no OSMS) - 0, nothing read", NULL);
+    s_holdGo = CreateEvent(NULL, FALSE, FALSE, NULL);
+    s_holdDone = CreateEvent(NULL, FALSE, FALSE, NULL);
+    t = CreateThread(NULL, 0, HoldUseThread, NULL, 0, NULL);
+    WaitForSingleObject(s_holdGo, 5000);
+    Check(OfflineLimitAt(53000000, 50001000, 90, 30) == -1, "limit: the data busy (a route) - -1, not waited for", NULL);
+    SetEvent(s_holdDone);
+    WaitForSingleObject(t, 5000);
+    CloseHandle(t);
+    CloseHandle(s_holdGo);
+    CloseHandle(s_holdDone);
+    Check(OfflineLimitAt(53000000, 50001000, 90, 30) == 60, "limit: free again - read", NULL);
+}
+
 static void TrafficLookChecks()   // how the traffic is shown (trafshade.cpp)
 {
     TrafficLook t = TrafficLookOf(true, false, false, true);
@@ -1118,6 +1225,8 @@ int main()
     ParkLineChecks();
     ParkPriceChecks();
     LayerAheadChecks();
+    LimitChecks();
+    MagnetChecks();
 
     // along the main street, west to east: ~400 m, no turn on the way
     char* b = Route("50.000,53.000;50.006,53.000");

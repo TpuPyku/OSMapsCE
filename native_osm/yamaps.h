@@ -210,6 +210,14 @@ bool  OfflineTrunkRoute(const char* osrmPath, char** body, int* len);   // over 
 bool  OfflineHasTrunk();   // the trunk roads' graph is on a card
 bool  OfflineDir(const int* latLon, int n, wchar_t* dir);          // the region's folder holding the points
 bool  OfflineRoadAt(int lat, int lon, double maxM, char* name, int cap);   // the nearest road's name (1e-6 degrees)
+// The posted speed limit (km/h) of the road the car is on: the nearest within maxM going the course's way (either
+// direction; course < 0: any road); 0 = not known (no road, a graph made before the limits, none posted); -1 = the
+// data busy (a route being made): try again later
+int   OfflineLimitAt(int lat, int lon, double course, double maxM);
+// The magnet with no route (2026-11-11): the fix (1e-6 degrees) onto the nearest road within maxM going the course's way
+// within tolDeg (either direction; tolDeg < 0: any road), its course then the road's way nearest the car's (tolDeg < 0:
+// kept). 1 - moved, 0 - no road there (left as it was), -1 - the data busy (a route being made)
+int   OfflineSnapFix(int* lat, int* lon, double* course, double maxM, double tolDeg);
 void  OfflineDrop();   // the graph and the search's index let go (a region written over them); loaded again when asked
 // offsearch.cpp - the search and the address of a point from a region's index (search.idx), answered as Photon's
 bool  OfflineSearch(const char* photonPath, char** body, int* len);   // false: no region / nothing - ask Photon
@@ -235,6 +243,7 @@ void* OffPart(OffFile* f, DWORD off, DWORD bytes);   // a part read into memory,
 bool  OffRead(HANDLE f, DWORD off, void* to, DWORD bytes);
 void  OffClose(OffFile* f);                          // the parts freed, the file closed, all zero
 void  OffUse(bool on);   // the data in use (a route, a search) / written over (offmaps.cpp): one at a time
+bool  OffTryUse();       // OffUse(true) if free now (the window's quick looks: never wait for a route); false - busy
 struct OffUseScope { OffUseScope() { OffUse(true); } ~OffUseScope() { OffUse(false); } };
 // The region (a folder of OSMapsData on the SD card / USB disk / beside the program) whose file passes the test:
 // dir = its folder; false = none. holds: reads the file's header, says whether it serves the caller (ctx).
@@ -293,7 +302,7 @@ bool RouteAltGet(int k, const double** lonLat, int* np, double* timeS, double* d
 void RouteAltChoose(int k);
 void RouteAltsDone();                    // chosen: the others and the kept answer go
 void RouteClear();
-void RouteMagnet(double* lon, double* lat, double kmh, double* course);   // the fix shown: on the line when near it
+bool RouteMagnet(double* lon, double* lat, double kmh, double* course);   // the fix shown: on the line when near it
 void RouteGps(double lon, double lat, double kmh, double course);   // each fix: progress, off -> a new route
 void RouteGet(RouteInfo* out);
 int  RoutePoints(const double** lonLat);   // the line: lon, lat pairs
@@ -340,6 +349,10 @@ void NoYo(wchar_t* s);   // main.cpp: the text's face (Golos Text, else Tahoma)
 struct Tilt { double cf, cs, rc, f, fog, fr; };   // fr: the fog's row (the ground's top) on the screen
 extern const Tilt* g_tilt;   // the view's tilt while it is on (VLabelsDraw), else NULL
 void TiltMake(Tilt* t, double carFlat, double carScreen, double fogPx, double pitchDeg);   // pitch: from straight down
+// The pitch shown going to the zoom's (target) at kTiltDegPerS, ms after the last step (the user 2026-11-11: the zoom
+// smooth, the pitch jumped 10 degrees at its end); the first (shown < 0): the target at once
+enum { kTiltDegPerS = 25 };
+double TiltEase(double shown, double target, DWORD ms);
 bool TiltPoint(const Tilt& t, double fx, double fy, double* sx, double* sy);   // false: in the fog
 void TiltProject(const Tilt& t, double fx, double fy, double* sx, double* sy);   // the same, no fog
 bool TiltRow(const Tilt& t, double sy, double* fy, double* k, double* fade);   // a screen row: the flat row fy, its

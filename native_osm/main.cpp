@@ -23,7 +23,7 @@ static const wchar_t* const kRelease = L"2.0";   // raise by hand: minor - signi
 // pictures with alpha blended by hand (CE GDI has no usable alpha on a 16-bit screen). Pictures: make_images.py.
 
 enum { B_SETTINGS, B_NIGHT, B_EXIT, B_TRF, B_TSRC, B_GPS, B_LEFT, B_RIGHT, B_UP, B_DOWN, B_MINUS, B_PLUS,
-       B_HOME, B_SEARCH, B_ROUTEOFF, B_TILT, B_COUNT };
+       B_HOME, B_SEARCH, B_ROUTEOFF, B_TILT, B_SOUND, B_COUNT };
 
 enum { kTile = 72, kRound = 60, kSign = 48, kStatusH = 44, kDockY = 404, kDockMs = 6000, kDockH = 76, kDockStep = 16,
        kDockAnimMs = 30 };   // the bar slides in / out by kDockStep px every kDockAnimMs
@@ -51,6 +51,7 @@ static Button s_btn[B_COUNT] = {
     { 0, 0, { L"Bsearch" } },   // search a place, a route to it (route.cpp)
     { 0, 0, { L"Broff" } },     // the route off, only while there is one
     { 724, 82, { NULL } },      // the third person's view on / off: heading-up from z15 (the user 2026-10-28)
+    { 724, 354, { L"Bsound_on", L"Bsound_off" } },   // the voice on / off, on a route (design v3)
 };
 static const int kDockOrder[] = { B_HOME, B_TRF, B_TSRC, B_SEARCH, B_ROUTEOFF, B_NIGHT, B_SETTINGS };
 static const int kDockCount = sizeof(kDockOrder) / sizeof(kDockOrder[0]);
@@ -81,7 +82,8 @@ static const COLORREF kLine    = RGB(0x2a, 0x2f, 0x37);   // separators
 static COLORREF       kOrange  = RGB(0xff, 0x6b, 0x1a);
 static const COLORREF kHair    = RGB(64, 68, 77);         // night: a card's 1 px edge over the dark map
 
-enum { TIMER_TICK = 1, TIMER_USER = 2, TIMER_DOCK = 3, TIMER_LONG = 4, TIMER_DISK = 5, TIMER_GLIDE = 6, TIMER_FLING = 7, TIMER_ZOOM = 8 };
+enum { TIMER_TICK = 1, TIMER_USER = 2, TIMER_DOCK = 3, TIMER_LONG = 4, TIMER_DISK = 5, TIMER_GLIDE = 6, TIMER_FLING = 7, TIMER_ZOOM = 8,
+       TIMER_TILT = 10, kTiltFrameMs = 60 };   // (9: say.cpp's TIMER_VOICE)
 static const UINT kUserDelayMs = 900;    // wait for the user to stop pressing buttons
 
 // GPS button modes (g_cfg.follow)
@@ -349,13 +351,31 @@ static double ViewAngle()
 
 // North-up: the car is in the center. Heading-up: the car is near the bottom edge,
 // the view center is ahead of it along the course.
+// The magnet with no route (the user 2026-11-11; off the route's line too): the fix onto the road of the region's
+// graph it is on - as MagnetSnap: 30 m to catch, 40 to leave, its way within 60 degrees above 10 km/h (slower: any road)
+static void RoadMagnet(GpsState* f)
+{
+    static bool was;
+    int lat = (int)(f->lat * 1e6), lon = (int)(f->lon * 1e6);
+    double c = f->course;
+    int r = OfflineSnapFix(&lat, &lon, &c, was ? 40 : 30, f->speedKmh > 10 ? 60 : -1);
+    if (r < 0)   // (the graph busy with a route: as it came)
+        return;
+    was = r == 1;
+    if (was) {
+        f->lat = lat / 1e6;
+        f->lon = lon / 1e6;
+        f->course = c;
+    }
+}
+
 // The GPS's state taken (the fix's message, the second's tick): a new fix - the turn eased from the course shown
 static void GpsTake()
 {
     GpsGet(&s_fix);
     s_raw = s_fix;
-    if (s_fix.valid)
-        RouteMagnet(&s_fix.lon, &s_fix.lat, s_fix.speedKmh, &s_fix.course);
+    if (s_fix.valid && !RouteMagnet(&s_fix.lon, &s_fix.lat, s_fix.speedKmh, &s_fix.course))
+        RoadMagnet(&s_fix);
     s_gps = s_fix;
     if (s_gps.valid) {   // (saved with the view, each 5 minutes: StartFrom)
         g_cfg.lastLon = s_gps.lon;
@@ -479,14 +499,26 @@ static bool Tilted()
 }
 
 // The view's tilt while the third person's view is on (else NULL): the car keeps its place on the screen; the camera
-// 45 degrees from straight down at z15, 55 at z16, 65 closer (the user 2026-10-27)
+// 45 degrees from straight down at z15, 55 at z16, 65 closer (the user 2026-10-27), going there smoothly after a
+// zoom (TiltEase; frames by TIMER_TILT until there - the user 2026-11-11: it jumped)
+static double s_tiltShown = -1;
+static DWORD  s_tiltTick;
+
 static const Tilt* ViewTilt()
 {
     static Tilt t;
-    if (!Tilted())
+    if (!Tilted()) {
+        s_tiltShown = -1;
         return NULL;
+    }
+    DWORD now = GetTickCount();
+    double target = g_cfg.z >= 17 ? 65 : g_cfg.z == 16 ? 55 : 45;
+    s_tiltShown = TiltEase(s_tiltShown, target, now - s_tiltTick);
+    s_tiltTick = now;
+    if (s_tiltShown != target)
+        SetTimer(s_wnd, TIMER_TILT, kTiltFrameMs, NULL);
     double car = g_cfg.mapH * kCarAhead;
-    TiltMake(&t, car, car, kTiltFog, g_cfg.z >= 17 ? 65 : g_cfg.z == 16 ? 55 : 45);
+    TiltMake(&t, car, car, kTiltFog, s_tiltShown);
     return &t;
 }
 
@@ -1346,6 +1378,10 @@ static void OnButton(int b)
     case B_MINUS:  Zoom(-1); break;
     case B_PLUS:   Zoom(1); break;
     case B_TILT:   g_cfg.tilt = !g_cfg.tilt; break;
+    case B_SOUND:
+        g_cfg.voice = !g_cfg.voice;
+        Log("voice: %s by its button", g_cfg.voice ? "on" : "off");
+        break;
     }
     UserChanged();
 }
@@ -1356,18 +1392,27 @@ static int ButtonState(int b)
     if (b == B_NIGHT) return g_cfg.night ? 0 : 1;
     if (b == B_TSRC) return g_cfg.trafficSrc;
     if (b == B_GPS)  return g_cfg.follow == FOLLOW_HEADING ? 0 : (g_cfg.follow == FOLLOW_NORTH ? 1 : 2);
+    if (b == B_SOUND) return g_cfg.voice ? 0 : 1;
     return 0;
 }
 
 // Where a button is now; false when it isn't on the screen (the settings screen hides them all, the bottom
 // bar's ones are there only while it is up, the traffic provider only while traffic is on).
+static bool DockUp();
+
 static bool ButtonRect(int b, RECT* r)
 {
     if (s_settings || s_search || s_plan)
         return false;
     if (b == B_TILT && (g_cfg.follow != FOLLOW_HEADING || g_cfg.z < kTiltMinZ))
         return false;
-    if (b == B_GPS || b == B_MINUS || b == B_PLUS || b == B_TILT) {   // round, on the right (design v3)
+    if (b == B_SOUND) {   // the voice speaks on a route only; under the bar while it is up
+        RouteInfo ri;
+        RouteGet(&ri);
+        if (ri.state == ROUTE_NONE || DockUp())
+            return false;
+    }
+    if (b == B_GPS || b == B_MINUS || b == B_PLUS || b == B_TILT || b == B_SOUND) {   // round, on the right (design v3)
         SetRect(r, s_btn[b].x, s_btn[b].y, s_btn[b].x + kRound, s_btn[b].y + kRound);
         return true;
     }
@@ -4106,6 +4151,44 @@ static void DrawTripColumns(HDC dc, const RouteInfo& ri, int cx0, int step, int 
     }
 }
 
+// The speed limit sign (design v3): the posted limit of the road the car is on, from the region's graph (route.grf
+// made with the limits; OfflineLimitAt), looked at every 2 s; 0 = none shown
+enum { kLimitMs = 2000, kLimitNearM = 25 };
+static int   s_limit;
+static DWORD s_limitTick;
+
+static void LimitTick()
+{
+    if (!s_raw.valid) {
+        s_limit = 0;
+        return;
+    }
+    if (GetTickCount() - s_limitTick < kLimitMs)
+        return;
+    s_limitTick = GetTickCount();
+    int v = OfflineLimitAt((int)(s_raw.lat * 1e6), (int)(s_raw.lon * 1e6), s_raw.speedKmh > 5 ? s_raw.course : -1,
+                           kLimitNearM);
+    if (v >= 0)   // (-1: the graph busy with a route - the sign as it was)
+        s_limit = v;
+}
+
+// A white disc with a red ring and the number, its centre at cx, cy (the speed card's top right)
+static void DrawLimit(HDC dc, int cx, int cy, int v)
+{
+    HBRUSH red = CreateSolidBrush(RGB(214, 30, 30)), white = CreateSolidBrush(RGB(255, 255, 255));
+    HGDIOBJ ob = SelectObject(dc, red), op = SelectObject(dc, GetStockObject(NULL_PEN));
+    Ellipse(dc, cx - 21, cy - 21, cx + 22, cy + 22);
+    SelectObject(dc, white);
+    Ellipse(dc, cx - 15, cy - 15, cx + 16, cy + 16);
+    SelectObject(dc, op);
+    SelectObject(dc, ob);
+    DeleteObject(red);
+    DeleteObject(white);
+    wchar_t t[8];
+    _snwprintf(t, 8, L"%d", v);
+    Text(dc, v >= 100 ? s_fontCap : s_fontLabel, RGB(10, 10, 10), cx - 16, cy - 11, cx + 16, cy + 12, DT_CENTER, t);
+}
+
 static void DrawTrip(HDC dc)
 {
     RouteInfo ri;
@@ -4117,6 +4200,8 @@ static void DrawTrip(HDC dc)
         _snwprintf(v, 8, L"%d", (int)(s_gps.speedKmh + 0.5));
         Text(dc, s_fontSpeed, kText, c.left, c.top + 8, c.right, c.top + 46, DT_CENTER, v);
         Text(dc, s_fontCap, kTextDim, c.left, c.top + 44, c.right, c.top + 62, DT_CENTER, L"км/ч");
+        if (s_limit > 0)
+            DrawLimit(dc, c.right, c.top + 6, s_limit);
     }
     if (!TripShown())
         return;
@@ -5562,7 +5647,7 @@ static void DrawButtons(HDC dc)
         if (!ButtonRect(i, &r))
             continue;
         int pressed = s_pressed == i && s_pressedInside ? 1 : 0;
-        if (i == B_GPS || i == B_MINUS || i == B_PLUS || i == B_TILT) {   // a dark round button over the map, no border
+        if (i == B_GPS || i == B_MINUS || i == B_PLUS || i == B_TILT || i == B_SOUND) {   // dark, round, over the map
             if (pressed)
                 Tile(dc, r, kOrange, kOrange, kRound);
             else
@@ -6100,6 +6185,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             }
             return 0;
         }
+        if (wp == TIMER_TILT) {   // the pitch on its way to the zoom's: a frame (ViewTilt sets it again till there)
+            KillTimer(hwnd, TIMER_TILT);
+            InvalidateRect(hwnd, NULL, FALSE);
+            return 0;
+        }
         if (wp == TIMER_ZOOM) {   // the zoom's change: a frame (the last one draws the new zoom's own)
             if (!s_zoom.on)
                 KillTimer(hwnd, TIMER_ZOOM);
@@ -6194,6 +6284,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             RouteGps(s_raw.lon, s_raw.lat, s_raw.speedKmh, s_raw.course);
             SayTick((int)s_raw.speedKmh);
         }
+        LimitTick();
         if (!MapHeld()) {
             GlideApply();
             AutoZoom();

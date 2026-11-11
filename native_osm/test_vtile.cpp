@@ -650,6 +650,10 @@ static void Deep()
     for (int i = 0; i < (int)(sizeof(kNums14) / sizeof(kNums14[0])); i++)
         Add(l, NULL, kNums14[i].nm, 1, g, Point(g, kNums14[i].x, kNums14[i].y));
     End(t14, l);
+    // a street in the bottom right quarter, whose z15 tile has the house number only (a pack's z15 since 2026-11-11)
+    Begin(l, "transportation_name", "name");
+    Add(l, "primary", "Wide St", 2, g, HLine(g, 136, 250, 236));
+    End(t14, l);
     static unsigned char tl[2048], br[2048];
     int ntl = MakeDeep15(tl, true), nbr = MakeDeep15(br, false);
 
@@ -693,6 +697,9 @@ static void Deep()
         hidden = hidden && Lit(f, 380, 230, 420, 250) == 0;
     }
     Check(hidden, "z17: the z14 tile's numbers in the z15 tiles' quarters, at their borders too, not drawn");
+    Labels(f, 9500, 5000, 193, 236, 16, 0, mr, NULL, 0);
+    Check(Count(f, 300, 225, 500, 255, white) > 20,
+          "z16: the z14 tile's street name where the z15 tile has house numbers only (names yield to names)");
     Close(f);
 }
 
@@ -832,6 +839,14 @@ static bool Near(double a, double b)
 
 static void TiltChecks()
 {
+    Check(TiltEase(-1, 55, 0) == 55, "tilt ease: the first - the zoom's pitch at once");
+    Check(fabs(TiltEase(0, 55, 200) - 5) < 1e-9, "tilt ease: from 0 (a shown pitch, not the first) - eased");
+    Check(fabs(TiltEase(55, 65, 200) - 60) < 1e-9, "tilt ease: 200 ms - 5 degrees on (25 a second)");
+    Check(fabs(TiltEase(65, 55, 200) - 60) < 1e-9, "tilt ease: down the same");
+    Check(TiltEase(55, 65, 400) == 65 && TiltEase(55, 65, 5000) == 65, "tilt ease: there at 400 ms, never past");
+    Check(TiltEase(65, 45, 5000) == 45, "tilt ease: down, never past");
+    Check(TiltEase(60, 60, 100) == 60, "tilt ease: there - stays");
+    Check(fabs(TiltEase(55, 65, 0) - 55) < 1e-9, "tilt ease: no time - no step");
     Tilt t, t70;
     TiltMake(&t, 120, 150, 300, 60);    // the car 120 px below the flat map's centre, on the screen 150; the fog at
     TiltMake(&t70, 120, 150, 300, 70);  // 300 px ahead; the camera 60 degrees from straight down (70: lower)
@@ -1343,10 +1358,10 @@ static void OverviewChecks(const unsigned char* tile, int tileLen, const unsigne
     s_reads = 0;
 }
 
-// VTileLocal: a shown tile from the data at hand - the parsed tile without reading, the pack's z15 before its z14,
-// the cache's file; none: false (to download). z14 data tile (40, 20): MakeTile (water in its top left
-// quarter); its top left z15 child: the quarter's houses (no water) - a z16 tile drawn from it is land, from the z14 one
-// water.
+// VTileLocal: a shown tile from the data at hand - the parsed tile without reading, the z14 one (the pack's, the cache's
+// file), a pack's z15 read for its labels only (2026-11-11: its house numbers - no map there any more); none: false (to
+// download). z14 data tile (40, 20): MakeTile (water in its top left quarter); its top left z15 child: the quarter's
+// houses (no water) - a z16 tile drawn from the z14 one is water.
 static void LocalChecks(const unsigned char* tile, int tileLen, const unsigned char* houses, int housesLen)
 {
     const unsigned short water = RGB565(168, 204, 226), land = RGB565(243, 240, 235);
@@ -1366,10 +1381,11 @@ static void LocalChecks(const unsigned char* tile, int tileLen, const unsigned c
     s_packData[0] = houses;
     s_packLen[0] = housesLen;
     s_nPack = 1;
-    Check(VTileLocal(r16, &im) && s_reads == 2 && Px(im, 128, 128) == land, "local: the pack's z15 tile first");
+    Check(VTileLocal(r16, &im) && s_reads == 2 && Px(im, 128, 128) == water,
+          "local: z16 drawn from the z14 tile, the pack's z15 read (for its labels)");
     ImageFree(&im);
-    Check(VTileLocal(r16b, &im) && s_reads == 2 && Px(im, 128, 128) == land,
-          "local: the parsed z15 tile, nothing read again");
+    Check(VTileLocal(r16b, &im) && s_reads == 2 && Px(im, 128, 128) == water && land != water,
+          "local: the z15 tile parsed once, nothing read again");
     ImageFree(&im);
     s_file[0] = 0;
     s_packKey[1] = d;

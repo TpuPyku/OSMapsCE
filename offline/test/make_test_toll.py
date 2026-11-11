@@ -8,7 +8,7 @@ import sys
 
 NODES = {1: (60.000, 50.000), 2: (60.000, 50.010), 3: (60.005, 50.000), 4: (60.005, 50.010), 5: (60.008, 50.000),
          6: (60.000, 50.100), 7: (60.000, 50.120), 8: (60.008, 50.010)}
-WAYS = [([1, 2], 'Платная дорога', {'highway': 'primary', 'toll': 'yes'}),
+WAYS = [([1, 2], 'Платная дорога', {'highway': 'primary', 'toll': 'yes', 'maxspeed': '90'}),   # (the limit's sign)
         ([1, 3, 4, 2], 'Объезд', {'highway': 'residential'}),
         ([3, 5], 'Тупик', {'highway': 'residential'}), ([4, 8], 'Тупик', {'highway': 'residential'}),
         ([2, 6, 7], 'Дальняя платная', {'highway': 'primary', 'toll': 'yes'})]
