@@ -169,3 +169,8 @@ int VoiceSay(int stage, int act, int nextM, int then, const char** out, int cap)
     memcpy(out, c, n * sizeof(c[0]));
     return n;
 }
+
+int VoiceDevice(int via, int devs)
+{
+    return via == 2 && devs > 1 ? 1 : -1;
+}

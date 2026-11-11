@@ -33,3 +33,8 @@ const char* VoiceEvent(const VoiceRoute& was, const VoiceRoute& now);
 // a PCM WAV or cut short.
 struct VoiceWav { int at, len, rate, channels, bits; };
 bool VoiceWavParse(const unsigned char* b, int n, VoiceWav* w);
+
+// The sound device for a prompt (sheet 29 p. 27: not heard over the radio without the shell): via - who turned the
+// radio down (0 no one, 1 the stock shell, 2 VestaHome), devs - waveOutGetNumDevs(). Without the shell the MCU lets
+// through "Audio Output" 1 only (VestaHome's beep, HU 2026-10-18): 1 there; otherwise -1 (WAVE_MAPPER).
+int VoiceDevice(int via, int devs);

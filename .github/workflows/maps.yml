@@ -124,8 +124,8 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
         with:
-          python-version: '3.12'
-      - run: pip install pyinstaller pmtiles osmium pillow
+          python-version: '3.8'   # the last Python for Windows 7 (the user 2026-11-11: 3.12's app did not start there)
+      - run: pip install pyinstaller==5.13.2 pmtiles osmium pillow
       - run: offline\build_app.bat
         shell: cmd
       - name: The app's release (once)

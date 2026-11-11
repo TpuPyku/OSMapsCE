@@ -232,6 +232,15 @@ static void TestEvent()
     Check(Event(busy, on2, "route_ready"), "event: a route after none on - ready");
 }
 
+static void TestDevice()
+{
+    Check(VoiceDevice(2, 4) == 1, "device: VestaHome turned the radio down (no shell) - Audio Output 1");
+    Check(VoiceDevice(2, 2) == 1, "device: two devices, VestaHome - 1");
+    Check(VoiceDevice(2, 1) == -1, "device: one device only - the mapper");
+    Check(VoiceDevice(1, 4) == -1, "device: the stock shell (as CityGuide) - the mapper");
+    Check(VoiceDevice(0, 4) == -1, "device: no one asked (the PC) - the mapper");
+}
+
 int main()
 {
     TestEvent();
@@ -240,6 +249,7 @@ int main()
     TestThresholds();
     TestSay();
     TestWav();
+    TestDevice();
     printf("%d checks, %d failed\n", s_checks, s_failed);
     return s_failed;
 }

@@ -101,6 +101,9 @@ unsigned short* ImageCreate(int w, int h, Image* out);   // 16bpp RGB565, bottom
 bool ImageFromMemory(const unsigned char* data, int len, Image* out);
 bool ImageFromFile(const wchar_t* path, Image* out);
 void ImageFree(Image* im);
+// n RGB565 pixels to 0x00RRGGBB (each channel widened with its top bits: 31 -> 255, 0 -> 0) - the frame for a
+// 32-bit screen (sheet 29 p. 25-26: GDI's own conversion of the frame took 42 ms on the unit)
+void Rgb565To32(const unsigned short* s, unsigned long* d, int n);
 // Text as ready pixels (stamp.cpp; the Shturmann's frame 2026-11: names and panels, GDI's text, over half of it): a text
 // drawn once on black and on white gives its runs; the next frames lay those straight into the frame.
 struct StampKey { const wchar_t* s; int n, a, b, c, d; };   // the text and what else makes its look (font, colours, box)
@@ -304,7 +307,7 @@ void SayTick(int kmh);               // each GPS fix: the route's prompt due, sa
 void SayDone();                      // MM_WOM_DONE
 void SayTimer();                     // TIMER_VOICE
 void SayStop();                      // the program ends
-bool VoiceChannel(bool on);          // main.cpp: the radio down for a prompt (the shell, VestaHome); false - no one to ask
+int VoiceChannel(bool on);           // main.cpp: the radio down for a prompt - 1 by the shell, 2 by VestaHome, 0 no one
 bool OnApiResult(ApiResult* r);     // frees it; true = redraw
 
 // vtile.cpp - vector tiles drawn into TILE x TILE images; their .pbf on disk as Cache\<VEC_ZBASE + z>\...

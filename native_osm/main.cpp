@@ -136,6 +136,9 @@ static HWND       s_taskbar;
 static HBITMAP    s_back;
 static Image      s_backImg;            // s_back as a 16bpp DIB: the night filter edits its pixels
 static unsigned short* s_backBits;
+static HBITMAP    s_strip;              // a 32-bit screen (the unit): kStripH rows of the frame in its format (OutFrame)
+static unsigned long* s_stripBits;
+enum { kStripH = 48 };
 static unsigned short* s_nightLut;      // RGB565 -> night color, only while night is on
 static int        s_cw, s_ch;
 static Image      s_bg;
@@ -5588,6 +5591,28 @@ static void DrawButtons(HDC dc)
 }
 
 
+// The frame to the screen. A 32-bit screen (the unit) with our 16-bit frame: GDI converted each pixel itself - 42 ms a
+// frame (paint: out; sheet 29 p. 25-26, no smoothness), so the rows are converted here (Rgb565To32) a strip at a time
+// into s_strip (150 KB, not a second frame) and copied as they are.
+static void OutFrame(HDC hdc, HDC dc)
+{
+    if (!s_strip || !s_backBits) {
+        BitBlt(hdc, 0, 0, s_cw, s_ch, dc, 0, 0, SRCCOPY);
+        return;
+    }
+    HDC sdc = CreateCompatibleDC(hdc);
+    HGDIOBJ old = SelectObject(sdc, s_strip);
+    int stride = BackStride();
+    for (int y0 = 0; y0 < s_ch; y0 += kStripH) {
+        int h = s_ch - y0 < kStripH ? s_ch - y0 : kStripH;
+        for (int y = 0; y < h; y++)   // (the frame's rows bottom-up, the strip's top-down)
+            Rgb565To32(s_backBits + (s_ch - 1 - y0 - y) * stride, s_stripBits + y * s_cw, s_cw);
+        BitBlt(hdc, 0, y0, s_cw, h, sdc, 0, 0, SRCCOPY);
+    }
+    SelectObject(sdc, old);
+    DeleteDC(sdc);
+}
+
 static void Paint(HDC hdc)
 {
     s_ptAt = GetTickCount();
@@ -5626,7 +5651,7 @@ static void Paint(HDC hdc)
     }
     PartLap(PT_UI);
 
-    BitBlt(hdc, 0, 0, s_cw, s_ch, dc, 0, 0, SRCCOPY);
+    OutFrame(hdc, dc);
     PartLap(PT_OUT);
     StampTarget(NULL, NULL, 0, 0, 0);
     SelectObject(dc, oldFont);
@@ -5733,9 +5758,29 @@ static void OnCreate(HWND hwnd)
     s_ch = rc.bottom;
     s_backBits = ImageCreate(s_cw, s_ch, &s_backImg);
     s_back = s_backImg.bmp;
-    if (!s_back) {   // still works, just without the night filter
+    {
         HDC hdc = GetDC(hwnd);
-        s_back = CreateCompatibleBitmap(hdc, s_cw, s_ch);
+        if (!s_back)   // still works, just without the night filter
+            s_back = CreateCompatibleBitmap(hdc, s_cw, s_ch);
+        int bpp = GetDeviceCaps(hdc, BITSPIXEL) * GetDeviceCaps(hdc, PLANES);
+        if (s_backBits && bpp == 32) {   // (OutFrame)
+            BITMAPINFO bi;
+            memset(&bi, 0, sizeof(bi));
+            bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+            bi.bmiHeader.biWidth = s_cw;
+            bi.bmiHeader.biHeight = -kStripH;   // top-down
+            bi.bmiHeader.biPlanes = 1;
+            bi.bmiHeader.biBitCount = 32;
+            bi.bmiHeader.biCompression = BI_RGB;
+            void* bits = NULL;
+            s_strip = CreateDIBSection(hdc, &bi, DIB_RGB_COLORS, &bits, NULL, 0);
+            s_stripBits = (unsigned long*)bits;
+            if (!s_stripBits && s_strip) {
+                DeleteObject(s_strip);
+                s_strip = NULL;
+            }
+        }
+        Log("screen: %dx%d, %d bits a pixel%s", s_cw, s_ch, bpp, s_strip ? " - the frame converted by strips" : "");
         ReleaseDC(hwnd, hdc);
     }
 
@@ -5902,16 +5947,16 @@ static int VhReceive(const wchar_t* cmd)   // 2 = a button taken (VestaHome leav
 
 // A voice prompt over the radio (say.cpp), as an external navigator asks it: the stock shell's window gets
 // WM_NAVIGATION_VOICE 0x101D (PROJECT.md, Ghidra); without the shell VestaHome asks the MCU ("voice", plugin-api.md).
-bool VoiceChannel(bool on)
+int VoiceChannel(bool on)
 {
     HWND h = FindWindow(NULL, L"RadioCommWindow");
     if (h) {
         PostMessage(h, 0x101D, on ? 1 : 0, 0);
-        return true;
+        return 1;
     }
     if (!s_vh || !IsWindow(s_vh))
-        return false;
-    return VhapSend(s_vh, s_wnd, L"voice\ton=%d", on ? 1 : 0) == 1;
+        return 0;
+    return VhapSend(s_vh, s_wnd, L"voice\ton=%d", on ? 1 : 0) == 1 ? 2 : 0;
 }
 
 // The route's next manoeuvre to VestaHome (its top bar's chip), when it changes

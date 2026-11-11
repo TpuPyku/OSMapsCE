@@ -15,6 +15,7 @@ enum { SAY_IDLE, SAY_LEAD, SAY_PLAY, SAY_TAIL };
 
 static HWND         s_wnd;
 static int          s_phase;
+static int          s_via;           // who turned the radio down (VoiceChannel; VoiceDevice)
 static HWAVEOUT     s_out;
 static WAVEHDR      s_hdr;
 static WAVEFORMATEX s_fmt;
@@ -79,7 +80,10 @@ static void Play()
     memset(&s_hdr, 0, sizeof(s_hdr));
     s_hdr.lpData = s_pcm;
     s_hdr.dwBufferLength = s_pcmLen;
-    MMRESULT r = waveOutOpen(&s_out, WAVE_MAPPER, &s_fmt, (DWORD)(UINT_PTR)s_wnd, 0, CALLBACK_WINDOW);
+    int dev = VoiceDevice(s_via, (int)waveOutGetNumDevs());
+    MMRESULT r = waveOutOpen(&s_out, dev < 0 ? WAVE_MAPPER : (UINT)dev, &s_fmt, (DWORD)(UINT_PTR)s_wnd, 0, CALLBACK_WINDOW);
+    if (r != MMSYSERR_NOERROR && dev >= 0)   // (that device busy or gone: the default one)
+        r = waveOutOpen(&s_out, WAVE_MAPPER, &s_fmt, (DWORD)(UINT_PTR)s_wnd, 0, CALLBACK_WINDOW);
     if (r == MMSYSERR_NOERROR && waveOutPrepareHeader(s_out, &s_hdr, sizeof(s_hdr)) == MMSYSERR_NOERROR &&
         waveOutWrite(s_out, &s_hdr, sizeof(s_hdr)) == MMSYSERR_NOERROR) {
         int ms = s_fmt.nAvgBytesPerSec ? (int)((__int64)s_pcmLen * 1000 / s_fmt.nAvgBytesPerSec) : 0;
@@ -92,7 +96,8 @@ static void Play()
 
 static void Start()
 {
-    if (VoiceChannel(true)) {
+    s_via = VoiceChannel(true);
+    if (s_via) {
         s_phase = SAY_LEAD;
         SetTimer(s_wnd, TIMER_VOICE, kLeadMs, NULL);
     } else {

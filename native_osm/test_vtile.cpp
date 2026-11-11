@@ -1491,8 +1491,29 @@ static void TestMagnet()
     TestMagnetEdges();
 }
 
+static void TestRgb565To32()
+{
+    unsigned short s[5] = { 0xFFFF, 0x0000, 0xF800, 0x07E0, 0x001F };
+    unsigned long d[6] = { 1, 1, 1, 1, 1, 0xABCDEF };
+    Rgb565To32(s, d, 5);
+    Check(d[0] == 0xFFFFFF, "565 -> 32: white stays white");
+    Check(d[1] == 0x000000, "565 -> 32: black");
+    Check(d[2] == 0xFF0000, "565 -> 32: red 31 -> 255");
+    Check(d[3] == 0x00FF00, "565 -> 32: green 63 -> 255");
+    Check(d[4] == 0x0000FF, "565 -> 32: blue 31 -> 255");
+    Check(d[5] == 0xABCDEF, "565 -> 32: only n pixels written");
+    unsigned short m = (unsigned short)(16 << 11 | 32 << 5 | 1);   // the middle and one step
+    Rgb565To32(&m, d, 1);
+    Check(d[0] == ((16 << 3 | 16 >> 2) << 16 | (32 << 2 | 32 >> 4) << 8 | (1 << 3 | 1 >> 2)),
+          "565 -> 32: each channel's top bits below it (16 -> 132, 32 -> 130, 1 -> 8)");
+    unsigned short g = (unsigned short)(0x15 << 11 | 0x2A << 5 | 0x0A);
+    Rgb565To32(&g, d, 1);
+    Check(d[0] == 0xADAA52, "565 -> 32: the channels not mixed");
+}
+
 int main()
 {
+    TestRgb565To32();
     TestMagnet();
     VTileInit();
     TiltChecks();
