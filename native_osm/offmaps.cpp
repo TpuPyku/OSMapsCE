@@ -605,28 +605,37 @@ static void GetExtras(const wchar_t* data, int src)
     RemoveDirectory(old);
 }
 
+static int s_queue[kMaxRegions], s_queueN;   // the regions GetThread downloads in turn (MapsGetRegions)
+
 static DWORD WINAPI GetThread(LPVOID p)
 {
-    MapRegion r;
-    Lock();
-    int src = (int)p % 2;
-    r = s_reg[(int)p / 2];
-    s_totalKb = r.sizeKb;
-    LeaveCriticalSection(&s_cs);
+    int src = (int)p;
     wchar_t data[MAX_PATH];
     if (s_get == RealGet)
         OffWriteDir(data);
     else
         PathInDir(data, L"OSMapsData");   // (the tests' made-up server: never onto a disk of the PC's)
-    bool ok = GetRegion(r, data, src);
-    if (ok)
+    bool any = false;
+    for (int q = 0; q < s_queueN && !s_cancel; q++) {
+        MapRegion r;
+        Lock();
+        r = s_reg[s_queue[q]];
+        s_totalKb = r.sizeKb;
+        LeaveCriticalSection(&s_cs);
+        InterlockedExchange((LONG*)&s_busyRegion, s_queue[q]);
+        InterlockedExchange((LONG*)&s_got, 0);
+        Say(L"«%s»…", r.title);
+        bool ok = GetRegion(r, data, src);
+        any = any || ok;
+        Lock();
+        MapsHave(s_reg, s_nReg);
+        LeaveCriticalSection(&s_cs);
+        Say(ok ? Tr(L"«%s» записана") : s_cancel ? Tr(L"«%s»: загрузка остановлена") :
+                 Tr(L"«%s» не скачана: нет связи или нет места"), r.title);
+        Log("maps: %s %s", r.name, ok ? "downloaded" : s_cancel ? "cancelled" : "failed");
+    }
+    if (any)   // (the overview's pack once, after them)
         GetExtras(data, src);
-    Lock();
-    MapsHave(s_reg, s_nReg);
-    LeaveCriticalSection(&s_cs);
-    Say(ok ? Tr(L"«%s» записана") : s_cancel ? Tr(L"«%s»: загрузка остановлена") : Tr(L"«%s» не скачана: нет связи или нет места"),
-        r.title);
-    Log("maps: %s %s", r.name, ok ? "downloaded" : s_cancel ? "cancelled" : "failed");
     InterlockedExchange((LONG*)&s_busyRegion, -1);
     InterlockedExchange((LONG*)&s_busy, 0);
     return 0;
@@ -657,6 +666,26 @@ bool MapsGetRegion(int i)   // region i of the catalog, on its thread; false - n
     return MapsGetRegionFrom(i, MAPS_SRC_SERVER);
 }
 
+bool MapsGetRegions(const int* list, int n, int src)
+{
+    Lock();
+    bool there = n > 0 && n <= kMaxRegions;
+    for (int k = 0; k < n && there; k++)
+        there = list[k] >= 0 && list[k] < s_nReg;
+    LeaveCriticalSection(&s_cs);
+    if (!there || s_busy)
+        return false;
+    memcpy(s_queue, list, n * sizeof(int));
+    s_queueN = n;
+    InterlockedExchange((LONG*)&s_busyRegion, list[0]);   // (before the thread: it may be done at once)
+    InterlockedExchange((LONG*)&s_busySrc, src);
+    if (!Start(GetThread, (LPVOID)(src == MAPS_SRC_DISK ? MAPS_SRC_DISK : MAPS_SRC_SERVER))) {
+        InterlockedExchange((LONG*)&s_busyRegion, -1);
+        return false;
+    }
+    return true;
+}
+
 int MapsBusySource()
 {
     return s_busySrc;
@@ -664,20 +693,7 @@ int MapsBusySource()
 
 bool MapsGetRegionFrom(int i, int src)
 {
-    Lock();
-    bool there = i >= 0 && i < s_nReg;
-    LeaveCriticalSection(&s_cs);
-    if (!there || s_busy)
-        return false;
-    InterlockedExchange((LONG*)&s_busyRegion, i);   // (before the thread: it may be done at once)
-    InterlockedExchange((LONG*)&s_busySrc, src);
-    if (!Start(GetThread, (LPVOID)(i * 2 + (src == MAPS_SRC_DISK ? 1 : 0)))) {
-        InterlockedExchange((LONG*)&s_busyRegion, -1);
-        return false;
-    }
-    InterlockedExchange((LONG*)&s_got, 0);
-    Say(L"«%s»…", s_reg[i].title);
-    return true;
+    return MapsGetRegions(&i, 1, src);
 }
 
 int MapsBusyRegion()

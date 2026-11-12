@@ -203,6 +203,8 @@ bool MapsGetRegion(int i);       // the catalog's region i (and the trunk roads 
 enum { MAPS_SRC_SERVER, MAPS_SRC_DISK };   // where from: the maps' own server (else GitHub), Yandex Disk
 bool MapsGetRegionFrom(int i, int src);   // ... from there (its overview's pack too)
 int  MapsBusySource();            // ... the one being downloaded's
+bool MapsGetRegions(const int* list, int n, int src);   // several (ticked: the user 2026-11-12), in turn; false - busy,
+                                                         // none or one not in the catalog
 int  MapsCount();
 bool MapsAt(int i, MapRegion* out);
 int  MapsJob(wchar_t* text, int cap, int* gotKb, int* totalKb);   // MAPS_BUSY / MAPS_IDLE, its line, progress

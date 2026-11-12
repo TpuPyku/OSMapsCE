@@ -325,16 +325,25 @@ static const RECT kMapsCtl[M_COUNT] = {
 };
 enum { kMapsRows = 6 };
 // a row's two buttons (the user 2026-11-12): from the maps' server (R_ROW0), from Yandex Disk (R_DISK0, its copy's date)
-enum { R_ROW0, R_DISK0 = R_ROW0 + kMapsRows, R_PREV = R_DISK0 + kMapsRows, R_NEXT, R_LIST, R_BACK, R_COUNT };
+// ... a row's title ticks it (R_SEL0); the bottom bar: the ticked ones' source (R_SRC) and one button for them (R_GETSEL)
+enum { R_ROW0, R_DISK0 = R_ROW0 + kMapsRows, R_SEL0 = R_DISK0 + kMapsRows, R_PREV = R_SEL0 + kMapsRows, R_NEXT, R_LIST,
+       R_BACK, R_SRC, R_GETSEL, R_COUNT };
 static const RECT kRegCtl[R_COUNT] = {
     { 452, 81, 600, 121 }, { 452, 131, 600, 171 }, { 452, 181, 600, 221 },   // the regions' buttons: the server
     { 452, 231, 600, 271 }, { 452, 281, 600, 321 }, { 452, 331, 600, 371 },
     { 608, 81, 760, 121 }, { 608, 131, 760, 171 }, { 608, 181, 760, 221 },   // ... the disk
     { 608, 231, 760, 271 }, { 608, 281, 760, 321 }, { 608, 331, 760, 371 },
+    { 24, 76, 444, 126 }, { 24, 126, 444, 176 }, { 24, 176, 444, 226 },       // ... their titles: ticked
+    { 24, 226, 444, 276 }, { 24, 276, 444, 326 }, { 24, 326, 444, 376 },
     { 300, 420, 348, 468 }, { 452, 420, 500, 468 },                           // the pages
     { 716, 416, 784, 468 },                                                   // the catalog again ("refresh")
     { 8, 412, 80, 480 },                                                      // back to the map's page
+    { 88, 416, 292, 468 },                                                    // the ticked ones' source
+    { 508, 416, 708, 468 },                                                   // ... downloaded
 };
+enum { kSelMax = 256 };
+static bool s_mapsSel[kSelMax];   // the regions ticked (the catalog's order), downloaded by R_GETSEL
+static int  s_mapsSrc;            // ... from there (MAPS_SRC_*)
 static bool s_maps;            // the maps' screen over the settings
 static bool s_regions;         // ... its regions' page
 static int  s_mapsPressed = -1, s_mapsPage;
@@ -1118,8 +1127,28 @@ static void OnRegionsCtl(int id)
     case R_NEXT: if (s_mapsPage + 1 < pages) s_mapsPage++; break;
     case R_LIST: MapsList(); break;
     case R_BACK: s_regions = false; break;
+    case R_SRC:  s_mapsSrc = s_mapsSrc == MAPS_SRC_DISK ? MAPS_SRC_SERVER : MAPS_SRC_DISK; break;
+    case R_GETSEL: {   // the ticked ones in turn (those with a copy there); while it goes - stopped
+        if (MapsBusyRegion() >= 0) {
+            MapsCancel();
+            break;
+        }
+        int list[kSelMax], n = 0;
+        MapRegion m;
+        for (int i = 0; i < MapsCount() && i < kSelMax; i++)
+            if (s_mapsSel[i] && MapsAt(i, &m) && (s_mapsSrc != MAPS_SRC_DISK || m.diskKb))
+                list[n++] = i;
+        if (n && MapsGetRegions(list, n, s_mapsSrc))
+            memset(s_mapsSel, 0, sizeof(s_mapsSel));
+        break;
+    }
     default:
-        if (id >= R_DISK0)
+        if (id >= R_SEL0) {
+            int i = s_mapsPage * kMapsRows + id - R_SEL0;
+            MapRegion m;
+            if (i < kSelMax && MapsAt(i, &m))
+                s_mapsSel[i] = !s_mapsSel[i];
+        } else if (id >= R_DISK0)
             MapsTap(s_mapsPage * kMapsRows + id - R_DISK0, MAPS_SRC_DISK, confirm);
         else
             MapsTap(s_mapsPage * kMapsRows + id - R_ROW0, MAPS_SRC_SERVER, confirm);
@@ -3733,11 +3762,22 @@ static void MapsRow(HDC dc, int r, int i, const MapRegion& m)
     int kb = m.fullKb ? m.fullKb : m.sizeKb;   // (whole from the disk: with its tiles)
     _snwprintf(sub, 64, Tr(L"%d,%d МБ · %s"), kb / 1024, kb % 1024 * 10 / 1024, kState[st]);
     sub[63] = 0;
-    int y = kSetRow0 + r * kSetRowH, tx = m.foreign ? 64 : 36;
+    int y = kSetRow0 + r * kSetRowH, tx = m.foreign ? 92 : 64;
+    RECT box = { 36, y + 5, 56, y + 25 };   // ticked: downloaded by the bottom bar's button
+    bool sel = i < kSelMax && s_mapsSel[i];
+    Tile(dc, box, sel ? kOrange : kInk, sel ? kOrange : kTextDim, 6);
+    if (sel) {
+        HPEN pen = CreatePen(PS_SOLID, 3, kInk);
+        HGDIOBJ op = SelectObject(dc, pen);
+        POINT tick[3] = { { 40, y + 15 }, { 45, y + 20 }, { 52, y + 9 } };
+        Polyline(dc, tick, 3);
+        SelectObject(dc, op);
+        DeleteObject(pen);
+    }
     if (m.foreign)
-        GlobeSign(dc, 48, y + 15, 10, kTextDim);
+        GlobeSign(dc, 76, y + 15, 10, kTextDim);
     Text(dc, s_fontLabel, kText, tx, y + 3, 444, y + 28, DT_LEFT, t);
-    Text(dc, s_fontSmall, kTextDim, 36, y + 27, 444, y + 48, DT_LEFT, sub);
+    Text(dc, s_fontSmall, kTextDim, 64, y + 27, 444, y + 48, DT_LEFT, sub);
     if (r < kMapsRows - 1) {
         RECT l = { 24, y + kSetRowH - 2, s_cw - 24, y + kSetRowH };
         HBRUSH lb = CreateSolidBrush(kLine);
@@ -3875,6 +3915,15 @@ static void DrawRegions(HDC dc)
     Text(dc, s_fontLabel, kText, 348, 420, 452, 468, DT_CENTER, s);
     DrawCtl(dc, kRegCtl[R_LIST], s_mapsPressed == R_LIST, s_fontLabel, L"");
     RefreshSign(dc, kRegCtl[R_LIST], s_mapsPressed == R_LIST ? kInk : kText);
+    int ticked = 0;
+    for (int i = 0; i < n && i < kSelMax; i++)
+        ticked += s_mapsSel[i] ? 1 : 0;
+    DrawCtl(dc, kRegCtl[R_SRC], s_mapsPressed == R_SRC, s_fontLabel, s_mapsSrc == MAPS_SRC_DISK ? L"ИЗ: Я.ДИСК" : L"ИЗ: СЕРВЕР");
+    if (MapsBusyRegion() >= 0)
+        wcscpy(s, L"ОТМЕНА");
+    else
+        _snwprintf(s, 32, ticked ? L"СКАЧАТЬ (%d)" : L"СКАЧАТЬ", ticked);
+    DrawCtl(dc, kRegCtl[R_GETSEL], s_mapsPressed == R_GETSEL, s_fontLabel, s);
 }
 
 // Over the settings, as they look: the title, the clock, a panel with the rows; the map's page or the regions'

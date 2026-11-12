@@ -534,6 +534,16 @@ static void DownloadChecks()
     Check(MapsJob(text, 128, &gotKb, &total) == MAPS_IDLE && total == 2 && wcsstr(text, L"Z"), "job: its result told",
           NULL);
     Check(!MapsGetRegion(5), "job: no such region", NULL);
+    // several at once (the user 2026-11-12: ticked, one button): in turn, each one's state after
+    wchar_t zzDir[MAX_PATH];
+    PathInDir(zzDir, L"OSMapsData\\zz");
+    Remove(zzDir);
+    int both[2] = { 1, 1 }, bad[2] = { 1, 5 };   // (tiny: the card's own - its download would change the next checks)
+    Check(!MapsGetRegions(bad, 2, MAPS_SRC_SERVER) && !MapsGetRegions(both, 0, MAPS_SRC_SERVER),
+          "job: a list with no such region, an empty one - not started", NULL);
+    Check(MapsGetRegions(both, 2, MAPS_SRC_SERVER) && WaitMaps() && MapsAt(1, &m) && MapState(m) == MAP_OK &&
+          MapsBusyRegion() == -1, "job: two in turn, there after",
+          NULL);
 
     // cancelled (the user 2026-10-30): stopped, nothing installed, the part kept for the next time; not sticking
     wchar_t zz[MAX_PATH], zzPart[MAX_PATH];
