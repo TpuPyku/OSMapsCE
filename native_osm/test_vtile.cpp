@@ -1256,6 +1256,77 @@ static void CacheVictimChecks()
     Check(CacheVictim(e, 1, 0, 6000) == -1 && CacheVictim(e, 0, -1, 6000) == -1, "cache: nothing but the kept - none");
 }
 
+// The frame as TiltWarp made it before 2026-11-12 (a pixel each, every pixel through every ring's check): the pin of
+// its faster walk (Shturmann 2026-11-12: the 3D frame 80-158 ms)
+static unsigned short RefPixel(const RingView* rings, int n, int x, int y, unsigned short fog)
+{
+    for (int i = 0; i < n; i++) {
+        const RingView& r = rings[i];
+        if (x >= r.x0 && x < r.x1 && y >= r.y0 && y < r.y1)
+            return r.top[((y >> r.shift) % r.size) * r.stride + (x >> r.shift) % r.size];
+    }
+    return fog;
+}
+
+static void RefWarp(const RingView* rings, int n, const Tilt& t, int w, int h, double vx, double vy, double angleDeg,
+                    bool night, unsigned short* dst, int dstride)
+{
+    double a = angleDeg * M_PI / 180, ca = cos(a), sa = sin(a);
+    int bx = (int)floor(vx), by = (int)floor(vy);
+    for (int y = 0; y < h; y++) {
+        double sy = y - h / 2.0, fy, k, fade;
+        unsigned char c[3];
+        TiltFog(t, sy, night, c);
+        unsigned short fog = RGB565(c[0], c[1], c[2]);
+        unsigned short* d = dst + y * dstride;
+        if (!TiltRow(t, sy, &fy, &k, &fade)) {
+            for (int x = 0; x < w; x++)
+                d[x] = fog;
+            continue;
+        }
+        double fx = -w / 2.0 * k;
+        long ox = (long)floor((fx * ca - fy * sa + vx - bx) * 65536.0), oy = (long)floor((fx * sa + fy * ca + vy - by) * 65536.0);
+        long dx = (long)(k * ca * 65536.0), dy = (long)(k * sa * 65536.0);
+        int alpha = (int)(fade * 32 + 0.5);
+        for (int x = 0; x < w; x++, ox += dx, oy += dy) {
+            unsigned short p = RefPixel(rings, n, bx + (int)(ox >> 16), by + (int)(oy >> 16), fog);
+            d[x] = alpha ? Blend565(p, fog, alpha) : p;
+        }
+    }
+}
+
+// Many views as the app's (the fog 900+ px ahead, 45-65 degrees): the faster walk gives the very same frame
+static void TiltWarpSameChecks()
+{
+    static unsigned short nearBits[64 * 64], farBits[64 * 64], bigBits[256 * 256], got[120 * 240], ref[120 * 240];
+    for (int i = 0; i < 64 * 64; i++) {
+        nearBits[i] = (unsigned short)((i * 2654435761u) >> 17);
+        farBits[i] = (unsigned short)(0x8000 | (i * 40503u));
+    }
+    for (int i = 0; i < 256 * 256; i++)
+        bigBits[i] = (unsigned short)(0x4000 | ((i * 97u) & 0x3FFF));
+    int bad = 0;
+    for (int v = 0; v < 48; v++) {
+        double vx = 1000.5 + v * 3.3, vy = 2000.25 - v * 1.7, angle = v * 37.5;
+        RingView rings[2] = { { nearBits, 64, 64, 0, (int)vx - 20 - v % 5, (int)vy - 21, (int)vx + 22, (int)vy + 19 + v % 3 },
+                              { farBits, 64, 64, 2, (int)vx - 120, (int)vy - 130, (int)vx + 125, (int)vy + 110 } };
+        if (v % 4 == 3) {   // a near ring over a part of the rows - one side, the other past it
+            RingView big = { bigBits, 256, 256, 0, (int)vx - 200, (int)vy - 150 + v, (int)vx + 10 - v % 7, (int)vy + 90 };
+            rings[0] = big;
+        }
+        Tilt t;
+        TiltMake(&t, 60 + v % 7, 60, 900 + v * 10, 45 + v % 3 * 10);
+        int n = 1 + v % 2, w = 120 - v % 4, h = 240;
+        TiltWarp(rings, n, t, w, h, vx, vy, angle, v % 3 == 0, got, w);
+        RefWarp(rings, n, t, w, h, vx, vy, angle, v % 3 == 0, ref, w);
+        for (int i = 0; i < w * h; i++)
+            bad += got[i] != ref[i];
+    }
+    if (bad)
+        printf("  tilt frame vs before: %d pixels differ\n", bad);
+    Check(!bad, "tilt frame: the same frame as each pixel's own walk");
+}
+
 static void TiltWarpChecks()
 {
     Check(Blend565(RGB565(0, 0, 0), RGB565(248, 252, 248), 0) == RGB565(0, 0, 0) &&
@@ -1780,6 +1851,7 @@ int main()
     GlideChecks();
     YoChecks();
     TiltWarpChecks();
+    TiltWarpSameChecks();
     FarRingChecks();
     CacheVictimChecks();
     CacheCapChecks();

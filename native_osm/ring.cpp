@@ -47,14 +47,68 @@ static unsigned short RingPixel(const RingFast* rings, int n, int x, int y, unsi
 
 struct RowWalk { int bx, by; long ox, oy, dx, dy; };   // the view's centre (whole px), the walk in 16.16 from it
 
+// Narrows [*lo, *hi] to the steps x whose (o + x * d) / 2^16 lies in [a, b]
+static void Keep(long o, long d, double a, double b, double* lo, double* hi)
+{
+    double p = o / kFix, q = d / kFix;
+    if (q == 0) {
+        if (p < a || p > b)
+            *hi = *lo - 1;
+        return;
+    }
+    double t0 = (a - p) / q, t1 = (b - p) / q;
+    if (q < 0) {   // (walking back: b reached first)
+        double t = t0;
+        t0 = t1;
+        t1 = t;
+    }
+    *lo = t0 > *lo ? t0 : *lo;
+    *hi = t1 < *hi ? t1 : *hi;
+}
+
+// The row's steps surely inside the first ring's loaded part (a pixel inside its edges): [*lo, *hi); Shturmann
+// 2026-11-12 - the 3D frame 80-158 ms: those need no ring's check a pixel
+static void Inside(const RingFast& f, const RowWalk& w, int width, int* lo, int* hi)
+{
+    const RingView& r = f.v;
+    double l = 0, h = width - 1;
+    Keep(w.ox, w.dx, r.x0 - w.bx + 1, r.x1 - w.bx - 2, &l, &h);
+    Keep(w.oy, w.dy, r.y0 - w.by + 1, r.y1 - w.by - 2, &l, &h);
+    *lo = (int)ceil(l);
+    *hi = h < l ? *lo : (int)floor(h) + 1;
+}
+
+// Steps from..to - 1 through each ring's check
+static void WalkAny(const RingFast* rings, int n, RowWalk* w, int from, int to, unsigned short fog, int alpha, unsigned short* d)
+{
+    for (int x = from; x < to; x++, w->ox += w->dx, w->oy += w->dy) {
+        unsigned short p = RingPixel(rings, n, w->bx + (int)(w->ox >> 16), w->by + (int)(w->oy >> 16), fog);
+        d[x] = alpha ? Blend565(p, fog, alpha) : p;
+    }
+}
+
+// ... all in the first ring
+static void WalkNear(const RingFast& f, RowWalk* w, int from, int to, unsigned short fog, int alpha, unsigned short* d)
+{
+    const RingView& r = f.v;
+    for (int x = from; x < to; x++, w->ox += w->dx, w->oy += w->dy) {
+        int px = w->bx + (int)(w->ox >> 16), py = w->by + (int)(w->oy >> 16);
+        unsigned short p = r.top[Wrapped((py >> r.shift) - f.by, r.size) * r.stride + Wrapped((px >> r.shift) - f.bx, r.size)];
+        d[x] = alpha ? Blend565(p, fog, alpha) : p;
+    }
+}
+
 static void WarpRow(const RingFast* rings, int n, const RowWalk& w0, int width, unsigned short fog, int alpha,
                     unsigned short* d)
 {
     RowWalk w = w0;
-    for (int x = 0; x < width; x++, w.ox += w.dx, w.oy += w.dy) {
-        unsigned short p = RingPixel(rings, n, w.bx + (int)(w.ox >> 16), w.by + (int)(w.oy >> 16), fog);
-        d[x] = alpha ? Blend565(p, fog, alpha) : p;
-    }
+    int lo, hi;
+    Inside(rings[0], w, width, &lo, &hi);
+    lo = lo < 0 ? 0 : lo > width ? width : lo;
+    hi = hi < lo ? lo : hi > width ? width : hi;
+    WalkAny(rings, n, &w, 0, lo, fog, alpha, d);
+    WalkNear(rings[0], &w, lo, hi, fog, alpha, d);
+    WalkAny(rings, n, &w, hi, width, fog, alpha, d);
 }
 
 void TiltWarp(const RingView* rings, int n, const Tilt& t, int w, int h, double vx, double vy, double angleDeg, bool night,

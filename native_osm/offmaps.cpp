@@ -465,6 +465,18 @@ bool MapsDiskOld(const MapRegion& r)   // (the dates "YYYY-MM-DD": compared as t
     return r.diskDate[0] && r.date[0] && strcmp(r.diskDate, r.date) < 0;
 }
 
+// The catalog's overview entry: its pack's size on the server and on the disk, there on the server, its build's date
+struct Overview { int kb, diskKb; bool files; char date[16]; };
+
+static void OverviewOf(const char* body, Overview* o)
+{
+    const char* ov = JKey(body, "overview");
+    o->kb = (int)(JNum(JKey(ov, "size"), 0) / 1024);
+    o->diskKb = (int)(JNum(JKey(JKey(ov, "disk"), "size"), 0) / 1024);
+    o->files = JTrue(JKey(ov, "files"));
+    Copy(o->date, sizeof(o->date), JKey(ov, "date"));
+}
+
 static DWORD WINAPI ListThread(LPVOID)
 {
     char url[256];
@@ -476,16 +488,12 @@ static DWORD WINAPI ListThread(LPVOID)
     static MapRegion got[kMaxRegions];
     int n = ok ? MapsCatalog((const char*)body, got, kMaxRegions) : 0;
     char disk[256] = "", files[256] = "";
+    Overview ov = { 0, 0, false, "" };
     if (n) {
         Copy(disk, sizeof(disk), JKey((const char*)body, "disk"));
         Copy(files, sizeof(files), JKey((const char*)body, "files"));
+        OverviewOf((const char*)body, &ov);
     }
-    int ovKb = n ? (int)(JNum(JKey(JKey((const char*)body, "overview"), "size"), 0) / 1024) : 0;
-    bool ovFiles = n && JTrue(JKey(JKey((const char*)body, "overview"), "files"));
-    int ovDiskKb = n ? (int)(JNum(JKey(JKey(JKey((const char*)body, "overview"), "disk"), "size"), 0) / 1024) : 0;
-    char trunkDate[16] = "";
-    if (n)
-        Copy(trunkDate, sizeof(trunkDate), JKey(JKey((const char*)body, "overview"), "date"));
     free(body);
     qsort(got, n, sizeof(MapRegion), MapsOrder);
     MapsHave(got, n);
@@ -494,10 +502,10 @@ static DWORD WINAPI ListThread(LPVOID)
     s_nReg = n;
     strcpy(s_disk, disk);
     strcpy(s_files, files);
-    s_ovKb = ovKb;
-    s_ovFiles = ovFiles;
-    s_ovDiskKb = ovDiskKb;
-    strcpy(s_trunkDate, trunkDate);
+    s_ovKb = ov.kb;
+    s_ovFiles = ov.files;
+    s_ovDiskKb = ov.diskKb;
+    strcpy(s_trunkDate, ov.date);
     _snwprintf(s_text, 128, n ? Tr(L"Областей: %d") : Tr(L"Каталог не получен (нет связи с GitHub?)"), n);
     LeaveCriticalSection(&s_cs);
     Log("maps: catalog %d regions (HTTP %d, error %d)", n, status, err);
@@ -577,23 +585,37 @@ static bool GetRegion(const MapRegion& r, const wchar_t* data, int src)
 
 // After a region: the overview's pack - its map and the trunk roads, one archive on the disk (GitHub, where the trunk roads
 // were, is blocked on the unit): when its map is missing or its graph is another build. None where the region went.
+// The overview's pack in that source (from where the region came: the disk's copy, if it has one)
+static bool OverviewThere(int src)
+{
+    return src == MAPS_SRC_DISK ? s_disk[0] && s_ovDiskKb : WholeThere(s_ovFiles) && s_ovKb;
+}
+
+static bool OverviewHref(int src, char* url, int cap)
+{
+    return src == MAPS_SRC_DISK ? DiskHref("overview.zip", url, cap) : WholeHref("overview.zip", s_ovFiles, url, cap);
+}
+
+static void DropOldTrunk(const wchar_t* data);
+
 static void GetExtras(const wchar_t* data, int src)
 {
-    wchar_t ov[MAX_PATH], old[MAX_PATH];
+    wchar_t ov[MAX_PATH];
     char url[2048];
     _snwprintf(ov, MAX_PATH, L"%s\\overview\\overview.vtp", data);
     ov[MAX_PATH - 1] = 0;
-    bool disk = src == MAPS_SRC_DISK;   // (from where the region came: the disk's copy, if it has one)
-    if (disk ? !s_disk[0] || !s_ovDiskKb : !WholeThere(s_ovFiles) || !s_ovKb)
-        return;
-    if (!s_trunkDate[0] || s_cancel || (Exists(ov, NULL) && TrunkCurrent()))
+    if (!OverviewThere(src) || !s_trunkDate[0] || s_cancel || (Exists(ov, NULL) && TrunkCurrent()))
         return;
     Say(Tr(L"Обзорная карта и магистрали…"), NULL);
-    s_totalKb = disk ? s_ovDiskKb : s_ovKb;
-    if (!(disk ? DiskHref("overview.zip", url, sizeof(url)) : WholeHref("overview.zip", s_ovFiles, url, sizeof(url))) ||
-        !MapsInstall(url, data, "overview", MAPS_OVERVIEW))
-        return;
-    // a card from before: the trunk roads' own folder goes (the first trunk.grf found is the one taken)
+    s_totalKb = src == MAPS_SRC_DISK ? s_ovDiskKb : s_ovKb;
+    if (OverviewHref(src, url, sizeof(url)) && MapsInstall(url, data, "overview", MAPS_OVERVIEW))
+        DropOldTrunk(data);
+}
+
+// A card from before: the trunk roads' own folder goes (the first trunk.grf found is the one taken)
+static void DropOldTrunk(const wchar_t* data)
+{
+    wchar_t old[MAX_PATH];
     _snwprintf(old, MAX_PATH, L"%s\\trunk\\trunk.grf", data);
     old[MAX_PATH - 1] = 0;
     DeleteFile(old);
@@ -607,6 +629,27 @@ static void GetExtras(const wchar_t* data, int src)
 
 static int s_queue[kMaxRegions], s_queueN;   // the regions GetThread downloads in turn (MapsGetRegions)
 
+// One region of the queue: downloaded, the catalog's states anew, told
+static bool GetQueued(int i, const wchar_t* data, int src)
+{
+    MapRegion r;
+    Lock();
+    r = s_reg[i];
+    s_totalKb = r.sizeKb;
+    LeaveCriticalSection(&s_cs);
+    InterlockedExchange((LONG*)&s_busyRegion, i);
+    InterlockedExchange((LONG*)&s_got, 0);
+    Say(L"«%s»…", r.title);
+    bool ok = GetRegion(r, data, src);
+    Lock();
+    MapsHave(s_reg, s_nReg);
+    LeaveCriticalSection(&s_cs);
+    Say(ok ? Tr(L"«%s» записана") : s_cancel ? Tr(L"«%s»: загрузка остановлена") :
+             Tr(L"«%s» не скачана: нет связи или нет места"), r.title);
+    Log("maps: %s %s", r.name, ok ? "downloaded" : s_cancel ? "cancelled" : "failed");
+    return ok;
+}
+
 static DWORD WINAPI GetThread(LPVOID p)
 {
     int src = (int)p;
@@ -616,24 +659,8 @@ static DWORD WINAPI GetThread(LPVOID p)
     else
         PathInDir(data, L"OSMapsData");   // (the tests' made-up server: never onto a disk of the PC's)
     bool any = false;
-    for (int q = 0; q < s_queueN && !s_cancel; q++) {
-        MapRegion r;
-        Lock();
-        r = s_reg[s_queue[q]];
-        s_totalKb = r.sizeKb;
-        LeaveCriticalSection(&s_cs);
-        InterlockedExchange((LONG*)&s_busyRegion, s_queue[q]);
-        InterlockedExchange((LONG*)&s_got, 0);
-        Say(L"«%s»…", r.title);
-        bool ok = GetRegion(r, data, src);
-        any = any || ok;
-        Lock();
-        MapsHave(s_reg, s_nReg);
-        LeaveCriticalSection(&s_cs);
-        Say(ok ? Tr(L"«%s» записана") : s_cancel ? Tr(L"«%s»: загрузка остановлена") :
-                 Tr(L"«%s» не скачана: нет связи или нет места"), r.title);
-        Log("maps: %s %s", r.name, ok ? "downloaded" : s_cancel ? "cancelled" : "failed");
-    }
+    for (int q = 0; q < s_queueN && !s_cancel; q++)
+        any = GetQueued(s_queue[q], data, src) || any;
     if (any)   // (the overview's pack once, after them)
         GetExtras(data, src);
     InterlockedExchange((LONG*)&s_busyRegion, -1);

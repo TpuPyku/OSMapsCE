@@ -15,6 +15,10 @@ const LayerPoint* LayersIn(const int* box, int* n);
 void LayersPause(bool on);   // a region being written: the points in hand stay, none read; after it - read anew
 void LayersDrop();
 
+// One point for one thing (the user 2026-11-12): traffic lights near one another (a crossing's approaches, 40 m) and
+// bumps (one each way of a divided road, 20 m) - one at their middle; car parks as they are. In place; the points left
+int LayersMerge(LayerPoint* p, int n);
+
 // The nearest point of that kind on the way ahead: along the course, at most maxM, at most kLayerWideM off the line;
 // *dist - its metres
 bool LayerAhead(const LayerPoint* p, int n, int kind, int lat, int lon, double course, int maxM, int* dist);

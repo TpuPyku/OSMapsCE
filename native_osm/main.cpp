@@ -11,7 +11,7 @@
 #include "startpt.h"   // where a route starts
 #include "vnav.h"      // VestaCore: the next manoeuvre as VestaHome is told it, its sign
 #include "vfont.h"     // VestaCore: the fonts
-static const wchar_t* const kRelease = L"2.0";   // raise by hand: minor - significant changes, major - big releases
+static const wchar_t* const kRelease = L"2.1";   // raise by hand: minor - significant changes, major - big releases
 
 // ---------------------------------------------------------------- UI layout
 // 800x480 in the VestaHome style (mockup VestaHome/skin/maps-skin-v2.pdf): the map over the whole screen, a
@@ -3226,6 +3226,19 @@ static void ParkEnd(const ParkView& v, int lat, int lon, double* x, double* y)
     *y = -dx * v.rs + dy * v.rc;
 }
 
+// A point of the box on the screen (the map's points: lights, bumps, car parks - Shturmann 2026-11-12: GeoToWorld and
+// ScreenOf for each of up to 3000 points took 125-309 ms a frame without an FPU); false - not to be seen
+static bool ViewPoint(const ParkView& v, int lat, int lon, double* x, double* y)
+{
+    ParkEnd(v, lat, lon, x, y);
+    if (!v.tilt && (fabs(*x) > kParkCullPx || fabs(*y) > kParkCullPx))
+        return false;
+    bool seen = Lift(v.tilt, x, y);
+    *x += v.cx;
+    *y += v.cy;
+    return seen;
+}
+
 // One piece on the screen: false - not to be seen
 static bool ParkPiece(const ParkView& v, const ParkLine& l, POINT* seg)
 {
@@ -3283,14 +3296,13 @@ static void DrawLayers(HDC dc, double cx, double cy, double vx, double vy, doubl
     if (g_cfg.parking && !g_cfg.traffic && g_cfg.z >= kLayerZ)
         DrawParkLines(dc, box, cx, cy, vx, vy, angle);
     s_layer = LayersIn(box, &s_layerN);
+    ParkView v;
+    ParkViewOf(&v, box, cx, cy, vx, vy, angle);
     for (int i = 0; i < s_layerN; i++) {
         const LayerPoint& p = s_layer[i];
         s_layerParks += p.kind == LAY_PARKING;
-        double gx, gy, sx, sy;
-        if (!LayerShown(p))
-            continue;
-        GeoToWorld(p.lon * 1e-6, p.lat * 1e-6, g_cfg.z, &gx, &gy);
-        if (ScreenOf(gx, gy, vx, vy, cx, cy, angle, &sx, &sy) && (!s_dockShown || sy + 16 <= kDockY + s_dockOff))
+        double sx, sy;
+        if (LayerShown(p) && ViewPoint(v, p.lat, p.lon, &sx, &sy) && (!s_dockShown || sy + 16 <= kDockY + s_dockOff))
             LayerMark(dc, p, Round(sx), Round(sy));
     }
 }

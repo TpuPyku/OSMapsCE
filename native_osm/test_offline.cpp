@@ -258,8 +258,21 @@ static int FakeGet(const char* host, bool, const char* path, unsigned char** bod
         static char noDisk[1024];   // s_withDisk 3: the own server alone, no disk's link
         strcpy(noDisk, kFilesCat);
         memcpy(strstr(noDisk, "\"disk\""), "\"xxxx\"", 6);
-        return Body(s_withDisk == 3 ? noDisk : s_withDisk == 2 ? kFilesCat : s_withDisk ? kDiskCat : kCat, body, len,
-                    status);
+        // 4: the disk's copies of zz and of the overview (the scheduled run's); 5: of zz only; 6: the server's overview
+        // without its size
+        static const char* kCopies = "{\"disk\":\"https://disk.example/d/x y\",\"overview\":{\"zip\":\"overview.zip\","
+                                     "\"size\":2048,\"date\":\"2026-10-30\",\"disk\":{\"size\":2048,\"date\":\"2026-10-30\"}},"
+                                     "\"regions\":[{\"name\":\"yy\",\"title\":\"Y\",\"date\":\"2026-10-29\",\"zip\":\"yy.zip\","
+                                     "\"size\":2048},{\"name\":\"zz\",\"title\":\"Z\",\"date\":\"2026-10-30\",\"zip\":\"zz.zip\","
+                                     "\"size\":2048,\"full\":{\"zip\":\"zz.zip\",\"size\":300000},\"disk\":{\"size\":300000,"
+                                     "\"date\":\"2026-10-30\"}}]}";
+        static char zzOnly[1024], noSize[1024];
+        strcpy(zzOnly, kCopies);
+        memcpy(strstr(zzOnly, "\"disk\":{\"size\":2048"), "\"dosk\"", 6);
+        strcpy(noSize, kFilesCat);
+        memcpy(strstr(noSize, "\"size\":2048,\"date\":\"2026-10-30\",\"files\""), "\"sizz\"", 6);
+        const char* cats[] = { kCat, kDiskCat, kFilesCat, noDisk, kCopies, zzOnly, noSize };
+        return Body(cats[s_withDisk], body, len, status);
     }
     if (s_withDisk >= 2 && !strcmp(host, "files.example")) {   // the own server: its files straight, in ranges
         strncpy(s_filesAsked + strlen(s_filesAsked), path, sizeof(s_filesAsked) - strlen(s_filesAsked) - 1);
@@ -380,6 +393,30 @@ static void FilesChecks(const wchar_t* zz, const wchar_t* yy, const wchar_t* ov)
     Remove(ov);
 }
 
+// The overview with a region from the disk (the user 2026-11-12: two sources) - only from where it has a copy; from the
+// server - only with its size
+static void OverviewSourceChecks(const wchar_t* zz, const wchar_t* ov)
+{
+    for (int k = 4; k <= 5; k++) {
+        s_withDisk = k;
+        s_ovAsks = 0;
+        Remove(zz);
+        Remove(ov);
+        Check(MapsList() && WaitMaps() && MapsGetRegionFrom(1, MAPS_SRC_DISK) && WaitMaps() &&
+              FileIs(L"OSMapsData\\zz\\search.idx", "IDXIDXIDXIDXIDXIDXIDXIDXIDXIDX", 30) && s_ovAsks == (k == 4 ? 1 : 0),
+              k == 4 ? "overview: a region from the disk - its overview too, from there"
+                     : "overview: no copy of it on the disk - not asked there", NULL);
+    }
+    s_withDisk = 6;
+    s_filesAsked[0] = 0;
+    Remove(zz);
+    Remove(ov);
+    Check(MapsList() && WaitMaps() && MapsGetRegion(1) && WaitMaps() && strstr(s_filesAsked, "/maps/zz.zip") &&
+          !strstr(s_filesAsked, "/maps/overview.zip"), "overview: on the server, its size not told - not asked", s_filesAsked);
+    Remove(zz);
+    Remove(ov);
+}
+
 // The region whole from Yandex Disk (the user 2026-10-30: GitHub's downloads slow): the catalog's folder - a public
 // file's link asked of the disk's API (public_key and path encoded), the zip in ranges, its big files stored - unpacked
 // piece by piece (tiles.vtp over a few pieces); the overview after it when the card has none
@@ -454,6 +491,7 @@ static void DiskChecks()
     PathInDir(ov, L"OSMapsData\\overview");
     Remove(ov);
     FilesChecks(zz, yy, ov);
+    OverviewSourceChecks(zz, ov);
     s_withDisk = 0;
     free(s_full);
     free(s_ov);
@@ -1080,6 +1118,64 @@ static void ParkPriceChecks()   // Sunday 0: as GetLocalTime tells
     Check(ParkPrice(top, 1, 0) == 2550, "park price: up to the byte's whole", NULL);
 }
 
+static int KindCount(const LayerPoint* p, int n, int kind)
+{
+    int k = 0;
+    for (int i = 0; i < n; i++)
+        k += p[i].kind == kind ? 1 : 0;
+    return k;
+}
+
+// One icon for one thing (the user 2026-11-12): a bump of each direction, the lights of each approach of a crossing.
+// (At 53 degrees: 1 m - 9 units of latitude, 15 of longitude.)
+static void LayerMergeChecks()
+{
+    LayerPoint two[2] = { { 53000000, 50000000, LAY_BUMP, 0, 0 }, { 53000108, 50000000, LAY_BUMP, 0, 0 } };
+    Check(LayersMerge(two, 2) == 1 && two[0].lat == 53000054 && two[0].lon == 50000000 && two[0].kind == LAY_BUMP,
+          "merge: a bump each way (12 m) - one, between them", NULL);
+    LayerPoint apart[2] = { { 53000000, 50000000, LAY_BUMP, 0, 0 }, { 53000270, 50000000, LAY_BUMP, 0, 0 } };
+    Check(LayersMerge(apart, 2) == 2, "merge: bumps 30 m apart along a road - both", NULL);
+    LayerPoint east18[2] = { { 53000000, 50000000, LAY_BUMP, 0, 0 }, { 53000000, 50000270, LAY_BUMP, 0, 0 } };
+    Check(LayersMerge(east18, 2) == 1, "merge: east of each other, 18 m - one (longitude's metres)", NULL);
+    LayerPoint cross[5] = { { 53001180, 50001000, LAY_SIGNAL, 0, 0 }, { 53000820, 50001000, LAY_SIGNAL, 0, 0 },
+                            { 53001000, 50001300, LAY_SIGNAL, 0, 0 }, { 53001000, 50000700, LAY_SIGNAL, 0, 0 },
+                            { 53002350, 50001000, LAY_SIGNAL, 0, 0 } };   // (a crossing's four approaches; the next, 150 m on)
+    Check(LayersMerge(cross, 5) == 2, "merge: a crossing's lights - one; the next crossing's - its own", NULL);
+    Check((cross[0].lat == 53001000 && cross[0].lon == 50001000) || (cross[1].lat == 53001000 && cross[1].lon == 50001000),
+          "merge: the crossing's one in its middle", NULL);
+    LayerPoint mixed[4] = { { 53000000, 50000000, LAY_SIGNAL, 0, 0 }, { 53000000, 50000000, LAY_BUMP, 0, 0 },
+                            { 53000000, 50000000, LAY_PARKING, 0, 0 }, { 53000000, 50000000, LAY_PARKING, 0, 0 } };
+    int m = LayersMerge(mixed, 4);
+    Check(m == 4 && KindCount(mixed, m, LAY_SIGNAL) == 1 && KindCount(mixed, m, LAY_BUMP) == 1 && KindCount(mixed, m, LAY_PARKING) == 2,
+          "merge: other kinds at one place - each kept; car parks never merged", NULL);
+    LayerPoint shuffled[3] = { { 53000000, 50000000, LAY_BUMP, 0, 0 }, { 53005000, 50000000, LAY_SIGNAL, 0, 0 },
+                               { 53000100, 50000000, LAY_BUMP, 0, 0 } };
+    m = LayersMerge(shuffled, 3);
+    Check(m == 2 && KindCount(shuffled, m, LAY_BUMP) == 1 && KindCount(shuffled, m, LAY_SIGNAL) == 1,
+          "merge: in any order", NULL);
+    LayerPoint chain[3] = { { 53000000, 50000000, LAY_SIGNAL, 0, 0 }, { 53000300, 50000000, LAY_SIGNAL, 0, 0 },
+                            { 53000600, 50000000, LAY_SIGNAL, 0, 0 } };   // (33 m steps: a wide crossing's approaches)
+    Check(LayersMerge(chain, 3) == 1 && chain[0].lat == 53000300, "merge: near one another in a row - one, the middle", NULL);
+    Check(LayersMerge(two, 0) == 0, "merge: none", NULL);
+    // the edges (180 units of latitude: 20.02 m, 179: 19.90 m; 360: 40.03 m, 359: 39.92 m)
+    LayerPoint edge[2] = { { 53000000, 50000000, LAY_BUMP, 0, 0 }, { 53000180, 50000000, LAY_BUMP, 0, 0 } };
+    Check(LayersMerge(edge, 2) == 2, "merge: bumps just over 20 m - both", NULL);
+    edge[1].lat = 53000179;
+    Check(LayersMerge(edge, 2) == 1, "merge: bumps just under 20 m - one", NULL);
+    edge[0].kind = edge[1].kind = LAY_SIGNAL;
+    edge[0].lat = 53000000;
+    edge[1].lat = 53000360;
+    Check(LayersMerge(edge, 2) == 2, "merge: lights just over 40 m - both", NULL);
+    edge[0].lat = 53000000;
+    edge[1].lat = 53000359;
+    Check(LayersMerge(edge, 2) == 1, "merge: lights just under 40 m - one", NULL);
+    LayerPoint diag[2] = { { 53000000, 50000000, LAY_BUMP, 0, 0 }, { 53000135, 50000225, LAY_BUMP, 0, 0 } };
+    Check(LayersMerge(diag, 2) == 2, "merge: 15 m north and 15 m east (21 m) - both", NULL);
+    LayerPoint half[2] = { { 53000000, 50000000, LAY_BUMP, 0, 0 }, { 53000101, 50000001, LAY_BUMP, 0, 0 } };
+    Check(LayersMerge(half, 2) == 1 && half[0].lat == 53000051 && half[0].lon == 50000001,
+          "merge: the middle rounded (half up)", NULL);
+}
+
 static void LayerAheadChecks()
 {
     LayerPoint p[3] = { { 53000000, 50005000, LAY_BUMP, 0, 0 }, { 53000000, 50004000, LAY_SIGNAL, 0, 0 }, { 53000000, 50007000, LAY_BUMP, 0, 0 } };
@@ -1256,6 +1352,7 @@ int main()
     ParkLineChecks();
     ParkPriceChecks();
     LayerAheadChecks();
+    LayerMergeChecks();
     LimitChecks();
     MagnetChecks();
 
