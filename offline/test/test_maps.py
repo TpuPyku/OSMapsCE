@@ -183,7 +183,7 @@ class Maps(unittest.TestCase):
         """The own server's archives over HTTPS first (the user 2026-11-12: its certificate for its address; Windows 7
         may lack Let's Encrypt's root), plain HTTP if that fails before anything came; other links as they are."""
         self.assertEqual(maps_app.secure_first('http://203.0.113.5/maps/a.zip'),
-                         ['https://203.0.113.5/maps/a.zip', 'http://203.0.113.5/maps/a.zip'])
+                         ['https://203.0.113.5:9443/maps/a.zip', 'http://203.0.113.5/maps/a.zip'])
         self.assertEqual(maps_app.secure_first('https://dl.example/a'), ['https://dl.example/a'])
         asked = []
 
@@ -203,7 +203,7 @@ class Maps(unittest.TestCase):
             return Answer(b'zip')
         path = os.path.join(self.tmp, 'a.zip')
         maps_app.download_any(maps_app.secure_first('http://203.0.113.5/maps/a.zip'), path, lambda p, t: None, opener)
-        self.assertEqual(asked, ['https://203.0.113.5/maps/a.zip', 'http://203.0.113.5/maps/a.zip'])
+        self.assertEqual(asked, ['https://203.0.113.5:9443/maps/a.zip', 'http://203.0.113.5/maps/a.zip'])
         with open(path, 'rb') as f:
             self.assertEqual(f.read(), b'zip')
         self.assertRaises(urllib.error.URLError, maps_app.download_any, ['https://x/a'], path, lambda p, t: None, opener)
@@ -796,7 +796,7 @@ class Maps(unittest.TestCase):
         news = []
         while not app.news.empty():
             news.append(app.news.get())
-        self.assertEqual(got, ['https://f/a.zip', 'http://f/a.zip', 'https://f/overview.zip', 'http://f/overview.zip'])
+        self.assertEqual(got, ['https://f:9443/a.zip', 'http://f/a.zip', 'https://f:9443/overview.zip', 'http://f/overview.zip'])
         bar = [v for k, v in news if k == 'progress']
         self.assertEqual(bar[:4], [0, 1 / 3, 1 / 3, 2 / 3])
         self.assertEqual((bar[-1], bar), (1.0, sorted(bar)))

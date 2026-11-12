@@ -80,10 +80,16 @@ def download_to(url, path, tell, open_url=urllib.request.urlopen, piece=1 << 20)
     os.replace(path + '.part', path)
 
 
+HTTPS_PORT = 9443   # the own server's HTTPS (2026-11-12: its 443 is another service's)
+
+
 def secure_first(url):
     """The links to try for an archive: the own server's (plain http://) over HTTPS first - its certificate for its
-    address (the user 2026-11-12: the browser warned); others as they are."""
-    return ['https://' + url[7:], url] if url.startswith('http://') else [url]
+    address on HTTPS_PORT (the user 2026-11-12: the browser warned); others as they are."""
+    if not url.startswith('http://'):
+        return [url]
+    host, _, path = url[7:].partition('/')
+    return ['https://%s:%d/%s' % (host.split(':')[0], HTTPS_PORT, path), url]
 
 
 def download_any(urls, path, tell, open_url=None):
