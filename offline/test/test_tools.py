@@ -1064,7 +1064,7 @@ class Tools(unittest.TestCase):
         self.assertEqual(make_region.region_links(page, 'B/'), {'samara_oblast': 'B/samara_oblast-latest.osm.pbf'})
         pages = {make_region.BASE: top, make_region.BASE + 'volga_federal_district/': page,
                  make_region.BASE + 'ural_federal_district/': ''}
-        russia = lambda got: sorted(n for n in got if n not in make_region.COUNTRIES)   # noqa: E731
+        russia = lambda got: sorted(n for n in got if n not in make_region.COUNTRIES and n not in make_region.FAR)   # noqa: E731
         self.assertEqual(russia(make_region.regions(get=pages.get)), ['crimea', 'donetsk', 'luhansk', 'samara_oblast'])
         pages[make_region.BASE + 'ural_federal_district/'] = '<a href="crimea_republic-latest.osm.pbf">c</a>'
         got = make_region.regions(get=pages.get)            # the disputed lands apart, by neutral names, whole
@@ -1098,6 +1098,32 @@ class Tools(unittest.TestCase):
         self.assertEqual(len(make_region.COUNTRIES), 10)
         for name in got:
             self.assertNotEqual(release_regions.title(name), name, name)   # every one titled
+
+    def test_far_regions(self):
+        """The user 2026-11-07/12: Slovakia, Czechia, Poland, Hungary whole, Germany by its states (Berlin, Bremen,
+        Hamburg inside the states round them, as Moscow); outside the former USSR - "far": the lists' end, an icon,
+        a state titled "Страна — область"."""
+        got = make_region.regions(get={make_region.BASE: '', make_region.UKRAINE_DIR: ''}.get)
+        g = make_region.GEOFABRIK
+        self.assertEqual(got['slovakia'], g % 'europe/slovakia')
+        self.assertEqual(got['czech_republic'], g % 'europe/czech-republic')
+        self.assertEqual(got['bayern'], g % 'europe/germany/bayern')
+        self.assertEqual(got['brandenburg'], [g % 'europe/germany/brandenburg', g % 'europe/germany/berlin'])
+        self.assertEqual(got['niedersachsen'], [g % 'europe/germany/niedersachsen', g % 'europe/germany/bremen'])
+        self.assertEqual(got['schleswig_holstein'], [g % 'europe/germany/schleswig-holstein',
+                                                     g % 'europe/germany/hamburg'])
+        for gone in ('berlin', 'bremen', 'hamburg'):
+            self.assertNotIn(gone, got)
+        self.assertNotIn('poland', got)   # (the user 2026-11-12: by its voivodeships, ~1.9 GB whole)
+        self.assertEqual(got['mazowieckie'], g % 'europe/poland/mazowieckie')
+        self.assertEqual(len([n for n in got if n in make_region.FAR]), 3 + 16 + 13)
+        self.assertEqual(release_regions.title('bayern'), 'Германия — Бавария')
+        self.assertEqual(release_regions.title('mazowieckie'), 'Польша — Мазовецкое воеводство')
+        self.assertTrue(release_regions.far('bayern') and release_regions.far('hungary'))
+        self.assertFalse(release_regions.far('belarus') or release_regions.far('moscow_oblast') or
+                         release_regions.far('georgia'))
+        for name in make_region.FAR:
+            self.assertNotEqual(release_regions.title(name), name, name)
 
 
 if __name__ == '__main__':

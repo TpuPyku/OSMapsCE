@@ -97,6 +97,21 @@ class Disk:
         return call(self.send, 'GET', 'resources', {'path': path, 'fields': 'public_url'}, self.auth)['public_url']
 
 
+def public_listing(public_url, send=urllib_send, limit=1000):
+    """The public folder's files: {name: {size, date (YYYY-MM-DD, its upload)}} - the catalog's disk copies."""
+    out, offset = {}, 0
+    while True:
+        got = call(send, 'GET', 'public/resources', {'public_key': public_url, 'limit': limit, 'offset': offset},
+                   {'Accept': 'application/json'}).get('_embedded', {})
+        items = got.get('items', [])
+        for it in items:
+            if it.get('type') == 'file':
+                out[it['name']] = {'size': it.get('size', 0), 'date': it.get('modified', '')[:10]}
+        offset += len(items)
+        if not items or offset >= got.get('total', 0):
+            return out
+
+
 def public_href(public_url, name, send=urllib_send):
     """A public folder's file's download link (lives some hours)."""
     return call(send, 'GET', 'public/resources/download', {'public_key': public_url, 'path': '/' + name},

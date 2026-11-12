@@ -54,6 +54,22 @@ COUNTRIES = {n: GEOFABRIK % (part + '/' + n) for part, names in (
     ('europe', ('belarus', 'moldova', 'georgia')),
     ('asia', ('kazakhstan', 'uzbekistan', 'kyrgyzstan', 'tajikistan', 'turkmenistan', 'azerbaijan', 'armenia')))
     for n in names}
+# Outside the former USSR (the users 2026-11-07, the user 2026-11-12: "far" - the lists' end, an icon): whole countries,
+# Poland by its voivodeships (the user 2026-11-12: ~1.9 GB whole), Germany by its states (Geofabrik's); the German city
+# states inside the states round them (FAR_INSIDE, as Moscow)
+POLAND = ('dolnoslaskie', 'kujawsko-pomorskie', 'lodzkie', 'lubelskie', 'lubuskie', 'malopolskie', 'mazowieckie',
+          'opolskie', 'podkarpackie', 'podlaskie', 'pomorskie', 'slaskie', 'swietokrzyskie', 'warminsko-mazurskie',
+          'wielkopolskie', 'zachodniopomorskie')
+FAR = dict({n: GEOFABRIK % ('europe/' + p) for n, p in (
+    ('slovakia', 'slovakia'), ('czech_republic', 'czech-republic'), ('hungary', 'hungary'))},
+    **{n.replace('-', '_'): GEOFABRIK % ('europe/poland/' + n) for n in POLAND},
+    **{n.replace('-', '_'): GEOFABRIK % ('europe/germany/' + n) for n in (
+        'baden-wuerttemberg', 'bayern', 'berlin', 'brandenburg', 'bremen', 'hamburg', 'hessen',
+        'mecklenburg-vorpommern', 'niedersachsen', 'nordrhein-westfalen', 'rheinland-pfalz', 'saarland', 'sachsen',
+        'sachsen-anhalt', 'schleswig-holstein', 'thueringen')})
+FAR_INSIDE = {'berlin': 'brandenburg', 'bremen': 'niedersachsen', 'hamburg': 'schleswig_holstein'}
+for _city in FAR_INSIDE:
+    FAR.pop(_city)
 UA = {'User-Agent': 'OSMapsCE-make_region (+https://github.com/TpuPyku/OSMapsCE)'}
 # Moscow's paid street parking, kept in the repo (make_parklines.py: data.mos.ru, its key not needed here)
 PARKING = {'moscow_oblast': os.path.join(HERE, 'data', 'moscow_parking.lay')}
@@ -94,6 +110,9 @@ def regions(get=get):
     out.update(ua)
     out.update(APART)
     out.update(COUNTRIES)
+    far = dict(FAR, **{c: GEOFABRIK % ('europe/germany/' + c) for c in FAR_INSIDE})
+    merged(far, FAR_INSIDE)
+    out.update(far)
     return out
 
 

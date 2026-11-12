@@ -170,7 +170,8 @@ static DWORD      s_statPaintMax, s_statGpsBytes;
 // The frame's parts timed (the user 2026-11-04: smooth as Navitel - where a frame's 225-320 ms go): the background,
 // the tiles into the ring, the frame (turned / tilted / the ring's blit), the names, the route and marks, the panels,
 // the copy to the screen. Each part: the time since the last lap; the sum and the maximum go to the log each minute.
-enum { PT_BG, PT_RING, PT_FRAME, PT_LABELS, PT_MARKS, PT_UI, PT_OUT, PT_N };
+enum { PT_BG, PT_RING, PT_FRAME, PT_LABELS, PT_LAYERS, PT_ROUTE, PT_MARKS, PT_UI, PT_OUT, PT_N };   // (marks: the
+// layers and the route apart since 2026-11-12 - HU sheet 30: marks 30-45 ms, which of them)
 static DWORD      s_ptSum[PT_N], s_ptMax[PT_N], s_ptAt;
 static int        s_statGpsLines, s_statGpsBad;
 
@@ -323,10 +324,13 @@ static const RECT kMapsCtl[M_COUNT] = {
     { 8, 412, 80, 480 },                               // back to the settings
 };
 enum { kMapsRows = 6 };
-enum { R_ROW0, R_PREV = R_ROW0 + kMapsRows, R_NEXT, R_LIST, R_BACK, R_COUNT };
+// a row's two buttons (the user 2026-11-12): from the maps' server (R_ROW0), from Yandex Disk (R_DISK0, its copy's date)
+enum { R_ROW0, R_DISK0 = R_ROW0 + kMapsRows, R_PREV = R_DISK0 + kMapsRows, R_NEXT, R_LIST, R_BACK, R_COUNT };
 static const RECT kRegCtl[R_COUNT] = {
-    { 600, 81, 760, 121 }, { 600, 131, 760, 171 }, { 600, 181, 760, 221 },   // the regions' buttons
-    { 600, 231, 760, 271 }, { 600, 281, 760, 321 }, { 600, 331, 760, 371 },
+    { 452, 81, 600, 121 }, { 452, 131, 600, 171 }, { 452, 181, 600, 221 },   // the regions' buttons: the server
+    { 452, 231, 600, 271 }, { 452, 281, 600, 321 }, { 452, 331, 600, 371 },
+    { 608, 81, 760, 121 }, { 608, 131, 760, 171 }, { 608, 181, 760, 221 },   // ... the disk
+    { 608, 231, 760, 271 }, { 608, 281, 760, 321 }, { 608, 331, 760, 371 },
     { 300, 420, 348, 468 }, { 452, 420, 500, 468 },                           // the pages
     { 716, 416, 784, 468 },                                                   // the catalog again ("refresh")
     { 8, 412, 80, 480 },                                                      // back to the map's page
@@ -334,7 +338,7 @@ static const RECT kRegCtl[R_COUNT] = {
 static bool s_maps;            // the maps' screen over the settings
 static bool s_regions;         // ... its regions' page
 static int  s_mapsPressed = -1, s_mapsPage;
-static int  s_mapsConfirm = -1;   // the region whose button asks "ТОЧНО?"
+static int  s_mapsConfirm = -1;   // the region whose button asks "ТОЧНО?" (* 2 + its source, MAPS_SRC_*)
 
 // ---------------------------------------------------------------- view & tiles
 
@@ -1040,7 +1044,13 @@ static void OnSettingsCtl(int id)
     case S_TOLL_PREV:
     case S_TOLL_NEXT:  g_cfg.noToll = !g_cfg.noToll; ConfigSave(); break;
     case S_VOICE_PREV:
-    case S_VOICE_NEXT: g_cfg.voice = !g_cfg.voice; ConfigSave(); break;
+    case S_VOICE_NEXT: {   // off - quiet - medium - loud, round (the voice button: on / off at its level)
+        int st = (g_cfg.voice ? g_cfg.voiceVol : 0) + (id == S_VOICE_NEXT ? 1 : 3);
+        g_cfg.voice = st % 4 != 0;
+        g_cfg.voiceVol = g_cfg.voice ? st % 4 : g_cfg.voiceVol;
+        ConfigSave();
+        break;
+    }
     case S_ROUTE:      s_setSheet = SHEET_ROUTE; break;
     case S_LOG_PREV:
     case S_LOG_NEXT:   g_cfg.log = !g_cfg.log; LogEnable(g_cfg.log != 0); ConfigSave(); break;
@@ -1082,16 +1092,21 @@ static void OnSettingsCtl(int id)
     InvalidateRect(s_wnd, NULL, FALSE);
 }
 
-// A region's button: its download stopped; "ЗАГРУЗИТЬ" / "ОК" first asked "ТОЧНО?" (confirm: the one asking before)
-static void MapsTap(int i, int confirm)
+// A region's button (src: the server's, the disk's): its download stopped; a new or up-to-date one first asked
+// "ТОЧНО?" (confirm: the one asking before, region * 2 + source); the disk without a copy - nothing
+static void MapsTap(int i, int src, int confirm)
 {
     MapRegion m;
+    if (!MapsAt(i, &m))
+        return;
     if (MapsBusyRegion() == i)
         MapsCancel();
-    else if (MapsAt(i, &m) && MapState(m) != MAP_UPDATE && confirm != i)
-        s_mapsConfirm = i;
+    else if (src == MAPS_SRC_DISK && !m.diskKb)
+        return;
+    else if (MapState(m) != MAP_UPDATE && confirm != i * 2 + src)
+        s_mapsConfirm = i * 2 + src;
     else
-        MapsGetRegion(i);
+        MapsGetRegionFrom(i, src);
 }
 
 static void OnRegionsCtl(int id)
@@ -1103,7 +1118,12 @@ static void OnRegionsCtl(int id)
     case R_NEXT: if (s_mapsPage + 1 < pages) s_mapsPage++; break;
     case R_LIST: MapsList(); break;
     case R_BACK: s_regions = false; break;
-    default:     MapsTap(s_mapsPage * kMapsRows + id - R_ROW0, confirm); break;
+    default:
+        if (id >= R_DISK0)
+            MapsTap(s_mapsPage * kMapsRows + id - R_DISK0, MAPS_SRC_DISK, confirm);
+        else
+            MapsTap(s_mapsPage * kMapsRows + id - R_ROW0, MAPS_SRC_SERVER, confirm);
+        break;
     }
 }
 
@@ -3265,15 +3285,7 @@ static void DrawBumpWarning(HDC dc)
 
 static int FavAt(int x, int y)   // the mark under the finger (the nearest within 26 px), -1: none
 {
-    int best = -1, bd = 26 * 26;
-    for (int i = 0; i < s_favs.n; i++) {
-        int dx = s_favPt[i].x - x, dy = s_favPt[i].y - y;
-        if (s_favOn[i] && dx * dx + dy * dy < bd) {
-            bd = dx * dx + dy * dy;
-            best = i;
-        }
-    }
-    return best;
+    return MarkAt(s_favPt, s_favOn, s_favs.n, x, y, 26);
 }
 
 static void PartLap(int part)
@@ -3409,7 +3421,9 @@ static void DrawMap(HDC dc)
     PartLap(PT_LABELS);
     DrawAttribution(dc, mr);
     DrawLayers(dc, cx, cy, vx, vy, angle);
+    PartLap(PT_LAYERS);
     DrawRoute(dc, cx, cy, vx, vy, angle);
+    PartLap(PT_ROUTE);
     DrawFavMarks(dc, cx, cy, vx, vy, angle);
     ZoomKeep(dc, mr);
     DrawGpsMarker(dc, cx, cy, vx, vy, angle);
@@ -3647,7 +3661,8 @@ static void DrawRouteSheet(HDC dc)
     SetRow(dc, kSetCtl[S_TOLL_PREV].top - 3, L"Платные дороги", L"объезд — только по картам на флешке", true);
     Stepper(dc, S_TOLL_PREV, S_TOLL_NEXT, g_cfg.noToll ? L"Объезжать" : L"Можно");
     SetRow(dc, kSetCtl[S_VOICE_PREV].top - 3, L"Голосовые подсказки", L"на языке программы", false);
-    Stepper(dc, S_VOICE_PREV, S_VOICE_NEXT, g_cfg.voice ? L"Вкл" : L"Выкл");
+    static const wchar_t* const kVol[4] = { L"Выкл", L"Тихо", L"Средне", L"Громко" };
+    Stepper(dc, S_VOICE_PREV, S_VOICE_NEXT, kVol[g_cfg.voice ? g_cfg.voiceVol : 0]   /* (1..3: the ini's clamped) */);
     DoneButton(dc, S_ROUTE_DONE);
 }
 
@@ -3678,11 +3693,39 @@ static void DrawInfoSheet(HDC dc)
 }
 
 // A region: its title, size and state, its button ("ОТМЕНА" while it downloads, "ТОЧНО?" in the accent when asked)
+// A globe (a region outside the former USSR: the user 2026-11-12) - a circle, its meridian and equator - at (x, y), r
+static void GlobeSign(HDC dc, int x, int y, int r, COLORREF c)
+{
+    HPEN pen = CreatePen(PS_SOLID, 2, c);
+    HGDIOBJ op = SelectObject(dc, pen), ob = SelectObject(dc, GetStockObject(NULL_BRUSH));
+    Ellipse(dc, x - r, y - r, x + r + 1, y + r + 1);
+    Ellipse(dc, x - r / 2, y - r, x + r / 2 + 1, y + r + 1);
+    POINT eq[2] = { { x - r, y }, { x + r, y } };
+    Polyline(dc, eq, 2);
+    SelectObject(dc, ob);
+    SelectObject(dc, op);
+    DeleteObject(pen);
+}
+
+// A clock (the disk's copy older than the region's build: the user 2026-11-12) at (x, y), r
+static void OldSign(HDC dc, int x, int y, int r, COLORREF c)
+{
+    HPEN pen = CreatePen(PS_SOLID, 2, c);
+    HGDIOBJ op = SelectObject(dc, pen), ob = SelectObject(dc, GetStockObject(NULL_BRUSH));
+    Ellipse(dc, x - r, y - r, x + r + 1, y + r + 1);
+    POINT hands[3] = { { x, y - r + 3 }, { x, y }, { x + r - 3, y } };
+    Polyline(dc, hands, 3);
+    SelectObject(dc, ob);
+    SelectObject(dc, op);
+    DeleteObject(pen);
+}
+
+// A region's row: its title (a globe before it when outside the former USSR), its size and state, two buttons -
+// from the maps' server and from the disk (its copy's date, a clock when older; none there - dimmed)
 static void MapsRow(HDC dc, int r, int i, const MapRegion& m)
 {
     static const wchar_t* kState[3] = { L"не найдена", L"есть новее", L"последняя версия" };
-    static const wchar_t* kBtn[3] = { L"ЗАГРУЗИТЬ", L"ОБНОВИТЬ", L"ОК" };
-    wchar_t t[96], sub[64];
+    wchar_t t[96], sub[64], dl[32];
     if (!MultiByteToWideChar(CP_UTF8, 0, m.title[0] ? m.title : m.name, -1, t, 96))
         t[0] = 0;
     t[95] = 0;
@@ -3690,13 +3733,37 @@ static void MapsRow(HDC dc, int r, int i, const MapRegion& m)
     int kb = m.fullKb ? m.fullKb : m.sizeKb;   // (whole from the disk: with its tiles)
     _snwprintf(sub, 64, Tr(L"%d,%d МБ · %s"), kb / 1024, kb % 1024 * 10 / 1024, kState[st]);
     sub[63] = 0;
-    SetRow(dc, kSetRow0 + r * kSetRowH, t, sub, r < kMapsRows - 1);
-    const RECT& b = kRegCtl[R_ROW0 + r];
-    if (s_mapsConfirm == i) {
-        Tile(dc, b, kOrange, kOrange, 20);
-        Text(dc, s_fontLabel, kInk, b.left, b.top, b.right, b.bottom, DT_CENTER, L"ТОЧНО?");
-    } else
-        DrawCtl(dc, b, s_mapsPressed == R_ROW0 + r, s_fontLabel, MapsBusyRegion() == i ? L"ОТМЕНА" : kBtn[st]);
+    int y = kSetRow0 + r * kSetRowH, tx = m.foreign ? 64 : 36;
+    if (m.foreign)
+        GlobeSign(dc, 48, y + 15, 10, kTextDim);
+    Text(dc, s_fontLabel, kText, tx, y + 3, 444, y + 28, DT_LEFT, t);
+    Text(dc, s_fontSmall, kTextDim, 36, y + 27, 444, y + 48, DT_LEFT, sub);
+    if (r < kMapsRows - 1) {
+        RECT l = { 24, y + kSetRowH - 2, s_cw - 24, y + kSetRowH };
+        HBRUSH lb = CreateSolidBrush(kLine);
+        FillRect(dc, &l, lb);
+        DeleteObject(lb);
+    }
+    for (int src = 0; src < 2; src++) {
+        const RECT& b = kRegCtl[(src ? R_DISK0 : R_ROW0) + r];
+        bool busy = MapsBusyRegion() == i && MapsBusySource() == src;
+        if (s_mapsConfirm == i * 2 + src) {
+            Tile(dc, b, kOrange, kOrange, 20);
+            Text(dc, s_fontLabel, kInk, b.left, b.top, b.right, b.bottom, DT_CENTER, L"ТОЧНО?");
+            continue;
+        }
+        if (src == MAPS_SRC_DISK && !m.diskKb && !busy) {   // (no copy on the disk)
+            Tile(dc, b, kInk, kInk, 20);
+            Text(dc, s_fontSmall, kTextDim, b.left, b.top, b.right, b.bottom, DT_CENTER, L"Я.ДИСК —");
+            continue;
+        }
+        if (src == MAPS_SRC_DISK)   // "Я.ДИСК 05.11"
+            _snwprintf(dl, 32, L"Я.ДИСК %.2S.%.2S", m.diskDate + 8, m.diskDate + 5);
+        DrawCtl(dc, b, s_mapsPressed == (src ? R_DISK0 : R_ROW0) + r, src == MAPS_SRC_DISK ? s_fontSmall : s_fontLabel,
+                busy ? L"ОТМЕНА" : src == MAPS_SRC_DISK ? dl : L"СЕРВЕР");
+        if (src == MAPS_SRC_DISK && MapsDiskOld(m) && !busy)
+            OldSign(dc, b.left + 14, (b.top + b.bottom) / 2, 8, kOrange);
+    }
 }
 
 // A circle's arc round the button's middle, radius 11, clockwise from a0 degrees by step - 13 points (CE's GDI has no
@@ -5795,9 +5862,10 @@ static void LogStat()
     Log("stamps: %d KB; ready %d, new %d, by GDI %d", StampWords() * 2 / 1024, stHit, stMiss, stDirect);
     if (s_statPaints) {   // the frame's parts: the average and the longest, ms
         DWORD n = (DWORD)s_statPaints;
-        Log("paint: avg/max ms - bg %lu/%lu, tiles %lu/%lu, frame %lu/%lu, names %lu/%lu, marks %lu/%lu, "
-            "panels %lu/%lu, out %lu/%lu", s_ptSum[PT_BG] / n, s_ptMax[PT_BG], s_ptSum[PT_RING] / n,
-            s_ptMax[PT_RING], s_ptSum[PT_FRAME] / n, s_ptMax[PT_FRAME], s_ptSum[PT_LABELS] / n, s_ptMax[PT_LABELS],
+        Log("paint: avg/max ms - bg %lu/%lu, tiles %lu/%lu, frame %lu/%lu, names %lu/%lu, layers %lu/%lu, "
+            "route %lu/%lu, marks %lu/%lu, panels %lu/%lu, out %lu/%lu", s_ptSum[PT_BG] / n, s_ptMax[PT_BG],
+            s_ptSum[PT_RING] / n, s_ptMax[PT_RING], s_ptSum[PT_FRAME] / n, s_ptMax[PT_FRAME], s_ptSum[PT_LABELS] / n,
+            s_ptMax[PT_LABELS], s_ptSum[PT_LAYERS] / n, s_ptMax[PT_LAYERS], s_ptSum[PT_ROUTE] / n, s_ptMax[PT_ROUTE],
             s_ptSum[PT_MARKS] / n, s_ptMax[PT_MARKS], s_ptSum[PT_UI] / n, s_ptMax[PT_UI], s_ptSum[PT_OUT] / n,
             s_ptMax[PT_OUT]);
     }

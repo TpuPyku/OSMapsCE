@@ -34,6 +34,9 @@ int MapsCatalog(const char* json, MapRegion* out, int cap)
         m.sizeKb = (int)(JNum(JKey(r, "size"), 0) / 1024);
         m.fullKb = (int)(JNum(JKey(JKey(r, "full"), "size"), 0) / 1024);
         m.files = JTrue(JKey(JKey(r, "full"), "files"));
+        m.diskKb = (int)(JNum(JKey(JKey(r, "disk"), "size"), 0) / 1024);
+        Copy(m.diskDate, sizeof(m.diskDate), JKey(JKey(r, "disk"), "date"));
+        m.foreign = JTrue(JKey(r, "far"));
         if (m.name[0] && m.zip[0])
             n++;
     }
@@ -420,6 +423,8 @@ static char             s_files[256];  // the catalog's maps' own server, its fo
 static char             s_trunkDate[16];   // the catalog's trunk roads' build in the overview's pack ("" not told: an old
                                            // catalog, its pack holds no graph)
 static int              s_ovKb;        // ... its overview's size
+static int              s_ovDiskKb;    // ... its copy on the disk (0 none)
+static volatile LONG    s_busySrc;     // MAPS_SRC_* of the region downloaded
 static bool             s_ovFiles;     // ... on the own server (else the disk's)
 
 static void Lock()
@@ -446,9 +451,18 @@ static bool Exists(const wchar_t* path, void*)   // OffRegion's test: the file i
     return GetFileAttributes(path) != 0xFFFFFFFF;
 }
 
-static int ByTitle(const void* a, const void* b)   // (UTF-8's bytes: the Cyrillic alphabet's order, ё aside)
+int MapsOrder(const void* a, const void* b)   // (UTF-8's bytes: the Cyrillic alphabet's order, ё aside)
 {
-    return strcmp(((const MapRegion*)a)->title, ((const MapRegion*)b)->title);
+    const MapRegion* x = (const MapRegion*)a;
+    const MapRegion* y = (const MapRegion*)b;
+    if (x->foreign != y->foreign)   // (the user 2026-11-12: outside the former USSR - at the list's end)
+        return x->foreign ? 1 : -1;
+    return strcmp(x->title, y->title);
+}
+
+bool MapsDiskOld(const MapRegion& r)   // (the dates "YYYY-MM-DD": compared as text)
+{
+    return r.diskDate[0] && r.date[0] && strcmp(r.diskDate, r.date) < 0;
 }
 
 static DWORD WINAPI ListThread(LPVOID)
@@ -468,11 +482,12 @@ static DWORD WINAPI ListThread(LPVOID)
     }
     int ovKb = n ? (int)(JNum(JKey(JKey((const char*)body, "overview"), "size"), 0) / 1024) : 0;
     bool ovFiles = n && JTrue(JKey(JKey((const char*)body, "overview"), "files"));
+    int ovDiskKb = n ? (int)(JNum(JKey(JKey(JKey((const char*)body, "overview"), "disk"), "size"), 0) / 1024) : 0;
     char trunkDate[16] = "";
     if (n)
         Copy(trunkDate, sizeof(trunkDate), JKey(JKey((const char*)body, "overview"), "date"));
     free(body);
-    qsort(got, n, sizeof(MapRegion), ByTitle);
+    qsort(got, n, sizeof(MapRegion), MapsOrder);
     MapsHave(got, n);
     Lock();
     memcpy(s_reg, got, n * sizeof(MapRegion));
@@ -481,6 +496,7 @@ static DWORD WINAPI ListThread(LPVOID)
     strcpy(s_files, files);
     s_ovKb = ovKb;
     s_ovFiles = ovFiles;
+    s_ovDiskKb = ovDiskKb;
     strcpy(s_trunkDate, trunkDate);
     _snwprintf(s_text, 128, n ? Tr(L"Областей: %d") : Tr(L"Каталог не получен (нет связи с GitHub?)"), n);
     LeaveCriticalSection(&s_cs);
@@ -542,10 +558,15 @@ static bool WholeHref(const char* name, bool files, char* href, int cap)
 }
 
 // The region: whole from the server or the disk when the catalog has it there (the user 2026-10-30: GitHub's
-// downloads slow), else its graph and search from the release
-static bool GetRegion(const MapRegion& r, const wchar_t* data)
+// downloads slow), else its graph and search from the release; src disk (the user 2026-11-12: the server out of
+// reach through a modem) - the disk's copy
+static bool GetRegion(const MapRegion& r, const wchar_t* data, int src)
 {
     char url[2048];
+    if (src == MAPS_SRC_DISK) {
+        s_totalKb = r.diskKb;
+        return s_disk[0] && r.diskKb && DiskHref(r.zip, url, sizeof(url)) && MapsInstall(url, data, r.name, MAPS_FULL);
+    }
     if (WholeThere(r.files) && r.fullKb) {
         s_totalKb = r.fullKb;
         return WholeHref(r.zip, r.files, url, sizeof(url)) && MapsInstall(url, data, r.name, MAPS_FULL);
@@ -556,17 +577,21 @@ static bool GetRegion(const MapRegion& r, const wchar_t* data)
 
 // After a region: the overview's pack - its map and the trunk roads, one archive on the disk (GitHub, where the trunk roads
 // were, is blocked on the unit): when its map is missing or its graph is another build. None where the region went.
-static void GetExtras(const wchar_t* data)
+static void GetExtras(const wchar_t* data, int src)
 {
     wchar_t ov[MAX_PATH], old[MAX_PATH];
     char url[2048];
     _snwprintf(ov, MAX_PATH, L"%s\\overview\\overview.vtp", data);
     ov[MAX_PATH - 1] = 0;
-    if (!WholeThere(s_ovFiles) || !s_ovKb || !s_trunkDate[0] || s_cancel || (Exists(ov, NULL) && TrunkCurrent()))
+    bool disk = src == MAPS_SRC_DISK;   // (from where the region came: the disk's copy, if it has one)
+    if (disk ? !s_disk[0] || !s_ovDiskKb : !WholeThere(s_ovFiles) || !s_ovKb)
+        return;
+    if (!s_trunkDate[0] || s_cancel || (Exists(ov, NULL) && TrunkCurrent()))
         return;
     Say(Tr(L"Обзорная карта и магистрали…"), NULL);
-    s_totalKb = s_ovKb;
-    if (!WholeHref("overview.zip", s_ovFiles, url, sizeof(url)) || !MapsInstall(url, data, "overview", MAPS_OVERVIEW))
+    s_totalKb = disk ? s_ovDiskKb : s_ovKb;
+    if (!(disk ? DiskHref("overview.zip", url, sizeof(url)) : WholeHref("overview.zip", s_ovFiles, url, sizeof(url))) ||
+        !MapsInstall(url, data, "overview", MAPS_OVERVIEW))
         return;
     // a card from before: the trunk roads' own folder goes (the first trunk.grf found is the one taken)
     _snwprintf(old, MAX_PATH, L"%s\\trunk\\trunk.grf", data);
@@ -584,7 +609,8 @@ static DWORD WINAPI GetThread(LPVOID p)
 {
     MapRegion r;
     Lock();
-    r = s_reg[(int)p];
+    int src = (int)p % 2;
+    r = s_reg[(int)p / 2];
     s_totalKb = r.sizeKb;
     LeaveCriticalSection(&s_cs);
     wchar_t data[MAX_PATH];
@@ -592,9 +618,9 @@ static DWORD WINAPI GetThread(LPVOID p)
         OffWriteDir(data);
     else
         PathInDir(data, L"OSMapsData");   // (the tests' made-up server: never onto a disk of the PC's)
-    bool ok = GetRegion(r, data);
+    bool ok = GetRegion(r, data, src);
     if (ok)
-        GetExtras(data);
+        GetExtras(data, src);
     Lock();
     MapsHave(s_reg, s_nReg);
     LeaveCriticalSection(&s_cs);
@@ -628,13 +654,24 @@ bool MapsList()   // the catalog, on its thread; false - busy
 
 bool MapsGetRegion(int i)   // region i of the catalog, on its thread; false - none, busy
 {
+    return MapsGetRegionFrom(i, MAPS_SRC_SERVER);
+}
+
+int MapsBusySource()
+{
+    return s_busySrc;
+}
+
+bool MapsGetRegionFrom(int i, int src)
+{
     Lock();
     bool there = i >= 0 && i < s_nReg;
     LeaveCriticalSection(&s_cs);
     if (!there || s_busy)
         return false;
     InterlockedExchange((LONG*)&s_busyRegion, i);   // (before the thread: it may be done at once)
-    if (!Start(GetThread, (LPVOID)i)) {
+    InterlockedExchange((LONG*)&s_busySrc, src);
+    if (!Start(GetThread, (LPVOID)(i * 2 + (src == MAPS_SRC_DISK ? 1 : 0)))) {
         InterlockedExchange((LONG*)&s_busyRegion, -1);
         return false;
     }

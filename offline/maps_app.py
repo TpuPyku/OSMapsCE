@@ -51,18 +51,49 @@ class Cancelled(Exception):
     """"Отменить запись" pressed (the user 2026-10-30): raised from the job's progress, where it is."""
 
 
-def download(url, tell, open_url=urllib.request.urlopen, piece=256 * 1024):
-    """A release's file read in pieces, tell(part, 'x из y МБ') after each (the user 2026-10-29: the graph's zip and
-    the trunk roads came for minutes, the bar full, nothing told)."""
+def stream(url, put, tell, open_url, piece):
+    """A file read in pieces, put(chunk) and tell(part, 'x из y МБ') after each (the user 2026-10-29: the graph's zip
+    and the trunk roads came for minutes, the bar full, nothing told)."""
     with open_url(urllib.request.Request(url, headers=pmextract.UA), timeout=120) as r:
-        total, data = int(r.headers.get('Content-Length') or 0), bytearray()
+        total, got = int(r.headers.get('Content-Length') or 0), 0
         while True:
             chunk = r.read(piece)
             if not chunk:
-                return bytes(data)
-            data += chunk
+                return
+            put(chunk)
+            got += len(chunk)
             if total:
-                tell(min(1.0, len(data) / total), '%.1f из %.1f МБ' % (len(data) / 1e6, total / 1e6))
+                tell(min(1.0, got / total), '%.1f из %.1f МБ' % (got / 1e6, total / 1e6))
+
+
+def download(url, tell, open_url=urllib.request.urlopen, piece=256 * 1024):
+    """A release's file in memory, read in pieces (stream)."""
+    data = bytearray()
+    stream(url, data.extend, tell, open_url, piece)
+    return bytes(data)
+
+
+def download_to(url, path, tell, open_url=urllib.request.urlopen, piece=1 << 20):
+    """A whole archive into a file (hundreds of MB: not in memory), path.part until it is all there."""
+    with open(path + '.part', 'wb') as f:
+        stream(url, f.write, tell, open_url, piece)
+    os.replace(path + '.part', path)
+
+
+def secure_first(url):
+    """The links to try for an archive: the own server's (plain http://) over HTTPS first - its certificate for its
+    address (the user 2026-11-12: the browser warned); others as they are."""
+    return ['https://' + url[7:], url] if url.startswith('http://') else [url]
+
+
+def download_any(urls, path, tell, open_url=None):
+    """download_to from the first link that answers; the last one's error when none does."""
+    for i, url in enumerate(urls):
+        try:
+            return download_to(url, path, tell) if open_url is None else download_to(url, path, tell, open_url)
+        except (OSError, ValueError):   # (urllib's errors: OSError; a refused certificate too)
+            if i == len(urls) - 1:
+                raise
 
 
 def load_catalog(get=http_get):
@@ -289,6 +320,73 @@ def ready_wholes(cat, chosen):
     return wholes
 
 
+FILES, DISK = 'files', 'disk'   # a row's two buttons (the user 2026-11-12): the own server's whole zip, the disk's copy
+OLD_MARK = '⚠ старая'          # the disk's copy older than the region's build (the disk: uploaded twice a month)
+FAR_MARK = '✈ '                # a region outside the former USSR: last in the list (BMP symbols: Windows 7's Tk)
+
+
+def source_ok(cat, entry, source):
+    """The entry's whole zip (a region's, or the overview's) there: on the own server (its "files"), on the disk (its
+    "disk" copy, the catalog's listing)."""
+    if source == FILES:
+        return bool(cat.get('files') and entry.get('full', entry).get('files'))
+    return bool(cat.get('disk') and entry.get('disk'))
+
+
+def whole_url(cat, entry, source, href=yadisk.public_href):
+    """The entry's whole zip's download link from that source (the disk's: asked of it - a network call)."""
+    name = entry.get('full', entry)['zip']
+    return cat['files'] + name if source == FILES else href(cat['disk'], name)
+
+
+def disk_old(entry):
+    """The disk's copy older than the entry's build (both YYYY-MM-DD)."""
+    copy, date = entry.get('disk', {}).get('date'), entry.get('date')
+    return bool(copy and date and copy < date)
+
+
+def source_cell(cat, entry, source):
+    """A row's button: '—' none there; the disk's with its copy's date (dd.mm), an older one marked."""
+    if not source_ok(cat, entry, source):
+        return '—'
+    if source == FILES:
+        return '⬇ скачать'
+    day = entry['disk'].get('date', '')
+    text = '⬇ ' + ('%s.%s' % (day[8:10], day[5:7]) if len(day) == 10 else 'скачать')
+    return text + ' ' + OLD_MARK if disk_old(entry) else text
+
+
+def row_title(r):
+    return (FAR_MARK if r.get('far') else '') + r.get('title', r['name'])
+
+
+def ready_job(cat, name, source, have_tiles, have_trunk):
+    """[(folder, entry)] a row's button gets from that source: the region whole, and the overview's pack when the
+    drive needs it (none there, or an older trunk graph) - or that row itself the overview's."""
+    jobs = [(r['name'], r) for r in cat['regions'] if r['name'] == name]
+    ov = cat.get('overview')
+    if ov and (name == OVERVIEW or pack_needed(ov, have_tiles, have_trunk)):
+        jobs.append((OVERVIEW, ov))
+    return [(n, e) for n, e in jobs if source_ok(cat, e, source)]
+
+
+def pack_needed(ov, have_tiles, have_trunk):
+    """The overview's pack wanted on the drive: none there, or its trunk graph older than the pack's."""
+    return have_tiles is None or bool(ov.get('date')) and ov['date'] != have_trunk
+
+
+def unpack_whole(zpath, dst):
+    """A whole zip into its folder: its old region.txt off first, the new one last (half done never looks whole);
+    only the zip's plain names (no paths of its own)."""
+    os.makedirs(dst, exist_ok=True)
+    unmark(dst)
+    with zipfile.ZipFile(zpath) as z:
+        names = [n for n in z.namelist() if plain_name(n)]
+        for n in sorted(names, key=lambda n: n == 'region.txt'):
+            with z.open(n) as src, open(os.path.join(dst, n), 'wb') as out:
+                shutil.copyfileobj(src, out, 1 << 20)
+
+
 def inform(title, text):   # a message in its window (tests: replaced)
     import tkinter.messagebox
     tkinter.messagebox.showinfo(title, text)
@@ -329,10 +427,11 @@ def chosen_size(cat, chosen):
 
 
 def matching(cat, text):
-    """The regions whose Russian or latin name has the text, by the Russian name."""
+    """The regions whose Russian or latin name has the text, by the Russian name - those outside the former USSR
+    ("far") last (the user 2026-11-12)."""
     t = text.strip().casefold()
     hit = [r for r in cat['regions'] if t in r.get('title', r['name']).casefold() or t in r['name'].casefold()]
-    return sorted(hit, key=lambda r: r.get('title', r['name']))
+    return sorted(hit, key=lambda r: (bool(r.get('far')), r.get('title', r['name'])))
 
 
 def trunk_state(cat, drive):
@@ -389,8 +488,8 @@ def box_area(rings):
 INK, PANEL, ROW, TEXT, DIM, ACCENT = '#0E1013', '#1A1D22', '#23272E', '#F5F3EE', '#AAB0B8', '#FF6B1A'
 FRESH, EDGE = '#2E5D45', '#4A505A'   # the map: a region on the drive and fresh; the regions' borders
 WHITE, BLACK = '#FFFFFF', '#000000'   # ... one with an update on the drive (the user 2026-10-30), its edge
-GO, BUSY, STOPPING = 'Записать выбранные', 'Отменить запись', 'Отмена…'   # the button; while it writes it cancels
-                                                                           # (the user 2026-10-30)
+GO, BUSY, STOPPING = 'Собрать выбранные карты', 'Отменить запись', 'Отмена…'   # the button (the user 2026-11-12:
+                                                    # renamed); while it writes it cancels (the user 2026-10-30)
 MAP_W, MAP_H = 560, 520
 
 
@@ -464,9 +563,9 @@ class App:
                                ('<ButtonRelease-1>', self.map_release), ('<MouseWheel>', self.map_wheel),
                                ('<Motion>', self.map_motion)):
             self.map.bind(event, handler)
-        self.tree = ttk.Treeview(middle, columns=('size', 'have', 'state'), height=16, selectmode='none')
-        for col, text, w in (('#0', 'Область', 300), ('size', 'Граф и поиск', 110), ('have', 'На флешке', 110),
-                             ('state', 'Состояние', 110)):
+        self.tree = ttk.Treeview(middle, columns=('size', 'have', 'state', FILES, DISK), height=16, selectmode='none')
+        for col, text, w in (('#0', 'Область', 280), ('size', 'Граф и поиск', 100), ('have', 'На флешке', 100),
+                             ('state', 'Состояние', 100), (FILES, 'С сервера', 100), (DISK, 'С Я.Диска', 140)):
             self.tree.heading(col, text=text, anchor='w')
             self.tree.column(col, width=w)
         self.tree.tag_configure('chosen', background=ACCENT, foreground=INK)   # the chosen ones: lit
@@ -529,8 +628,9 @@ class App:
         self.special_rows(self.find.get().strip().casefold())
         for r in matching(self.cat, self.find.get()):
             tags = ('chosen',) if r['name'] in self.chosen else ('update',) if st[r['name']] == 'update' else ()
-            self.tree.insert('', 'end', iid=r['name'], text=r.get('title', r['name']), tags=tags,
-                             values=('%.1f МБ' % (r['size'] / 1e6), have.get(r['name'], '—'), STATE[st[r['name']]]))
+            self.tree.insert('', 'end', iid=r['name'], text=row_title(r), tags=tags,
+                             values=('%.1f МБ' % (r['size'] / 1e6), have.get(r['name'], '—'), STATE[st[r['name']]],
+                                     source_cell(self.cat, r, FILES), source_cell(self.cat, r, DISK)))
         self.paint(st)
         self.status.set('Областей: %d, выбрано %d (%.0f МБ графа и поиска; плитки ещё в 5–15 раз больше). '
                         'Свободно: %s' % (len(self.cat['regions']), len(self.chosen - {TRUNK, OVERVIEW}),
@@ -544,12 +644,17 @@ class App:
         for name, title, size, date in ((OVERVIEW, OVERVIEW_TITLE, '≈70 МБ', overview_date(drive)),):
             if find in title.casefold():
                 tags = ('chosen',) if name in self.chosen else ('update',) if state == 'update' else ()
+                ov = self.cat.get('overview', {})
                 self.tree.insert('', 'end', iid=name, text=title, tags=tags,
-                                 values=(size, date or '—', {'new': 'нет', 'update': 'есть новее', 'ok': 'есть'}[state]))
+                                 values=(size, date or '—', {'new': 'нет', 'update': 'есть новее', 'ok': 'есть'}[state],
+                                         source_cell(self.cat, ov, FILES), source_cell(self.cat, ov, DISK)))
 
-    def click(self, event):   # a click picks a region or lets it go (no Ctrl)
+    def click(self, event):   # a click picks a region or lets it go (no Ctrl); on its button: that source's zip
         name = self.tree.identify_row(event.y)
-        if name:
+        source = {'#4': FILES, '#5': DISK}.get(self.tree.identify_column(event.x))
+        if name and source:
+            self.get_ready(name, source)
+        elif name:
             self.chosen = toggled(self.chosen, name)
             self.refresh()
         return 'break'
@@ -605,7 +710,7 @@ class App:
 
     def map_motion(self, e):
         name = self.region_at(e.x, e.y)
-        titles = {r['name']: r.get('title', r['name']) for r in self.cat['regions']}
+        titles = {r['name']: row_title(r) for r in self.cat['regions']}
         self.map.itemconfigure(self.hover, text=titles.get(name, name or ''))
 
     # ----
@@ -689,6 +794,44 @@ class App:
             self.chosen -= set(gone)
             self.refresh()
             self.status.set('Удалено: %d. ' % len(gone) + self.status.get())
+
+    def get_ready(self, name, source):
+        """A row's button (the user 2026-11-12): the region's whole zip from that source onto the drive (the overview's
+        too when needed); the bottom button cancels it as a writing; not while writing."""
+        drive = self.drive.get()
+        if self.go['text'] != GO:
+            self.status.set('Идёт запись')
+            return
+        jobs = ready_job(self.cat, name, source, overview_date(drive), trunk_date(drive))
+        if name not in [n for n, _ in jobs]:
+            self.status.set('Готового архива %s нет' % ('на сервере' if source == FILES else 'на Я.Диске'))
+            return
+        self.go.configure(text=BUSY, style='Busy.TButton')
+        threading.Thread(target=self.work, args=(self.fetch_ready, jobs, source, drive), daemon=True).start()
+
+    def fetch_ready(self, jobs, source, drive):
+        """The whole zips into the PC's temp folder, unpacked there, then onto the card at once (copy_to); the bar for
+        the whole job - each zip a part of it, the copy the last."""
+        stage = os.path.join(stage_dir(), 'ready')
+        shutil.rmtree(stage, ignore_errors=True)   # (a job stopped before: no going on with a half zip)
+        os.makedirs(stage)
+        total = len(jobs) + 1
+        titles = {r['name']: r.get('title', r['name']) for r in self.cat['regions']}
+        titles[OVERVIEW] = OVERVIEW_TITLE
+        for k, (name, entry) in enumerate(jobs):
+            tell = lambda part, text, h=titles.get(name, name), k=k: self.tell(h, (k + part) / total, text)   # noqa: E731
+            tell(0, 'ссылка…')
+            zpath = os.path.join(stage, name + '.zip')
+            download_any(secure_first(whole_url(self.cat, entry, source)), zpath, tell)
+            unpack_whole(zpath, os.path.join(stage, 'OSMapsData', name))
+            os.remove(zpath)
+        copy_to(stage, drive, lambda part, text: self.tell('На флешку', (total - 1 + part) / total, text))
+        if OVERVIEW in [n for n, _ in jobs]:
+            drop_old_trunk(drive)
+        shutil.rmtree(stage, ignore_errors=True)
+        self.news.put(('status', 'Готово %s: %s. Флешку — в ГУ (папка OSMapsData в корне).' % (
+            'с сервера' if source == FILES else 'с Я.Диска', ', '.join(titles.get(n, n) for n, _ in jobs))))
+        self.news.put(('catalog', self.cat))
 
     def write_overview(self, stage, get_bytes, day, k, total, drive=None):   # the overview into stage: the bar's part k
         if overview_date(stage) == day:   # (downloaded before a break)

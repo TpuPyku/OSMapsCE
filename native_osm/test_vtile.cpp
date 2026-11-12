@@ -840,6 +840,23 @@ static bool Near(double a, double b)
 static void TiltChecks()
 {
     Check(TiltEase(-1, 55, 0) == 55, "tilt ease: the first - the zoom's pitch at once");
+    POINT pts[3] = { { -30934, 36666 }, { 500, 260 }, { 495, 252 } };
+    bool on[3] = { true, true, false };
+    Check(MarkAt(pts, on, 1, 493, 249, 26) == -1, "mark at: one far off the screen (its square past int) - none");
+    Check(MarkAt(pts, on, 2, 493, 249, 26) == 1, "mark at: the near one");
+    Check(MarkAt(pts, on, 3, 493, 249, 26) == 1, "mark at: the nearer one not drawn - not it");
+    on[2] = true;
+    Check(MarkAt(pts, on, 3, 493, 249, 26) == 2, "mark at: the nearest of two");
+    Check(MarkAt(pts, on, 2, 493, 249 - 26, 26) == -1 && MarkAt(pts, on, 2, 500, 260 + 25, 26) == 1,
+          "mark at: 26 px off - not, 25 - it");
+    POINT two[2] = { { 10, 20 }, { 20, 0 } };
+    bool both[2] = { true, true };
+    Check(MarkAt(two, both, 2, 0, 0, 26) == 1, "mark at: by the distance (20 px off) - not the one 10 across, 20 down");
+    Check(MarkAt(two + 1, both, 1, 0, 0, 26) == 0, "mark at: the first one");
+    POINT corner = { 20, 20 };
+    Check(MarkAt(&corner, both, 1, 0, 0, 26) == -1, "mark at: 20 across, 20 down (28 px) - not, a circle not a box");
+    POINT tie[2] = { { 10, 0 }, { -10, 0 } };
+    Check(MarkAt(tie, both, 2, 0, 0, 26) == 0, "mark at: two as near - the first");
     Check(fabs(TiltEase(0, 55, 200) - 5) < 1e-9, "tilt ease: from 0 (a shown pitch, not the first) - eased");
     Check(fabs(TiltEase(55, 65, 200) - 60) < 1e-9, "tilt ease: 200 ms - 5 degrees on (25 a second)");
     Check(fabs(TiltEase(65, 55, 200) - 60) < 1e-9, "tilt ease: down the same");

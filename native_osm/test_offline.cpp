@@ -643,6 +643,27 @@ static void MapsChecks()
           !strcmp(r[1].name, "zz") && r[1].sizeKb == 0, "maps: the catalog read", NULL);
     Check(MapsCatalog(kCat, r, 1) == 1 && MapsCatalog("{}", r, 4) == 0 && MapsCatalog("garbage", r, 4) == 0,
           "maps: the catalog bounded, nothing from a bad one", NULL);
+    Check(!r[0].diskKb && !r[0].diskDate[0] && !r[0].foreign, "maps: no disk copy, not far - as an old catalog", NULL);
+    static const char* kFar = "{\"regions\":[{\"name\":\"bayern\",\"zip\":\"bayern.zip\",\"far\":true,"
+                              "\"disk\":{\"size\":3072,\"date\":\"2026-11-05\"}}]}";
+    Check(MapsCatalog(kFar, r, 4) == 1 && r[0].foreign && r[0].diskKb == 3 && !strcmp(r[0].diskDate, "2026-11-05"),
+          "maps: a far region, its disk copy's size and date", NULL);
+    MapRegion a, b;
+    memset(&a, 0, sizeof(a));
+    memset(&b, 0, sizeof(b));
+    strcpy(a.title, "B");
+    strcpy(b.title, "A");
+    b.foreign = true;
+    Check(MapsOrder(&a, &b) < 0 && MapsOrder(&b, &a) > 0, "maps: the far ones last", NULL);
+    b.foreign = false;
+    Check(MapsOrder(&a, &b) > 0, "maps: by the title otherwise", NULL);
+    strcpy(a.date, "2026-11-11");
+    strcpy(a.diskDate, "2026-11-05");
+    Check(MapsDiskOld(a), "maps: the disk's copy older than the region's build - told old", NULL);
+    strcpy(a.diskDate, "2026-11-11");
+    Check(!MapsDiskOld(a), "maps: the same day - not old", NULL);
+    a.diskDate[0] = 0;
+    Check(!MapsDiskOld(a), "maps: no disk copy - not old", NULL);
     n = MapsCatalog(kCat, r, 4);
     MapsHave(r, n);   // tiny on the card (region.txt 2026-10-20), zz not
     Check(!strcmp(r[0].have, "2026-10-20") && !r[1].have[0], "maps: the card's dates", NULL);

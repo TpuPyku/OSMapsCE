@@ -45,6 +45,7 @@ struct Config {
     int     junction;       // the junction card before complex maneuvers (junction.cpp; the user 2026-10-28: off by default)
     int     noToll;         // routes keep off toll roads (the user 2026-10-29; the unit's graphs only - OSRM cannot)
     int     voice;          // the voice prompts on the route (voice.cpp, say.cpp; users 2026-11-07)
+    int     voiceVol;       // ... their volume: 1 quiet, 2 medium, 3 loud (voice.h VoiceGain; the user 2026-11-12)
     int     detail;         // the vector map's detail: 0 auto, 1 full, 2 medium, 3 fast (VTileSetDetail(detail - 1))
     int     log;            // OSMapsCE.log kept (the user 2026-10-29: off by default)
     int     tilt;           // the third person's view (its button: heading-up from z15; tilt.cpp, ring.cpp)
@@ -179,7 +180,12 @@ struct MapRegion {
     int  sizeKb;
     int  fullKb;   // the region whole (its tiles too) on the catalog's Yandex Disk; 0 none
     bool files;    // ... on the catalog's own server instead ("files" in its entry, 2026-11-09)
+    int  diskKb;   // its copy on the catalog's Yandex Disk (2026-11-12: two sources - "disk" {size, date}); 0 none
+    char diskDate[12];   // ... uploaded that day (the disk: only the schedule's runs - older than date maybe)
+    bool foreign;  // outside the former USSR: the list's end, a globe by its title
 };
+int  MapsOrder(const void* a, const void* b);   // the list's order: the foreign ones (far in the catalog) last, by the title
+bool MapsDiskOld(const MapRegion& r);           // its disk copy older than the region's build
 int  MapsCatalog(const char* json, MapRegion* out, int cap);
 void MapsHave(MapRegion* r, int n);
 int  MapState(const MapRegion& r);
@@ -194,6 +200,9 @@ bool MapsInstall(const char* url, const wchar_t* data, const char* name, int kin
 enum { MAPS_IDLE, MAPS_BUSY };
 bool MapsList();                 // the release's catalog, on a thread (false: busy)
 bool MapsGetRegion(int i);       // the catalog's region i (and the trunk roads when none), on a thread
+enum { MAPS_SRC_SERVER, MAPS_SRC_DISK };   // where from: the maps' own server (else GitHub), Yandex Disk
+bool MapsGetRegionFrom(int i, int src);   // ... from there (its overview's pack too)
+int  MapsBusySource();            // ... the one being downloaded's
 int  MapsCount();
 bool MapsAt(int i, MapRegion* out);
 int  MapsJob(wchar_t* text, int cap, int* gotKb, int* totalKb);   // MAPS_BUSY / MAPS_IDLE, its line, progress
@@ -353,6 +362,9 @@ void TiltMake(Tilt* t, double carFlat, double carScreen, double fogPx, double pi
 // smooth, the pitch jumped 10 degrees at its end); the first (shown < 0): the target at once
 enum { kTiltDegPerS = 25 };
 double TiltEase(double shown, double target, DWORD ms);
+// The mark under the finger (x, y): the nearest of those on (pts[i] where drawn) within r px, -1: none. (A Shturmann
+// 2026-11-11: a mark 48000 px off in the tilted view - its squared distance past int, any tap opened it.)
+int MarkAt(const POINT* pts, const bool* on, int n, int x, int y, int r);
 bool TiltPoint(const Tilt& t, double fx, double fy, double* sx, double* sy);   // false: in the fog
 void TiltProject(const Tilt& t, double fx, double fy, double* sx, double* sy);   // the same, no fog
 bool TiltRow(const Tilt& t, double sy, double* fy, double* k, double* fade);   // a screen row: the flat row fy, its

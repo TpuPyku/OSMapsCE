@@ -170,6 +170,23 @@ int VoiceSay(int stage, int act, int nextM, int then, const char** out, int cap)
     return n;
 }
 
+void VoiceGain(char* pcm, int len, int bits, int level)
+{
+    static const int kPct[] = { 30, 55, 100 };   // (by level from quiet; none: as recorded)
+    int pct = level >= kVoiceQuiet && level <= kVoiceLoud ? kPct[level - kVoiceQuiet] : 100;
+    if (pct == 100)
+        return;
+    if (bits == 16) {
+        short* s = (short*)pcm;
+        for (int i = 0; i < len / 2; i++)
+            s[i] = (short)(s[i] * pct / 100);
+    } else {
+        unsigned char* b = (unsigned char*)pcm;
+        for (int i = 0; i < len; i++)
+            b[i] = (unsigned char)(128 + (b[i] - 128) * pct / 100);
+    }
+}
+
 int VoiceDevice(int via, int devs)
 {
     return via == 2 && devs > 1 ? 1 : -1;

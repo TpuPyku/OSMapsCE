@@ -263,3 +263,6 @@ GPS: поиск · %d	GPS: searching · %d
 Парковки · приблизьте карту	Car parks · zoom in
 Парковки · нет в этом месте	Car parks · none here
 ПАРКОВКИ	PARKING
+Тихо	Quiet
+Средне	Medium
+Громко	Loud

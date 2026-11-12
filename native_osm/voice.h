@@ -38,3 +38,7 @@ bool VoiceWavParse(const unsigned char* b, int n, VoiceWav* w);
 // radio down (0 no one, 1 the stock shell, 2 VestaHome), devs - waveOutGetNumDevs(). Without the shell the MCU lets
 // through "Audio Output" 1 only (VestaHome's beep, HU 2026-10-18): 1 there; otherwise -1 (WAVE_MAPPER).
 int VoiceDevice(int via, int devs);
+// The voice's volume (the user 2026-11-12: three levels, set in the program): the phrase's PCM scaled in place -
+// level 1 quiet, 2 medium, 3 loud (as recorded); 16-bit signed or 8-bit unsigned samples
+enum { kVoiceQuiet = 1, kVoiceMedium, kVoiceLoud };
+void VoiceGain(char* pcm, int len, int bits, int level);

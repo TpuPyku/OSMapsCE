@@ -1,4 +1,5 @@
 #include "yamaps.h"
+#include <stdlib.h>
 
 // The third person's view (the user 2026-10-27): a camera behind and over the car looking ahead, its angle from
 // straight down by the zoom (z16 less, z17 more). A flat point v px ahead of the car (v < 0: behind) goes to the
@@ -91,6 +92,19 @@ bool TiltClip(const Tilt& t, double* x0, double* y0, double* x1, double* y1)
     *x1 = ax + s1 * dx;
     *y1 = ay + s1 * dy;
     return true;
+}
+
+int MarkAt(const POINT* pts, const bool* on, int n, int x, int y, int r)
+{
+    int best = -1, bd = r * r;
+    for (int i = 0; i < n; i++) {
+        int dx = pts[i].x - x, dy = pts[i].y - y;
+        if (on[i] && abs(dx) < r && abs(dy) < r && dx * dx + dy * dy < bd) {   // (the box first: no square past int)
+            bd = dx * dx + dy * dy;
+            best = i;
+        }
+    }
+    return best;
 }
 
 double TiltEase(double shown, double target, DWORD ms)

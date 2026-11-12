@@ -26,6 +26,8 @@ class FakeDisk:
         sent = body.read() if hasattr(body, 'read') else body
         self.calls.append((method, u.netloc + u.path, q, headers, sent))
         status, data = self.answers.get((method, u.path), (404, {'error': 'NotFound'}))
+        if callable(status):   # (an answer per call: pages)
+            status, data = status()
         return status, json.dumps(data).encode() if isinstance(data, dict) else data
 
 
@@ -148,6 +150,23 @@ class YaDisk(unittest.TestCase):
         fake = FakeDisk({('GET', '/v1/disk/public/resources/download'): (200, {'href': 'https://dl.example/a'})})
         self.assertEqual(yadisk.public_href('https://disk.yandex.ru/d/abc', 'a.zip', fake), 'https://dl.example/a')
         self.assertEqual(fake.calls[0][2], {'public_key': 'https://disk.yandex.ru/d/abc', 'path': '/a.zip'})
+        self.assertNotIn('Authorization', fake.calls[0][3])
+
+    def test_public_listing(self):
+        """The public folder's zips: {name: {size, date}} (the catalog's disk copies, 2026-11-12), pages of 1000, no
+        token; another folder's items (not files) left out."""
+        page1 = {'_embedded': {'items': [{'name': 'a.zip', 'type': 'file', 'size': 10,
+                                          'modified': '2026-11-05T10:00:00+00:00'},
+                                         {'name': 'sub', 'type': 'dir'}], 'total': 3, 'limit': 2, 'offset': 0}}
+        page2 = {'_embedded': {'items': [{'name': 'b.zip', 'type': 'file', 'size': 20,
+                                          'modified': '2026-10-30T01:00:00+00:00'}], 'total': 3, 'limit': 2,
+                               'offset': 2}}
+        pages = [page1, page2]
+        fake = FakeDisk({('GET', '/v1/disk/public/resources'): (lambda: (200, pages.pop(0)), None)})
+        got = yadisk.public_listing('https://disk.yandex.ru/d/abc', fake, limit=2)
+        self.assertEqual(got, {'a.zip': {'size': 10, 'date': '2026-11-05'}, 'b.zip': {'size': 20, 'date': '2026-10-30'}})
+        self.assertEqual(fake.calls[0][2], {'public_key': 'https://disk.yandex.ru/d/abc', 'limit': '2', 'offset': '0'})
+        self.assertEqual(fake.calls[1][2]['offset'], '2')
         self.assertNotIn('Authorization', fake.calls[0][3])
 
 

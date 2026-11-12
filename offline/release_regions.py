@@ -95,11 +95,33 @@ TITLES = {
     'belarus': 'Беларусь', 'moldova': 'Молдова', 'georgia': 'Грузия', 'kazakhstan': 'Казахстан',
     'uzbekistan': 'Узбекистан', 'kyrgyzstan': 'Киргизия', 'tajikistan': 'Таджикистан', 'turkmenistan': 'Туркмения',
     'azerbaijan': 'Азербайджан', 'armenia': 'Армения',
+    # outside the former USSR (make_region.FAR): a whole country - its name, a country's state - "Страна — область"
+    'slovakia': 'Словакия', 'czech_republic': 'Чехия', 'hungary': 'Венгрия',
+    'dolnoslaskie': 'Польша — Нижнесилезское воеводство', 'kujawsko_pomorskie': 'Польша — Куявско-Поморское воеводство',
+    'lodzkie': 'Польша — Лодзинское воеводство', 'lubelskie': 'Польша — Люблинское воеводство',
+    'lubuskie': 'Польша — Любушское воеводство', 'malopolskie': 'Польша — Малопольское воеводство',
+    'mazowieckie': 'Польша — Мазовецкое воеводство', 'opolskie': 'Польша — Опольское воеводство',
+    'podkarpackie': 'Польша — Подкарпатское воеводство', 'podlaskie': 'Польша — Подляское воеводство',
+    'pomorskie': 'Польша — Поморское воеводство', 'slaskie': 'Польша — Силезское воеводство',
+    'swietokrzyskie': 'Польша — Свентокшиское воеводство', 'warminsko_mazurskie': 'Польша — Варминьско-Мазурское воеводство',
+    'wielkopolskie': 'Польша — Великопольское воеводство', 'zachodniopomorskie': 'Польша — Западно-Поморское воеводство',
+    'baden_wuerttemberg': 'Германия — Баден-Вюртемберг', 'bayern': 'Германия — Бавария',
+    'brandenburg': 'Германия — Берлин и Бранденбург', 'hessen': 'Германия — Гессен',
+    'mecklenburg_vorpommern': 'Германия — Мекленбург — Передняя Померания',
+    'niedersachsen': 'Германия — Нижняя Саксония и Бремен', 'nordrhein_westfalen': 'Германия — Северный Рейн — Вестфалия',
+    'rheinland_pfalz': 'Германия — Рейнланд-Пфальц', 'saarland': 'Германия — Саар', 'sachsen': 'Германия — Саксония',
+    'sachsen_anhalt': 'Германия — Саксония-Анхальт', 'schleswig_holstein': 'Германия — Шлезвиг-Гольштейн и Гамбург',
+    'thueringen': 'Германия — Тюрингия',
 }
 
 
 def title(name):
     return TITLES.get(name, name)
+
+
+def far(name):
+    """Outside the former USSR (make_region.FAR): the apps' lists put it last, with an icon."""
+    return name in make_region.FAR
 
 
 def graph_bbox(path):
@@ -130,6 +152,8 @@ def build_region(name, url, dist, work):
             z.write(os.path.join(folder, f), f)
     entry = {'name': name, 'title': title(name), 'date': region_info(os.path.join(folder, 'region.txt'))['date'], 'zip': name + '.zip',
              'size': os.path.getsize(zpath), 'bbox': graph_bbox(os.path.join(folder, 'route.grf'))}
+    if far(name):   # (outside the former USSR: the lists' end, an icon)
+        entry['far'] = True
     with open(os.path.join(dist, name + '.json'), 'w', encoding='utf-8') as f:
         json.dump(entry, f)
     return entry
@@ -167,6 +191,26 @@ def upload_zip(disk, name, path):
     return size
 
 
+def up_also(also, name, path):
+    """The archive onto the disk as well, kept here for the own server after; a refusal told, not raised."""
+    if not also:
+        return
+    try:
+        also.upload('%s/%s' % (DISK, name), path)
+    except (OSError, yadisk.DiskError) as e:
+        print('%s: onto Yandex Disk too - not taken (%s)' % (name, e))
+
+
+def disk_copies(cat, listing):
+    """The disk's copies into the catalog (the user 2026-11-12: the apps offer both sources, the disk's dated):
+    each region's and the overview's disk = {size, date} by the public folder's listing (yadisk.public_listing)."""
+    for e in cat.get('regions', []) + ([cat['overview']] if cat.get('overview') else []):
+        e.pop('disk', None)
+        if e.get('zip') in listing:
+            e['disk'] = listing[e['zip']]
+    return cat
+
+
 def placed(store, whole):
     """A whole archive's entry, told it is on the own server ("files": True; the user 2026-11-09 - the regions not
     rebuilt since keep the disk's)."""
@@ -194,9 +238,9 @@ def region_rings(urls, get=None):
     return rings if one_side(rings) else None
 
 
-def build_full(entry, folder, dist, get_bytes, day, disk, rings=None):
+def build_full(entry, folder, dist, get_bytes, day, disk, rings=None, also=None):
     """The region whole up (its tiles cut now: its outline's, rings - else its box's), its entry told: full = {zip,
-    size, tiles}."""
+    size, tiles}; also - Yandex Disk too (the schedule's run: also_disk), its refusal (the upload limit) only told."""
     tiles = os.path.join(folder, 'tiles.vtp')
     t0 = time.time()
     # z15 whole for now (the user 2026-11-11): the released OSMapsCE draws z15+ from the z15 tile; with the release
@@ -209,6 +253,7 @@ def build_full(entry, folder, dist, get_bytes, day, disk, rings=None):
         info = f.read() + 'tiles=%s\n' % day
     zpath = os.path.join(dist, entry['name'] + '.full.zip')
     stored_zip(zpath, folder, present(folder, ('route.grf', 'search.idx', 'layers.lay', 'parking.lay', 'tiles.vtp')), info)
+    up_also(also, entry['zip'], zpath)
     entry['full'] = placed(disk, {'zip': entry['zip'], 'size': upload_zip(disk, entry['zip'], zpath), 'tiles': day})
     print('%s: zip %.0f MB up in %.0f s' % (entry['name'], entry['full']['size'] / 1e6, time.time() - t0))
     with open(os.path.join(dist, entry['name'] + '.json'), 'w', encoding='utf-8') as f:
@@ -216,7 +261,7 @@ def build_full(entry, folder, dist, get_bytes, day, disk, rings=None):
     return entry
 
 
-def publish_disk(dist, disk, get_bytes, day):
+def publish_disk(dist, disk, get_bytes, day, also=None):
     """The overview's pack up (maps_app's: z0-8 inside the regions' borders, and the trunk roads' graph), the folder
     public; the catalog in dist told: disk (the folder's public link), overview = {zip, size, tiles, date}."""
     import maps_app   # (its overview: one cut for the app and the release)
@@ -232,6 +277,7 @@ def publish_disk(dist, disk, get_bytes, day):
             info = f.read()
         zpath = os.path.join(dist, 'overview.zip')
         stored_zip(zpath, folder, ('overview.vtp', 'trunk.grf') if graph else ('overview.vtp',), info, ('trunk.grf',))
+        up_also(also, 'overview.zip', zpath)
         cat['overview'] = placed(disk, {'zip': 'overview.zip', 'size': upload_zip(disk, 'overview.zip', zpath),
                                         'tiles': day})
         if graph:
@@ -239,6 +285,13 @@ def publish_disk(dist, disk, get_bytes, day):
     finally:
         shutil.rmtree(work, ignore_errors=True)
     cat[disk.KEY] = disk.publish(DISK)
+    if also:
+        cat[also.KEY] = also.publish(DISK)
+    if cat.get('disk'):   # the disk's copies, by its public folder (no token needed)
+        try:
+            disk_copies(cat, yadisk.public_listing(cat['disk']))
+        except (OSError, ValueError, yadisk.DiskError) as e:
+            print('disk listing: %s' % e)
     with open(path, 'w', encoding='utf-8') as f:
         json.dump(cat, f, ensure_ascii=False)
     return cat
@@ -264,6 +317,8 @@ def kept(previous, built, known):
     for e in out:
         if 'title' in e:
             e['title'] = title(e['name'])
+        if far(e['name']):
+            e['far'] = True
     return out
 
 
@@ -296,6 +351,15 @@ def store(env, folder):
     return yadisk.Disk(env['YANDEX_DISK_TOKEN'])
 
 
+def also_disk(env):
+    """Yandex Disk as well as the own server: only on the schedule's run (MAPS_DISK_TOO, the user 2026-11-12: its
+    upload limit - twice a month), with its token."""
+    own = env.get('MAPS_SSH_KEY') and env.get('MAPS_HOST')   # (without it the disk is the store itself)
+    if not env.get('MAPS_DISK_TOO') or not env.get('YANDEX_DISK_TOKEN') or not own:
+        return None
+    return yadisk.Disk(env['YANDEX_DISK_TOKEN'])
+
+
 def main(argv):
     if argv[0] == 'list':
         print(json.dumps(sorted(make_region.regions())))
@@ -306,13 +370,14 @@ def main(argv):
             build = pmextract.latest_build()
             entry = build_full(entry, os.path.join(make_region.WORK, 'data', argv[1]), argv[2],
                                pmextract.http_bytes(build), build_day(build), up,
-                               region_rings(make_region.regions()[argv[1]]))
+                               region_rings(make_region.regions()[argv[1]]), also_disk(os.environ))
         print(entry)
     elif argv[0] == 'trunk':
         trunk_into(argv[1], argv[2])
     elif argv[0] == 'disk':
         build = pmextract.latest_build()
-        publish_disk(argv[1], store(os.environ, tempfile.mkdtemp()), pmextract.http_bytes(build), build_day(build))
+        publish_disk(argv[1], store(os.environ, tempfile.mkdtemp()), pmextract.http_bytes(build), build_day(build),
+                     also_disk(os.environ))
     else:
         catalog(argv[1], json.load(open(argv[2], encoding='utf-8')) if len(argv) > 2 else None, make_region.regions())
 

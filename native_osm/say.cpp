@@ -111,6 +111,7 @@ static void Say(const char* const* ids, int n)
     char* pcm = Glue(ids, n, &len);
     if (!pcm)
         return;
+    VoiceGain(pcm, len, s_fmt.wBitsPerSample, g_cfg.voiceVol);
     Log("voice: %s%s%s%s%s", ids[0], n > 1 ? " " : "", n > 1 ? ids[1] : "", n > 2 ? " " : "", n > 2 ? ids[2] : "");
     if (s_phase == SAY_IDLE || s_phase == SAY_LEAD) {   // (still to come: the newer one instead)
         free(s_pcm);

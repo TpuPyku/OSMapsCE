@@ -60,6 +60,8 @@ jobs:
       # Disk's upload limit ran out), without its key onto the owner's Yandex Disk; only its entry into the artifact
       - run: python offline/release_regions.py build ${{ matrix.region }} dist
         env:
+          # onto Yandex Disk as well only on the schedule's run (the user 2026-11-12: its upload limit; twice a month)
+          MAPS_DISK_TOO: ${{ github.event_name == 'schedule' && '1' || '' }}
           YANDEX_DISK_TOKEN: ${{ secrets.YANDEX_DISK_TOKEN }}
           MAPS_SSH_KEY: ${{ secrets.MAPS_SSH_KEY }}
           MAPS_HOST: ${{ secrets.MAPS_HOST }}
@@ -77,6 +79,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
+      MAPS_DISK_TOO: ${{ github.event_name == 'schedule' && '1' || '' }}
       YANDEX_DISK_TOKEN: ${{ secrets.YANDEX_DISK_TOKEN }}
       MAPS_SSH_KEY: ${{ secrets.MAPS_SSH_KEY }}
       MAPS_HOST: ${{ secrets.MAPS_HOST }}

@@ -15,20 +15,39 @@ unsigned short Blend565(unsigned short a, unsigned short b, int alpha32)
 
 static const double kFix = 1 << 16;   // 16.16 fixed point
 
+// A ring as the walk reads it: its loaded part's first column and row (its px) less their remainder by the ring's size
+// - a pixel's place in the ring then by subtraction, no division per pixel (HU sheet 30: the 3D frame 60-85 ms; ARMv4
+// has no divide, two "%" a pixel of ~320 thousand)
+struct RingFast { RingView v; int bx, by; };
+
+static RingFast Fast(const RingView& r)
+{
+    RingFast f = { r, (r.x0 >> r.shift) - (r.x0 >> r.shift) % r.size, (r.y0 >> r.shift) - (r.y0 >> r.shift) % r.size };
+    return f;
+}
+
+static int Wrapped(int v, int size)   // v >= 0; the loaded part is no wider than the ring: once at most there
+{
+    while (v >= size)
+        v -= size;
+    return v;
+}
+
 // The pixel of world px (x, y) of the view's zoom from the first ring loaded there; else the fog's colour
-static unsigned short RingPixel(const RingView* rings, int n, int x, int y, unsigned short fog)
+static unsigned short RingPixel(const RingFast* rings, int n, int x, int y, unsigned short fog)
 {
     for (int i = 0; i < n; i++) {
-        const RingView& r = rings[i];
+        const RingView& r = rings[i].v;
         if (x >= r.x0 && x < r.x1 && y >= r.y0 && y < r.y1)
-            return r.top[(y >> r.shift) % r.size * r.stride + (x >> r.shift) % r.size];   // (world px: >= 0)
+            return r.top[Wrapped((y >> r.shift) - rings[i].by, r.size) * r.stride +
+                         Wrapped((x >> r.shift) - rings[i].bx, r.size)];
     }
     return fog;
 }
 
 struct RowWalk { int bx, by; long ox, oy, dx, dy; };   // the view's centre (whole px), the walk in 16.16 from it
 
-static void WarpRow(const RingView* rings, int n, const RowWalk& w0, int width, unsigned short fog, int alpha,
+static void WarpRow(const RingFast* rings, int n, const RowWalk& w0, int width, unsigned short fog, int alpha,
                     unsigned short* d)
 {
     RowWalk w = w0;
@@ -42,6 +61,10 @@ void TiltWarp(const RingView* rings, int n, const Tilt& t, int w, int h, double 
               unsigned short* dst, int dstride)
 {
     double a = angleDeg * M_PI / 180, ca = cos(a), sa = sin(a);
+    RingFast fast[4];
+    n = n < 4 ? n : 4;
+    for (int i = 0; i < n; i++)
+        fast[i] = Fast(rings[i]);
     RowWalk walk;
     walk.bx = (int)floor(vx);
     walk.by = (int)floor(vy);
@@ -61,7 +84,7 @@ void TiltWarp(const RingView* rings, int n, const Tilt& t, int w, int h, double 
         walk.oy = (long)floor((fx * sa + fy * ca + vy - walk.by) * kFix);
         walk.dx = (long)(k * ca * kFix);
         walk.dy = (long)(k * sa * kFix);
-        WarpRow(rings, n, walk, w, fog, (int)(fade * 32 + 0.5), d);
+        WarpRow(fast, n, walk, w, fog, (int)(fade * 32 + 0.5), d);
     }
 }
 
