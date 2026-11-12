@@ -94,7 +94,7 @@ TITLES = {
     'zhytomyr_oblast': 'Житомирская область',
     'belarus': 'Беларусь', 'moldova': 'Молдова', 'georgia': 'Грузия', 'kazakhstan': 'Казахстан',
     'uzbekistan': 'Узбекистан', 'kyrgyzstan': 'Киргизия', 'tajikistan': 'Таджикистан', 'turkmenistan': 'Туркмения',
-    'azerbaijan': 'Азербайджан', 'armenia': 'Армения',
+    'azerbaijan': 'Азербайджан', 'armenia': 'Армения', 'lithuania': 'Литва', 'latvia': 'Латвия', 'estonia': 'Эстония',
     # outside the former USSR (make_region.FAR): a whole country - its name, a country's state - "Страна — область"
     'slovakia': 'Словакия', 'czech_republic': 'Чехия', 'hungary': 'Венгрия',
     'dolnoslaskie': 'Польша — Нижнесилезское воеводство', 'kujawsko_pomorskie': 'Польша — Куявско-Поморское воеводство',

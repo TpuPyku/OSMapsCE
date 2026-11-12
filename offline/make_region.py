@@ -51,7 +51,7 @@ UKRAINE_APART = ('crimea', 'sevastopol', 'donetsk_oblast', 'luhansk_oblast')
 INSIDE_UA = {'kiev': 'kiev_oblast'}
 GEOFABRIK = 'https://download.geofabrik.de/%s-latest.osm.pbf'
 COUNTRIES = {n: GEOFABRIK % (part + '/' + n) for part, names in (
-    ('europe', ('belarus', 'moldova', 'georgia')),
+    ('europe', ('belarus', 'moldova', 'georgia', 'lithuania', 'latvia', 'estonia')),   # (the Baltic ones: the user 2026-11-12)
     ('asia', ('kazakhstan', 'uzbekistan', 'kyrgyzstan', 'tajikistan', 'turkmenistan', 'azerbaijan', 'armenia')))
     for n in names}
 # Outside the former USSR (the users 2026-11-07, the user 2026-11-12: "far" - the lists' end, an icon): whole countries,

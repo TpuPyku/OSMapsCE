@@ -1095,7 +1095,11 @@ class Tools(unittest.TestCase):
         self.assertEqual(got['crimea'], make_region.APART['crimea'])
         self.assertEqual(got['belarus'], 'https://download.geofabrik.de/europe/belarus-latest.osm.pbf')
         self.assertEqual(got['kazakhstan'], 'https://download.geofabrik.de/asia/kazakhstan-latest.osm.pbf')
-        self.assertEqual(len(make_region.COUNTRIES), 10)
+        self.assertEqual(got['lithuania'], 'https://download.geofabrik.de/europe/lithuania-latest.osm.pbf')
+        for baltic in ('lithuania', 'latvia', 'estonia'):   # (the user 2026-11-12: missing; once in the USSR - not far)
+            self.assertIn(baltic, got)
+            self.assertFalse(release_regions.far(baltic), baltic)
+        self.assertEqual(len(make_region.COUNTRIES), 13)
         for name in got:
             self.assertNotEqual(release_regions.title(name), name, name)   # every one titled
 

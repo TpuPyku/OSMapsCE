@@ -16,6 +16,7 @@ import urllib.error
 import zipfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+os.environ['OSMAPS_LANG'] = 'ru'   # (the texts below are the Russian ones, whatever the PC's language)
 sys.path.insert(0, os.path.dirname(HERE))
 sys.path.insert(0, HERE)
 import make_region       # noqa: E402
@@ -111,34 +112,6 @@ class Maps(unittest.TestCase):
         os.makedirs(os.path.join(self.tmp, 'd2'))
         again = release_regions.catalog(os.path.join(self.tmp, 'd2'), got, {'tiny'})
         self.assertEqual((again['disk'], again['overview']), (got['disk'], got['overview']))
-
-    def test_ready_links(self):
-        """The ready archives (the user 2026-10-30: the app gets their links too): the chosen ones whole on the disk -
-        their download links (the overview too); none chosen - the disk's folder; no disk in the catalog - none."""
-        cat = {'disk': 'https://disk.yandex.ru/d/x', 'overview': {'zip': 'overview.zip'},
-               'regions': [{'name': 'a', 'full': {'zip': 'a.zip'}}, {'name': 'b'}]}
-        asked = []
-        href = lambda pub, name: asked.append(pub) or 'https://dl/' + name   # noqa: E731
-        self.assertEqual(maps_app.ready_links(cat, {'a', 'b', maps_app.OVERVIEW}, href),
-                         ['https://dl/a.zip', 'https://dl/overview.zip'])      # (b: not whole there)
-        self.assertEqual(set(asked), {'https://disk.yandex.ru/d/x'})
-        self.assertEqual(maps_app.ready_links(cat, set(), href), ['https://disk.yandex.ru/d/x'])
-        self.assertEqual(maps_app.ready_links({'regions': []}, {'a'}, href), [])
-
-    def test_ready_links_own_server(self):
-        """The maps' own server (the user 2026-11-09: Yandex Disk's upload limit ran out): the catalog's "files" -
-        the archives' folder on the web - those put there ("files" in their entry) by their links straight; the others
-        (a region not rebuilt since: kept from the previous catalog) still the disk's."""
-        cat = {'files': 'http://203.0.113.5/maps/', 'disk': 'https://disk.yandex.ru/d/x',
-               'overview': {'zip': 'overview.zip', 'files': True},
-               'regions': [{'name': 'a', 'full': {'zip': 'a.zip', 'files': True}}, {'name': 'b'},
-                           {'name': 'c', 'full': {'zip': 'c.zip'}}]}
-        href = lambda pub, name: 'https://dl/' + name   # noqa: E731
-        self.assertEqual(maps_app.ready_links(cat, {'a', 'b', 'c', maps_app.OVERVIEW}, href),
-                         ['http://203.0.113.5/maps/a.zip', 'https://dl/c.zip', 'http://203.0.113.5/maps/overview.zip'])
-        self.assertEqual(maps_app.ready_links(dict(cat, disk=None), {'a', 'c'}, href),
-                         ['http://203.0.113.5/maps/a.zip'])              # (c: no disk to have it of)
-        self.assertEqual(maps_app.ready_links(dict(cat, files=None), {'a'}, href), ['https://dl/a.zip'])
 
     def test_release_full_region_own_server(self):
         """A region put onto the own server: its entry tells it ("files") - the clients know it there, not on the
@@ -618,17 +591,6 @@ class Maps(unittest.TestCase):
                 app.remove_chosen()
             self.assertEqual(len(asked), 1)                                          # not asked
             self.assertIn('Нечего удалять', app.status.get())
-            opened = []
-            told = []
-            with unittest.mock.patch.object(maps_app.webbrowser, 'open', opened.append),                     unittest.mock.patch.object(maps_app, 'inform', lambda title, text: told.append(text)):
-                app.open_ready()                       # no disk in the catalog: told in a window (the user 2026-10-30:
-                self.assertEqual(opened, [])           # the status line unseen - "nothing happened")
-                self.assertIn('пока нет', told[0])
-                app.cat = dict(cat, disk='https://disk.yandex.ru/d/x')
-                app.chosen = set()
-                app.open_ready()
-                self.assertEqual(opened, ['https://disk.yandex.ru/d/x'])               # the folder
-                self.assertIn('в браузере', app.status.get())
         finally:
             app.root.destroy()
 
@@ -1070,6 +1032,102 @@ class Maps(unittest.TestCase):
         kinds = {'C:\\': 3, 'E:\\': 2, 'F:\\': 2}                          # 2: removable (a card, a flash drive)
         mask = 1 << 2 | 1 << 4 | 1 << 5                                    # C:, E:, F:
         self.assertEqual(maps_app.removable_drives(lambda: mask, kinds.get), ['E:\\', 'F:\\'])
+
+
+class English(unittest.TestCase):
+    """The loader in English (the user 2026-11-12): each Russian text through T, its English one in EN."""
+
+    def texts(self):
+        """The source's Cyrillic strings outside docstrings, and whether each is T's argument."""
+        import ast
+        tree = ast.parse(io.open(maps_app.__file__, encoding='utf-8').read())
+        docs = set()
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Module, ast.FunctionDef, ast.ClassDef)) and node.body and \
+                    isinstance(node.body[0], ast.Expr) and isinstance(node.body[0].value, ast.Constant):
+                docs.add(id(node.body[0].value))
+        wrapped = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and getattr(node.func, 'id', '') == 'T' and node.args:
+                wrapped.add(id(node.args[0]))
+        cyr = lambda v: any('\u0400' <= ch <= '\u04ff' for ch in v)   # noqa: E731
+        return [(n.value, id(n) in wrapped) for n in ast.walk(tree)
+                if isinstance(n, ast.Constant) and isinstance(n.value, str) and cyr(n.value) and id(n) not in docs]
+
+    def test_every_text_translated(self):
+        import re
+        texts = self.texts()
+        self.assertGreater(len(texts), 40)
+        self.assertEqual([t for t, ok in texts if not ok], [], 'Russian texts not through T')
+        self.assertEqual([t for t, _ in texts if t not in maps_app.EN], [], 'no English for these')
+        spec = re.compile(r'%[-.0-9]*[sdf]')
+        for ru, en in maps_app.EN.items():
+            self.assertFalse(any('\u0400' <= ch <= '\u04ff' for ch in en), en)
+            self.assertEqual(spec.findall(ru), spec.findall(en), ru)
+        used = {t for t, _ in texts}
+        self.assertEqual([k for k in maps_app.EN if k not in used], [], 'English for texts no longer there')
+
+    def test_t(self):
+        with unittest.mock.patch.object(maps_app, 'LANG', 'en'):
+            self.assertEqual(maps_app.T('Поиск:'), 'Search:')
+            self.assertEqual(maps_app.T('unknown'), 'unknown')
+        self.assertEqual(maps_app.T('Поиск:'), 'Поиск:')
+
+    def test_choose_lang(self):
+        pref = os.path.join(tempfile.mkdtemp(), 'lang')
+        self.assertEqual(maps_app.choose_lang({'OSMAPS_LANG': 'en'}, pref, lambda: 0x419), 'en')
+        self.assertEqual(maps_app.choose_lang({}, pref, lambda: 0x419), 'ru')      # Russian Windows
+        self.assertEqual(maps_app.choose_lang({}, pref, lambda: 0x409), 'en')      # any other
+        self.assertEqual(maps_app.choose_lang({}, pref, lambda: 0x422), 'en')
+        maps_app.save_lang(pref, 'en')
+        self.assertEqual(maps_app.choose_lang({}, pref, lambda: 0x419), 'en')      # the saved choice first
+        maps_app.save_lang(pref, 'ru')
+        self.assertEqual(maps_app.choose_lang({}, pref, lambda: 0x409), 'ru')
+        with open(pref, 'w') as f:
+            f.write('xx')
+        self.assertEqual(maps_app.choose_lang({}, pref, lambda: 0x409), 'en')      # nonsense saved: as if none
+        self.assertEqual(maps_app.choose_lang({}, pref, None), 'ru')               # the language not known
+
+    def test_switch(self):
+        """"RU / EN": the other language kept, the app started anew in it; not while writing."""
+        import tkinter
+        import tkinter.ttk
+        cat = {'regions': [{'name': 'a_oblast', 'title': 'Альфа', 'size': 2e6, 'date': 'd2'}]}
+        tmp = tempfile.mkdtemp()
+        pref = os.path.join(tmp, 'lang')
+        started = []
+        patch = unittest.mock.patch.object
+        with patch(maps_app, 'load_catalog', lambda: cat), patch(maps_app, 'load_outlines', lambda: {}), \
+                patch(maps_app, 'removable_drives', lambda: [tmp]):
+            app = maps_app.App(tkinter, tkinter.ttk)
+        try:
+            app.root.geometry('+-3000+-3000')
+            with patch(maps_app, 'LANG_FILE', pref), patch(maps_app.subprocess, 'Popen', started.append):
+                app.go.configure(text=maps_app.BUSY)
+                app.switch_lang()
+                self.assertEqual((started, os.path.exists(pref)), ([], False))      # writing: no
+                self.assertEqual(app.status.get(), 'Идёт запись')
+                app.go.configure(text=maps_app.GO)
+                app.switch_lang()
+            with open(pref) as f:
+                self.assertEqual(f.read(), 'en')
+            self.assertEqual(len(started), 1)
+            self.assertEqual(started[0][0], sys.executable)
+        finally:
+            try:
+                app.root.destroy()
+            except tkinter.TclError:
+                pass                                                           # (the switch closed it)
+
+    def test_english_titles(self):
+        far = {'name': 'dolnoslaskie', 'title': 'Польша — Нижнесилезское воеводство', 'far': True}
+        near = {'name': 'moscow_oblast', 'title': 'Московская область'}
+        with unittest.mock.patch.object(maps_app, 'LANG', 'en'):
+            self.assertEqual(maps_app.region_title(near), 'Moscow Oblast')
+            self.assertEqual(maps_app.row_title(far), maps_app.FAR_MARK + 'Dolnoslaskie')
+            self.assertEqual(maps_app.region_title({'name': 'czech_republic'}), 'Czech Republic')
+        self.assertEqual(maps_app.region_title(near), 'Московская область')
+        self.assertEqual(maps_app.region_title({'name': 'x_y'}), 'x_y')            # no title: its name
 
 
 if __name__ == '__main__':
