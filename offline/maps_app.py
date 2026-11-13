@@ -567,6 +567,7 @@ class App:
                      lightcolor=ROW, darkcolor=ROW)
         st.configure('Horizontal.TProgressbar', background=ACCENT, troughcolor=PANEL, borderwidth=0)
         st.configure('Dim.TLabel', foreground=DIM)
+        st.configure('Cell.TButton', padding=0)
 
     def layout(self):
         ttk, top = self.ttk, self.ttk.Frame(self.root)
@@ -576,7 +577,7 @@ class App:
         ttk.Button(top, text=T('Папка…'), command=self.choose).pack(side='left')
         ttk.Button(top, text=T('Обновить'), command=self.refresh).pack(side='left', padx=6)
         ttk.Button(top, text='RU / EN', command=self.switch_lang).pack(side='right')
-        ttk.Entry(top, textvariable=self.find, width=24).pack(side='right')
+        ttk.Entry(top, textvariable=self.find, width=24).pack(side='right', padx=(0, 16))   # (apart: 2026-11-13)
         ttk.Label(top, text=T('Поиск:'), style='Dim.TLabel').pack(side='right', padx=6)
         picks = ttk.Frame(self.root)
         picks.pack(fill='x', padx=12)
@@ -603,7 +604,9 @@ class App:
         self.tree.tag_configure('update', foreground=ACCENT)
         self.tree.bind('<Button-1>', self.click)
         self.scroll = ttk.Scrollbar(middle, orient='vertical', command=self.tree.yview)   # (the user 2026-10-29)
-        self.tree.configure(yscrollcommand=self.scroll.set)
+        self.tree.configure(yscrollcommand=self.scrolled)
+        self.tree.bind('<Configure>', lambda e: self.place_buttons())
+        self.cell_buttons = []
         self.scroll.pack(side='right', fill='y')
         self.tree.pack(side='right', fill='both', expand=True, padx=(8, 0))
         self.bar = ttk.Progressbar(self.root, maximum=1.0)
@@ -662,6 +665,7 @@ class App:
                              values=(T('%.1f МБ') % (r['size'] / 1e6), have.get(r['name'], '—'), STATE[st[r['name']]],
                                      source_cell(self.cat, r, FILES), source_cell(self.cat, r, DISK)))
         self.paint(st)
+        self.root.after_idle(self.place_buttons)   # (the rows laid out first)
         self.status.set(T('Областей: %d, выбрано %d (%.0f МБ графа и поиска; плитки ещё в 5–15 раз больше). '
                         'Свободно: %s') % (len(self.cat['regions']), len(self.chosen - {TRUNK, OVERVIEW}),
                                           chosen_size(self.cat, self.chosen) / 1e6, self.free()))
@@ -678,6 +682,26 @@ class App:
                 self.tree.insert('', 'end', iid=name, text=title, tags=tags,
                                  values=(size, date or '—', {'new': T('нет'), 'update': T('есть новее'), 'ok': T('есть')}[state],
                                          source_cell(self.cat, ov, FILES), source_cell(self.cat, ov, DISK)))
+
+    def scrolled(self, first, last):
+        self.scroll.set(first, last)
+        self.place_buttons()
+
+    def place_buttons(self):
+        """The rows' downloads as real buttons over their cells, a hand over them (the user 2026-11-13: the cells'
+        text did not look clickable); only the rows in sight, placed anew as the list moves."""
+        for b in self.cell_buttons:
+            b.destroy()
+        self.cell_buttons = []
+        for name in self.tree.get_children():
+            for source in (FILES, DISK):
+                box = self.tree.bbox(name, source)
+                if not box or self.tree.set(name, source) == '—':
+                    continue
+                b = self.ttk.Button(self.tree, text=self.tree.set(name, source), cursor='hand2', style='Cell.TButton',
+                                    command=lambda n=name, s=source: self.get_ready(n, s))
+                b.place(x=box[0] + 2, y=box[1] + 1, width=box[2] - 4, height=box[3] - 2)
+                self.cell_buttons.append(b)
 
     def click(self, event):   # a click picks a region or lets it go (no Ctrl); on its button: that source's zip
         name = self.tree.identify_row(event.y)

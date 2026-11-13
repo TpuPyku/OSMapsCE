@@ -246,7 +246,9 @@ struct OffFile {
     void*       part[kOffParts];    // the parts read into memory (not mapped)
     int         nparts;
     bool        bad;                // a part not there
+    wchar_t     path[MAX_PATH];     // (mapped later when a part gets no memory)
 };
+extern void* (*g_offAlloc)(size_t);   // (tests) the parts' malloc
 bool  OffOpen(OffFile* f, const wchar_t* path, void* head, DWORD bytes);   // the file and its header; false: closed
 bool  OffMapWanted(DWORD fileBytes, DWORD freeBytes);   // mapped: unless three times its size is free
 extern DWORD g_offFreeMem;   // (tests) the free memory as if, 0 - the system's

@@ -570,9 +570,19 @@ class Maps(unittest.TestCase):
                 app.get_ready('a_oblast', 'files')
                 self.assertEqual(thread.call_count, 1)                              # not twice at once
                 app.on_done(None)
+                app.root.update()                                                   # (laid out: the buttons placed)
+                buttons = [(b['text'], str(b['cursor'])) for b in app.cell_buttons]
+                self.assertEqual(buttons, [(app.tree.item('a_oblast', 'values')[3], 'hand2')])   # a real button,
+                cell = app.tree.bbox('a_oblast', 'files')
+                put = {k: int(v) for k, v in app.cell_buttons[0].place_info().items() if k in 'x y width height'}
+                self.assertTrue(cell[0] < put['x'] and put['x'] + put['width'] < cell[0] + cell[2] and
+                                cell[1] < put['y'] and put['y'] + put['height'] < cell[1] + cell[3])   # in its cell
+                app.cell_buttons[0].invoke()                                        # the hand over it (2026-11-13)
+                self.assertEqual(thread.call_count, 2)
+                app.on_done(None)
                 bx = app.tree.bbox('b_oblast', 'disk')
                 app.click(type('E', (), {'x': bx[0] + 5, 'y': bx[1] + 5})())        # none there: told, nothing done
-                self.assertEqual(thread.call_count, 1)
+                self.assertEqual(thread.call_count, 2)
                 self.assertIn('нет', app.status.get())
             app.cat = cat
             app.chosen = {'a_oblast', 'b_oblast'}                                    # only b on the card

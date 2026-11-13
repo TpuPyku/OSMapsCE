@@ -317,6 +317,11 @@ static int FakeGet(const char* host, bool, const char* path, unsigned char** bod
 
 // offdata.cpp's file: mapped (the user 2026-10-29: Moscow's 99 MB graph read into memory failed on a Shturmann) -
 // an aligned part straight from the view, an unaligned one copied, one past the end refused
+static void* NoAlloc(size_t)   // the unit's malloc refusing a big part
+{
+    return NULL;
+}
+
 static void OffFileChecks()
 {
     wchar_t path[MAX_PATH];
@@ -331,6 +336,14 @@ static void OffFileChecks()
     bool read = OffOpen(&f, path, head, 4) && !f.view && OffPart(&f, 4, 8) && f.nparts == 1;
     OffClose(&f);
     Check(read, "file: memory plenty - not mapped, its parts read", NULL);
+    g_offAlloc = NoAlloc;   // (HU 2026-11-13: 363 MB free, the 105 MB graph's part not given - no route, no frame)
+    read = OffOpen(&f, path, head, 4) && !f.view;
+    const char* m = (const char*)OffPart(&f, 4, 8);
+    Check(read && f.view && m == (const char*)f.view + 4 && !f.bad && !f.nparts,
+          "file: no memory for a part - mapped after all, the part from the view", NULL);
+    Check(!OffPart(&f, 1, 8) && f.bad, "file: no memory, mapped, an unaligned part (copied) - refused, marked", NULL);
+    OffClose(&f);
+    g_offAlloc = malloc;
     g_offFreeMem = 1;
     Check(OffOpen(&f, path, head, 4) && f.view && !memcmp(head, "PK\x03\x04", 4), "file: opened, mapped", NULL);
     const char* a = (const char*)OffPart(&f, 4, 8);

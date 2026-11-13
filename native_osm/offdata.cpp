@@ -33,9 +33,11 @@ static DWORD FreeMem()
     return m.dwAvailPhys;
 }
 
-static void Map(OffFile* f, const wchar_t* path)
+void* (*g_offAlloc)(size_t) = malloc;
+
+static void Map(OffFile* f, const wchar_t* path, bool anyway)
 {
-    if (!OffMapWanted(GetFileSize(f->file, NULL), FreeMem()))
+    if (!anyway && !OffMapWanted(GetFileSize(f->file, NULL), FreeMem()))
         return;
 #ifdef UNDER_CE
     f->mfile = CreateFileForMapping(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
@@ -64,7 +66,8 @@ bool OffOpen(OffFile* f, const wchar_t* path, void* head, DWORD bytes)
         OffClose(f);
         return false;
     }
-    Map(f, path);
+    wcsncpy(f->path, path, MAX_PATH - 1);
+    Map(f, path, false);
     return true;
 }
 
@@ -73,12 +76,23 @@ static bool InView(const OffFile* f, DWORD off, DWORD bytes)   // mapped there a
     return f->view && !(off & 3) && off + bytes <= f->size && off + bytes >= off;
 }
 
+// No memory for a part (HU 2026-11-13: 363 MB free, yet the 105 MB graph's part not given): the file mapped after
+// all, the part from its view; NULL: not there either
+static void* MappedAfterAll(OffFile* f, DWORD off, DWORD bytes)
+{
+    if (!f->view)
+        Map(f, f->path, true);
+    return InView(f, off, bytes) ? (void*)(f->view + off) : NULL;
+}
+
 // A part of the file: in its mapped view, else read into memory
 void* OffPart(OffFile* f, DWORD off, DWORD bytes)
 {
     if (InView(f, off, bytes))
         return (void*)(f->view + off);
-    void* p = f->nparts < kOffParts ? malloc(bytes ? bytes : 1) : NULL;
+    void* p = f->nparts < kOffParts ? g_offAlloc(bytes ? bytes : 1) : NULL;
+    if (!p && (p = MappedAfterAll(f, off, bytes)) != NULL)
+        return p;
     if (p && !OffRead(f->file, off, p, bytes)) {
         free(p);
         p = NULL;
