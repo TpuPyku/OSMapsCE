@@ -141,6 +141,7 @@ GPS не найден на COM1…COM9	No GPS found on COM1…COM9
 Избранное	Favorites
 Короткое имя: Дом, Работа…	Short name: Home, Work…
 Адрес или место	Address or place
+Значок: %s	Sign: %s
 Избранного нет	No favorites
 Поиск…	Searching…
 Нет связи с сервером поиска	Cannot reach the search server
@@ -269,7 +270,7 @@ GPS: поиск · %d	GPS: searching · %d
 Тихо	Quiet
 Средне	Medium
 Громко	Loud
-мест: %d из %d · порядок, имена	places: %d of %d · order, names
+мест: %d из %d · порядок, имена, значки	places: %d of %d · order, names, signs
 ИЗМЕНИТЬ	EDIT
 УДАЛИТЬ	DELETE
 ИМЯ	NAME
