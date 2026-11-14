@@ -1,4 +1,4 @@
-// OSMapsCE - OpenStreetMap viewer with traffic overlays (Yandex, 2GIS)
+﻿// OSMapsCE - OpenStreetMap viewer with traffic overlays (Yandex, 2GIS)
 // for Windows CE 6.0 (Lada Vesta MMC). Also builds as a desktop Win32 app for testing on a PC.
 #pragma once
 
@@ -321,6 +321,13 @@ void RouteGet(RouteInfo* out);
 int  RoutePoints(const double** lonLat);   // the line: lon, lat pairs
 bool RouteDest(double* lon, double* lat);
 DWORD RouteSig();                   // changes when what is drawn of the route changes
+// resume.cpp - the route kept for the next start (the user 2026-11-14: closed or the power gone with a route on - asked
+// "Продолжить маршрут?"): its stops and its end, UTF-8 lines "via|to<TAB>lat<TAB>lon<TAB>name"
+bool ResumeSave(const RoutePlan* p, const wchar_t* path);   // no destination: none kept (false)
+bool ResumeLoad(RoutePlan* p, const wchar_t* path);         // from the car; false: none
+void ResumeDrop(const wchar_t* path);
+void RouteKeep(bool on);              // route.cpp: the plan kept beside the exe (route.txt) / gone
+bool RouteKept(RoutePlan* p);         // ... read back; false: none
 
 // say.cpp - the voice prompts spoken (voice.h decides what and when)
 enum { TIMER_VOICE = 9 };            // (main.cpp's timers: 1..8)
@@ -416,6 +423,10 @@ bool MagnetSnap(const double* pts, int np, int seg, double* lon, double* lat, do
 // The route (lon, lat pairs) behind the car cut off: of its segments from..to (clamped) the nearest to (lon, lat) within
 // maxM; cut: the car's point on it. -1: none that near
 int  RouteCut(const double* ll, int np, int from, int to, double lon, double lat, double maxM, double* cut);
+// From the point "at" (lon, lat) on segment seg, m metres on along the line: out - lon, lat and the line's course there
+// (degrees); its segment (past the end: the end), -1: no line
+int  RouteAhead(const double* ll, int np, int seg, const double* at, double m, double* out);
+bool FixJumps(double lon0, double lat0, double kmh0, DWORD ms, double lon, double lat, double kmh);   // too far for the speed
 void GlideMove(double* lon, double* lat, double ve, double vn, DWORD ms);
 int  JunctionSlice(const double* ll, int np, int at, double beforeM, double afterM, double* out, int cap, int* outAt,
                    double* course);   // lon, lat pairs; outAt: the maneuver's point in out; course: the way in's, degrees

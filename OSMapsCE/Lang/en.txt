@@ -266,3 +266,12 @@ GPS: поиск · %d	GPS: searching · %d
 Тихо	Quiet
 Средне	Medium
 Громко	Loud
+мест: %d из %d · порядок, имена	places: %d of %d · order, names
+ИЗМЕНИТЬ	EDIT
+УДАЛИТЬ	DELETE
+ИМЯ	NAME
+Продолжить маршрут?	Continue the route?
+Куда: %s	To: %s
+Куда: %s · заездов: %d	To: %s · stops: %d
+Да	Yes
+Нет	No

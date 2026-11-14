@@ -1222,6 +1222,84 @@ static void RouteCutChecks()
           "route cut: to past the end - the last segment still looked at");
 }
 
+// The car led on along the route with no fix (the user 2026-11-14: in a tunnel the mark left the route)
+static void RouteAheadChecks()
+{
+    double ll[6] = { 37.0, 55.0, 37.0, 55.001, 37.001, 55.001 }, at[2] = { 37.0, 55.0005 }, out[3];   // north 110.5 m, east 63.9 m
+    Check(RouteAhead(ll, 3, 0, at, 20, out) == 0 && Deg(out[0], 37.0) && fabs((out[1] - 55.0005) * 110540 - 20) < 0.01 &&
+          fabs(out[2]) < 1e-6, "route ahead: 20 m on the same segment - north of where it was, its course");
+    Check(RouteAhead(ll, 3, 0, at, 55.27 + 30, out) == 1 && Deg(out[1], 55.001) &&
+          fabs((out[0] - 37.0) * 111320 * cos(55.001 * M_PI / 180) - 30) < 0.05 && fabs(out[2] - 90) < 1e-6,
+          "route ahead: past the turn - on the next segment, 30 m east of it, heading east");
+    Check(RouteAhead(ll, 3, 0, at, 5000, out) == 1 && Deg(out[0], 37.001) && Deg(out[1], 55.001),
+          "route ahead: past the end - at the end");
+    Check(RouteAhead(ll, 3, 0, at, 0, out) == 0 && Deg(out[0], 37.0) && Deg(out[1], 55.0005) &&
+          RouteAhead(ll, 3, 0, at, -10, out) == 0 && Deg(out[1], 55.0005), "route ahead: none (or back) - where it was");
+    Check(RouteAhead(ll, 1, 0, at, 10, out) == -1, "route ahead: one point - no line");
+    Check(RouteAhead(ll, 3, 7, ll + 4, 10, out) == 1 && Deg(out[0], 37.001), "route ahead: a segment past the end - the last");
+    double two[4] = { 37.0, 55.0, 37.001, 55.0 }, ea[6] = { 37.0, 55.0, 37.001, 55.0, 37.001, 55.001 };   // east first
+    Check(RouteAhead(two, 2, 0, two, 30, out) == 0 && fabs(out[2] - 90) < 1e-6 &&
+          fabs((out[0] - 37.0) * 111320 * cos(55.0 * M_PI / 180) - 30) < 0.05, "route ahead: a line of two points - on it, east");
+    Check(RouteAhead(ea, 3, -5, ea, 10, out) == 0 && fabs(out[2] - 90) < 1e-6 && Deg(out[1], 55.0),
+          "route ahead: a segment before the start - the first");
+    Check(RouteAhead(ea, 3, 1, ea + 2, 10, out) == 1 && fabs(out[2]) < 1e-6 && Deg(out[0], 37.001) &&
+          fabs((out[1] - 55.0) * 110540 - 10) < 0.01 && RouteAhead(ea, 3, 2, ea + 2, 10, out) == 1 && Deg(out[0], 37.001),
+          "route ahead: from the last segment - north on it; one past it - the last one still");
+    double sq[8] ={ 37.0, 55.0, 37.0, 55.0, 37.0, 55.001, 37.0, 55.002 }, p0[2] = { 37.0, 55.0 };   // a point twice
+    Check(RouteAhead(sq, 4, 0, p0, 150, out) == 2 && fabs((out[1] - 55.0) * 110540 - 150) < 0.05,
+          "route ahead: a segment of no length - passed");
+    // a fix too far from the last one for the speed (the drift before a tunnel): not trusted
+    Check(!FixJumps(37.0, 55.0, 60, 1000, 37.0, 55.0 + 50 / 110540.0, 60) &&
+          FixJumps(37.0, 55.0, 60, 1000, 37.0, 55.0 + 56 / 110540.0, 60),
+          "fix jumps: at 60 km/h in a second - 55 m allowed (1.5 times the way + 30 m), not more");
+    Check(!FixJumps(37.0, 55.0, 0, 1000, 37.0, 55.0 + 29 / 110540.0, 0) && FixJumps(37.0, 55.0, 0, 1000, 37.0, 55.0 + 31 / 110540.0, 0),
+          "fix jumps: standing - 30 m of noise");
+    Check(!FixJumps(37.0, 55.0, 0, 10000, 37.0, 55.0 + 440 / 110540.0, 100), "fix jumps: the faster of the two speeds, the time between");
+    Check(!FixJumps(37.0, 55.0, 100, 10000, 37.0, 55.0 + 446.5 / 110540.0, 100) &&
+          FixJumps(37.0, 55.0, 100, 10000, 37.0, 55.0 + 446.8 / 110540.0, 100), "fix jumps: 10 s at 100 km/h - 446.7 m allowed");
+}
+
+// The route kept for the next start (the user 2026-11-14: closed with a route on - "Продолжить маршрут?")
+static void ResumeChecks()
+{
+    const wchar_t* path = L"obj\\vtest\\route.txt";
+    RoutePlan p, q;
+    memset(&p, 0, sizeof(p));
+    p.from.kind = PL_PLACE;   // (a planned start: the next start goes from the car)
+    p.to.kind = PL_PLACE;
+    wcscpy(p.to.name, L"Дом, Ленина 5");
+    p.to.lon = 37.123456;
+    p.to.lat = 55.654321;
+    p.nvia = 2;
+    p.via[0].kind = p.via[1].kind = PL_PLACE;
+    wcscpy(p.via[0].name, L"Заправка");
+    p.via[0].lon = 37.2;
+    p.via[0].lat = 55.7;
+    p.via[1].lon = 37.3;
+    p.via[1].lat = 55.8;
+    SetFileAttributesW(path, FILE_ATTRIBUTE_NORMAL);   // (a mutant's run may have left it read-only)
+    DeleteFileW(path);
+    Check(!ResumeLoad(&q, path), "resume: no file - none");
+    Check(ResumeSave(&p, path) && ResumeSave(&p, path) && ResumeLoad(&q, path) && q.to.kind == PL_PLACE &&
+          !wcscmp(q.to.name, L"Дом, Ленина 5") && fabs(q.to.lon - 37.123456) < 1e-7 && fabs(q.to.lat - 55.654321) < 1e-7 &&
+          q.nvia == 2 && !wcscmp(q.via[0].name, L"Заправка") && q.via[0].kind == PL_PLACE && fabs(q.via[1].lat - 55.8) < 1e-7 &&
+          !q.via[1].name[0] && q.from.kind == PL_GPS, "resume: saved, read back - the stops in order, from the car");
+    p.via[0].kind = PL_NONE;   // (an empty stop: left out)
+    Check(ResumeSave(&p, path) && ResumeLoad(&q, path) && q.nvia == 1 && fabs(q.via[0].lat - 55.8) < 1e-7 &&
+          !wcscmp(q.to.name, L"Дом, Ленина 5"), "resume: a stop not a place - left out, the rest as they were");
+    p.nvia = 0;
+    Check(ResumeSave(&p, path) && ResumeLoad(&q, path) && q.nvia == 0, "resume: no stops");
+    p.to.kind = PL_NONE;
+    Check(!ResumeSave(&p, path) && !ResumeLoad(&q, path), "resume: no destination - nothing kept");
+    FILE* t = _wfopen(path, L"wb");
+    fputs("via\t1\t2\tA\nvia\t1\t2\tB\nvia\t1\t2\tC\nvia\t1\t2\tD\nbad\t1\t2\tX\nto\t1\nto\t55.5\t37.5\t\xD0\x94\r\n", t);
+    fclose(t);
+    Check(ResumeLoad(&q, path) && q.nvia == kMaxVia && !wcscmp(q.via[2].name, L"C") && !wcscmp(q.to.name, L"Д") &&
+          fabs(q.to.lon - 37.5) < 1e-9, "resume: three stops at most, the bad lines left out");
+    ResumeDrop(path);
+    Check(GetFileAttributesW(path) == INVALID_FILE_ATTRIBUTES && !ResumeLoad(&q, path), "resume: dropped - none");
+}
+
 // The images' cap by the device's memory (the user 2026-11-03: black squares in 3D at night - the near and the far
 // ring's 61 tiles never fit 6 MB, the tiles pushed each other out; the unit has 275 MB free, Shturmann little)
 static void CacheCapChecks()
@@ -1876,6 +1954,8 @@ int main()
     FitZoomChecks();
     LabelPassChecks();
     RouteCutChecks();
+    RouteAheadChecks();
+    ResumeChecks();
     RECT whole = { 0, 0, 800, 480 };
     // the Russian name when the tile has one (name:ru), else the local one: a frame named so equals one whose tile
     // holds that text as its plain name

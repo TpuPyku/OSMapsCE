@@ -244,8 +244,27 @@ static void Ask(double fromLon, double fromLat, double course)
     s_sig++;
 }
 
+// The plan kept for the next start (resume.cpp): written as a route starts or changes, gone as it ends
+void RouteKeep(bool on)
+{
+    wchar_t path[MAX_PATH];
+    PathInDir(path, L"route.txt");
+    if (on)
+        ResumeSave(&s_plan, path);
+    else
+        ResumeDrop(path);
+}
+
+bool RouteKept(RoutePlan* p)
+{
+    wchar_t path[MAX_PATH];
+    PathInDir(path, L"route.txt");
+    return ResumeLoad(p, path);
+}
+
 static void FromPlan(double gpsLon, double gpsLat, double course, bool gpsValid)
 {
+    RouteKeep(true);
     if (s_plan.from.kind == PL_GPS)
         Ask(gpsLon, gpsLat, gpsValid ? course : -1);
     else
@@ -320,8 +339,9 @@ void RouteAddVia(const RoutePlace& p, double gpsLon, double gpsLat, double cours
     FromPlan(gpsLon, gpsLat, course, gpsValid);
 }
 
-void RouteClear()
+void RouteClear()   // (the user's: the route off)
 {
+    RouteKeep(false);
     FreeRoute();
     RouteAltsDone();
     s_state = ROUTE_NONE;
@@ -744,12 +764,14 @@ void RouteGps(double lon, double lat, double kmh, double course)
             s_viaShape[i - 1] = s_viaShape[i];
         s_nViaShape--;
         s_sig++;
+        RouteKeep(true);
     }
     double dx = (s_plan.to.lon - lon) * s_kx, dy = (s_plan.to.lat - lat) * s_ky;
     if (sqrt(dx * dx + dy * dy) < kArriveM || (s_cum[s_np - 1] - s_along < kArriveM && best < kOffM)) {
         FreeRoute();
         s_state = ROUTE_ARRIVED;
         s_arriveTick = GetTickCount();
+        RouteKeep(false);
         Log("route: arrived");
         s_sig++;
         return;
