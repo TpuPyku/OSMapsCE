@@ -192,6 +192,28 @@ int RouteAhead(const double* ll, int np, int seg, const double* at, double m, do
     }
 }
 
+static bool StretchOver(double d, double last, double startM, double maxM, double gapM)   // looked far enough
+{
+    return (last < 0 && d >= startM) || (last >= 0 && d - last >= gapM) || d >= maxM;
+}
+
+double RouteStretch(const double* ll, int np, int seg, const double* at, double startM, double maxM, double stepM,
+                    double gapM, bool (*inside)(const double* p, void* ctx), void* ctx)
+{
+    double p[3] = { at[0], at[1], 0 }, d = 0, last = -1;
+    for (;;) {
+        if (inside(p, ctx))
+            last = d;
+        if (StretchOver(d, last, startM, maxM, gapM))
+            return last;
+        double was[2] = { p[0], p[1] };
+        seg = RouteAhead(ll, np, seg, was, stepM, p);
+        if (seg < 0 || (p[0] == was[0] && p[1] == was[1]))   // (the route's end)
+            return last;
+        d += Dist(was, p);   // (short at the end; a bend: its chord - a few cm)
+    }
+}
+
 // A fix farther from the last trusted one than its speed allows (the drift before a tunnel): 1.5 times the way at the
 // faster of the two speeds, and 30 m of noise
 bool FixJumps(double lon0, double lat0, double kmh0, DWORD ms, double lon, double lat, double kmh)

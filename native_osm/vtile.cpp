@@ -1295,10 +1295,12 @@ static void NamePaint(HDC dc, int x, int y, void* arg)
     ExtTextOut(dc, x, y, 0, NULL, a->s, (UINT)a->n, NULL);
 }
 
-// The name at (x, y), inside the box l, t, r, b: as a stamp (stamp.cpp), the dc's font; 3 px around for the halo
+// The name at (x, y), inside the box l, t, r, b: as a stamp (stamp.cpp), the dc's font. The stamp's canvas wider than
+// the box (the user 2026-11-14 on the unit: long names cut, Ленинградский проспект at z16 - CE's turned text runs past
+// the box measured unturned): 3 px for the halo and a twelfth of the box's size; the box itself stays the placing's.
 static void Name(HDC dc, int x, int y, const wchar_t* s, int n, const Style& st, bool halo, int l, int t, int r, int b)
 {
-    enum { kM = 3 };
+    int kM = 3 + (r - l + b - t) / 12;
     HGDIOBJ font = GetCurrentObject(dc, OBJ_FONT);
     NameArg a = { s, n, font, &st, halo };
     COLORREF c = RGB(st.r, st.g, st.b), ch = halo ? RGB(st.cr, st.cg, st.cb) : c;
@@ -1656,4 +1658,82 @@ void VLabelsDraw(HDC dc, const RECT& mr, double cx, double cy, double vx, double
     if (v.font0)
         SelectObject(dc, v.font0);
     LogLabelTime(GetTickCount() - t0, v.np - navoid);
+}
+
+// ---------------------------------------------------------------- tunnels near a place (the dead reckoning's gate)
+
+static bool NearSeg(int u, int v, int x0, int y0, int x1, int y1, int r)   // (u, v) within r of the segment
+{
+    double dx = x1 - x0, dy = y1 - y0, len2 = dx * dx + dy * dy;
+    double k = len2 > 0 ? ((u - x0) * dx + (v - y0) * dy) / len2 : 0;
+    k = k < 0 ? 0 : k > 1 ? 1 : k;
+    double ex = x0 + k * dx - u, ey = y0 + k * dy - v;
+    return ex * ex + ey * ey <= (double)r * r;
+}
+
+static bool FeatNear(const VTile& t, const Feat& f, int u, int v, int r)   // any of its parts' segments
+{
+    for (int p = 0; p < f.nparts; p++) {
+        const int* part = t.parts + 2 * (f.part0 + p);
+        const short* q = t.pts + 2 * part[0];
+        for (int i = 1; i < part[1]; i++)
+            if (NearSeg(u, v, q[2 * i - 2], q[2 * i - 1], q[2 * i], q[2 * i + 1], r))
+                return true;
+    }
+    return false;
+}
+
+static bool RoadTunnel(const Feat& f)   // a road's (not a railway's: the metro) under the ground
+{
+    return f.kind >= K_SERVICE && f.kind <= K_MAJOR && f.level < 0;
+}
+
+static bool BoxNear(const Feat& f, int u, int v, int r)
+{
+    return u >= f.x0 - r && u <= f.x1 + r && v >= f.y0 - r && v <= f.y1 + r;
+}
+
+static bool TunnelNear(const VTile& t, int u, int v, int r)
+{
+    for (int i = 0; i < t.nf; i++)
+        if (RoadTunnel(t.f[i]) && BoxNear(t.f[i], u, v, r) && FeatNear(t, t.f[i], u, v, r))
+            return true;
+    return false;
+}
+
+bool VTileTunnelIn(const MapRequest& key, const unsigned char* data, int len, int u, int v, int r)
+{
+    EnterCriticalSection(&s_cs);
+    VTile* t = Parsed(key, data, len);
+    bool hit = t && TunnelNear(*t, u, v, r);
+    LeaveCriticalSection(&s_cs);
+    return hit;
+}
+
+void VTileTunnelPlace(double lon, double lat, double m, MapRequest* key, int* u, int* v, int* r)
+{
+    enum { kZ = 14, kUnits = 4096 };
+    double world = (double)TILE * (1 << kZ), sl = sin(lat * M_PI / 180);   // (Web Mercator, as util.cpp GeoToWorld)
+    double x = (lon + 180) / 360 * world, y = (0.5 - log((1 + sl) / (1 - sl)) / (4 * M_PI)) * world;
+    MapRequest k = { SRC_OSM, VEC_ZBASE + kZ, (int)(x / TILE), (int)(y / TILE) };
+    *key = k;
+    *u = (int)((x - k.x * TILE) * kUnits / TILE);
+    *v = (int)((y - k.y * TILE) * kUnits / TILE);
+    *r = (int)(m / (40075016.686 * cos(lat * M_PI / 180) / (1 << kZ) / kUnits) + 0.5);
+}
+
+bool VTileTunnelNear(double lon, double lat, double m)
+{
+    MapRequest key;
+    int u, v, r;
+    VTileTunnelPlace(lon, lat, m, &key, &u, &v, &r);
+    if (VTileTunnelIn(key, NULL, 0, u, v, r))   // (parsed already: the view's own tile, mostly)
+        return true;
+    unsigned char* data = NULL;
+    int len = 0;
+    if (!TileData(key, true, &data, &len))
+        return false;
+    bool hit = VTileTunnelIn(key, data, len, u, v, r);
+    free(data);
+    return hit;
 }

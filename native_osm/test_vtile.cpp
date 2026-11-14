@@ -751,6 +751,24 @@ static void Levels()
     int no = MakeLevels(omt, false), np = MakeLevels(pmt, true);
     const unsigned short casing = RGB565(224, 182, 120);
     MapRequest a = { SRC_OSM, 14, 9600, 5000 }, b = { SRC_OSM, 14, 9700, 5000 }, n = { SRC_OSM, 14, 9800, 5000 };
+    MapRequest ka = { SRC_OSM, VEC_ZBASE + 14, 9650, 5000 }, kb = { SRC_OSM, VEC_ZBASE + 14, 9750, 5000 };
+    // a road in a tunnel near a place (the dead reckoning's gate, the user 2026-11-14: only in tunnels): the tunnel at
+    // x 1024 units (64 px), the bridge at 2048, the ground road along y 2048
+    Check(VTileTunnelIn(ka, omt, no, 1100, 3000, 100), "tunnel near: 76 units off the tunnel, within 100");
+    Check(VTileTunnelIn(ka, NULL, 0, 1024, 100, 1), "tunnel near: on it (the tile parsed already)");
+    Check(!VTileTunnelIn(ka, NULL, 0, 1300, 3000, 100), "tunnel near: 276 units off - not");
+    Check(!VTileTunnelIn(ka, NULL, 0, 2048, 3000, 100), "tunnel near: on the bridge - not a tunnel");
+    Check(!VTileTunnelIn(ka, NULL, 0, 1100, 4200, 100), "tunnel near: past its end aside, 129 units from the end - not");
+    Check(VTileTunnelIn(ka, NULL, 0, 1050, 4150, 100), "tunnel near: past its end, 60 units from the end");
+    Check(!VTileTunnelIn(ka, NULL, 0, 3000, 2048, 100), "tunnel near: on the ground road - not");
+    Check(VTileTunnelIn(kb, pmt, np, 1000, 500, 100), "tunnel near: Protomaps' is_tunnel too");
+    MapRequest kp;
+    int pu, pv, pr;
+    VTileTunnelPlace(0.0001, -0.0001, 100, &kp, &pu, &pv, &pr);
+    Check(kp.z == VEC_ZBASE + 14 && kp.x == 8192 && kp.y == 8192 && pu == 18 && pv == 18 && pr == 167,
+          "tunnel near: the place's z14 data tile, its units, 100 m at the equator 167 units");
+    VTileTunnelPlace(37.6173, 55.7558, 20, &kp, &pu, &pv, &pr);
+    Check(kp.x == 9904 && kp.y == 5121 && pr == 60, "tunnel near: Moscow's tile, 20 m - 60 units (cos 55.8)");
     Image ia = { 0 }, ib = { 0 };
     g_cfg.night = 0;
     Check(VTileRender(a, omt, no, &ia) && Row(ia, 128, 118, 138, casing) == 2,
@@ -1223,6 +1241,12 @@ static void RouteCutChecks()
 }
 
 // The car led on along the route with no fix (the user 2026-11-14: in a tunnel the mark left the route)
+static bool InBand(const double* p, void* band)   // (RouteStretch's test: "a tunnel" - a band of latitudes)
+{
+    const double* b = (const double*)band;
+    return p[1] >= b[0] && p[1] <= b[1];
+}
+
 static void RouteAheadChecks()
 {
     double ll[6] = { 37.0, 55.0, 37.0, 55.001, 37.001, 55.001 }, at[2] = { 37.0, 55.0005 }, out[3];   // north 110.5 m, east 63.9 m
@@ -1257,6 +1281,21 @@ static void RouteAheadChecks()
     Check(!FixJumps(37.0, 55.0, 0, 10000, 37.0, 55.0 + 440 / 110540.0, 100), "fix jumps: the faster of the two speeds, the time between");
     Check(!FixJumps(37.0, 55.0, 100, 10000, 37.0, 55.0 + 446.5 / 110540.0, 100) &&
           FixJumps(37.0, 55.0, 100, 10000, 37.0, 55.0 + 446.8 / 110540.0, 100), "fix jumps: 10 s at 100 km/h - 446.7 m allowed");
+    // the tunnel on the route ahead (the user 2026-11-14: the dead reckoning only in tunnels): a straight road north
+    // 995 m, "the tunnel" between 55.002 and 55.004 (221..442 m), sampled every 25 m
+    double north[4] = { 37.0, 55.0, 37.0, 55.009 }, start[2] = { 37.0, 55.0 };
+    double band[2] = { 55.002, 55.004 };
+    double s = RouteStretch(north, 2, 0, start, 300, 5000, 25, 100, InBand, band);
+    Check(fabs(s - 425) < 0.01, "stretch: the tunnel from 225 m, its last sample at 425 m (a gap of 100 m ends it)");
+    double here[2] = { 54.9, 55.0005 };
+    Check(fabs(RouteStretch(north, 2, 0, start, 300, 5000, 25, 100, InBand, here) - 50) < 0.01,
+          "stretch: in the tunnel already at the start - to its last sample, 50 m");
+    Check(RouteStretch(north, 2, 0, start, 200, 5000, 25, 100, InBand, band) == -1,
+          "stretch: none within the first 200 m - none");
+    double end[2] = { 55.008, 56 }, all[2] = { 54, 56 };
+    s = RouteStretch(north, 2, 0, start, 1000, 5000, 25, 100, InBand, end);
+    Check(s > 970 && s < 996, "stretch: a tunnel to the route's end - to its last point");
+    Check(fabs(RouteStretch(north, 2, 0, start, 300, 500, 25, 100, InBand, all) - 500) < 0.01, "stretch: at most maxM");
 }
 
 // The route kept for the next start (the user 2026-11-14: closed with a route on - "Продолжить маршрут?")

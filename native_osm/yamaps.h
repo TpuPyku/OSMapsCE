@@ -356,6 +356,12 @@ int        VTileDetail();           // the detail drawn now (auto: medium till k
 int        VTileDetailFor(DWORD avgMs);   // auto's choice by a tile's average time
 void       VTileNoteMs(DWORD ms, int z);   // a tile's time (auto: z10 and up, timed once a run)
 void       VTileAutoReset();        // (tests) auto timed anew
+// A road in a tunnel (any floor under the ground - OSM's tunnel=yes, the mountains' too) within r units of (u, v) in
+// the data tile key (its bytes; NULL: parsed already; 4096 units a side): the dead reckoning's gate (main.cpp)
+bool       VTileTunnelIn(const MapRequest& key, const unsigned char* data, int len, int u, int v, int r);
+// The same at a place, m metres round it, from the data at hand (the region's pack, else the cache; z14)
+bool       VTileTunnelNear(double lon, double lat, double m);
+void       VTileTunnelPlace(double lon, double lat, double m, MapRequest* key, int* u, int* v, int* r);   // its z14 tile
 void       VLabelsDraw(HDC dc, const RECT& mr, double cx, double cy, double vx, double vy, double angle, int z,
                        const RECT* avoid, int navoid);   // avoid: the controls over the map, no names under them
 int        VLabelPasses();          // the names' passes: places, signs, streets; the last one the house numbers
@@ -427,6 +433,10 @@ int  RouteCut(const double* ll, int np, int from, int to, double lon, double lat
 // (degrees); its segment (past the end: the end), -1: no line
 int  RouteAhead(const double* ll, int np, int seg, const double* at, double m, double* out);
 bool FixJumps(double lon0, double lat0, double kmh0, DWORD ms, double lon, double lat, double kmh);   // too far for the speed
+// How far the route ahead of at runs by places inside() says yes to (a tunnel): sampled every stepM; none within
+// startM: -1; else the last such sample (past it gapM with none ends it; maxM at most; the route's end)
+double RouteStretch(const double* ll, int np, int seg, const double* at, double startM, double maxM, double stepM,
+                    double gapM, bool (*inside)(const double* p, void* ctx), void* ctx);
 void GlideMove(double* lon, double* lat, double ve, double vn, DWORD ms);
 int  JunctionSlice(const double* ll, int np, int at, double beforeM, double afterM, double* out, int cap, int* outAt,
                    double* course);   // lon, lat pairs; outAt: the maneuver's point in out; course: the way in's, degrees

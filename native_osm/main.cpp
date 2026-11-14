@@ -419,14 +419,44 @@ static int      s_jumps;
 static bool     s_dead;              // the car shown is led along the route's line
 static int      s_deadSerial, s_deadSeg;   // the route and the segment it is led from, its point there
 static double   s_deadAt[2], s_deadMax;
+static double   s_deadCap, s_deadTried;   // the lead's most (the route's end, kDeadM); the limit last looked past
 
-static void FixCheck(const GpsState& f)   // a new fix: the last trusted one, unless it jumped
+// Only for tunnels (the user 2026-11-14: "the map has tunnels - only for them"): the map's roads under the ground
+// (vtile.cpp VTileTunnelNear: OSM's tunnel=yes, the mountains' too, not the metro) within kTunnelNearM of the route's
+// line, starting within kTunnelAheadM ahead of the last trusted fix; led to the tunnel's end + kTunnelOutM.
+static const double kTunnelNearM = 20, kTunnelAheadM = 300, kTunnelOutM = 100;
+static DWORD s_deadNone;             // the trusted fix with no tunnel ahead found (not looked again for it)
+
+static bool TunnelAt(const double* p, void*)
+{
+    return VTileTunnelNear(p[0], p[1], kTunnelNearM);
+}
+
+// The route's tunnel ahead of the last trusted fix, from its point on the line (seg, at): where it ends (m along the
+// route), -1 none
+static double TunnelAhead(const double* ll, int np, const RouteInfo& ri, int* seg, double* at)
+{
+    *seg = RouteCut(ll, np, ri.seg - 10, ri.seg + 200, s_good.lon, s_good.lat, 50, at);
+    return *seg < 0 ? -1 : RouteStretch(ll, np, *seg, at, kTunnelAheadM, kDeadM, 25, 100, TunnelAt, NULL);
+}
+
+static bool TunnelClose()   // a route on, a tunnel ahead of the last trusted fix
+{
+    const double* ll;
+    int np = RoutePoints(&ll), seg;
+    RouteInfo ri;
+    RouteGet(&ri);
+    double at[2];
+    return np && s_good.valid && TunnelAhead(ll, np, ri, &seg, at) >= 0;
+}
+
+static void FixCheck(const GpsState& f)   // a new fix: the last trusted one, unless it jumped before a tunnel
 {
     if (!f.valid || f.fixTick == s_seen)
         return;
     s_seen = f.fixTick;
     bool jump = s_good.valid && FixJumps(s_good.lon, s_good.lat, s_good.speedKmh, f.fixTick - s_good.fixTick, f.lon, f.lat,
-                                         f.speedKmh);
+                                         f.speedKmh) && TunnelClose();
     s_jumps = jump ? s_jumps + 1 : 0;
     if (jump && s_jumps <= kJumpsMax) {
         Log("gps: a fix too far from the last one (%d in a row) - not trusted", s_jumps);
@@ -438,15 +468,46 @@ static void FixCheck(const GpsState& f)   // a new fix: the last trusted one, un
 
 static void DeadStart(const double* ll, int np, const RouteInfo& ri)   // from the last trusted fix's point on the line
 {
-    s_deadSeg = RouteCut(ll, np, ri.seg - 10, ri.seg + 200, s_good.lon, s_good.lat, 50, s_deadAt);
+    if (s_deadNone == s_good.fixTick && s_deadSerial == ri.serial) {   // (looked already: no tunnel)
+        s_deadSeg = -1;
+        return;
+    }
+    double end = TunnelAhead(ll, np, ri, &s_deadSeg, s_deadAt);
     s_deadSerial = ri.serial;
-    s_deadMax = ri.leftM - kDeadEndM < kDeadM ? ri.leftM - kDeadEndM : kDeadM;
+    s_deadNone = end < 0 ? s_good.fixTick : 0;
+    if (end < 0)
+        s_deadSeg = -1;   // no tunnel: the mark held, as before
+    else
+        Log("gps: a tunnel on the route ahead - led through it, %d m", (int)end);
+    end += kTunnelOutM;
+    s_deadCap = ri.leftM - kDeadEndM < kDeadM ? ri.leftM - kDeadEndM : kDeadM;
+    s_deadMax = s_deadCap < end ? s_deadCap : end;
+    s_deadTried = -1;
+}
+
+// At the found tunnel's end with no fix yet: its next piece looked for ahead (the map splits a long tunnel - the
+// emulator 2026-11-14: Lefortovo's 3 km found as 949 m, the mark waited inside), the limit moved past it
+static void DeadExtend(const double* ll, int np)
+{
+    if (s_deadTried == s_deadMax || s_deadMax >= s_deadCap)
+        return;
+    s_deadTried = s_deadMax;
+    double at[3];
+    int seg = RouteAhead(ll, np, s_deadSeg, s_deadAt, s_deadMax, at);
+    double more = RouteStretch(ll, np, seg, at, kTunnelAheadM, s_deadCap - s_deadMax, 25, 100, TunnelAt, NULL);
+    if (more < 0)
+        return;
+    s_deadMax = s_deadMax + more + kTunnelOutM < s_deadCap ? s_deadMax + more + kTunnelOutM : s_deadCap;
+    s_deadTried = s_deadMax;
+    Log("gps: the tunnel goes on - led %d m more", (int)more);
 }
 
 static void DeadPlace(GpsState* f, const double* ll, int np)   // the guess now: on at the last speed, held at the limit
 {
     DWORD ms = GetTickCount() - s_good.fixTick;
     double m = s_good.speedKmh / 3.6 * (ms < kDeadMs ? ms : kDeadMs) / 1000, out[3];
+    if (m >= s_deadMax)
+        DeadExtend(ll, np);
     RouteAhead(ll, np, s_deadSeg, s_deadAt, m < s_deadMax ? m : s_deadMax, out);
     f->valid = 1;
     f->lon = out[0];
@@ -3590,7 +3651,12 @@ static void DrawMap(HDC dc)
              mr.bottom, DT_CENTER, !s_lastErr ? L"Загрузка карты..." : g_cfg.vector ? L"Нет карты этой области"
                                                                                  : NetErrorText(s_lastErr));
 
-    if (g_cfg.vector && drawn) {   // the names over the turned frame, upright (vtile.cpp); under the car too (the
+    DrawLayers(dc, cx, cy, vx, vy, angle);
+    PartLap(PT_LAYERS);
+    DrawRoute(dc, cx, cy, vx, vy, angle);
+    PartLap(PT_ROUTE);
+    if (g_cfg.vector && drawn) {   // the names over the turned frame, upright (vtile.cpp); over the route and the layers'
+        // signs (the user 2026-11-14: the street's name hidden under the route, the car parks); under the car (the
         // user 2026-11-05: kept away from it, they blinked as it went by - the car is drawn over them, neither hides
         // the other; the controls are dark enough over them, 2026-10-27)
         g_tilt = tilt;   // (the names tilted with the frame)
@@ -3599,10 +3665,6 @@ static void DrawMap(HDC dc)
     }
     PartLap(PT_LABELS);
     DrawAttribution(dc, mr);
-    DrawLayers(dc, cx, cy, vx, vy, angle);
-    PartLap(PT_LAYERS);
-    DrawRoute(dc, cx, cy, vx, vy, angle);
-    PartLap(PT_ROUTE);
     DrawFavMarks(dc, cx, cy, vx, vy, angle);
     ZoomKeep(dc, mr);
     DrawGpsMarker(dc, cx, cy, vx, vy, angle);
