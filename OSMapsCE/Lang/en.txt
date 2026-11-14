@@ -106,9 +106,6 @@ GPS не найден на COM1…COM9	No GPS found on COM1…COM9
 не найдена	not found
 есть новее	update available
 последняя версия	up to date
-ЗАГРУЗИТЬ	DOWNLOAD
-ОБНОВИТЬ	UPDATE
-ОК	OK
 %d,%d МБ · %s	%d.%d MB · %s
 ТОЧНО?	SURE?
 %s %d,%d из %d,%d МБ	%s %d.%d of %d.%d MB
@@ -126,6 +123,12 @@ GPS не найден на COM1…COM9	No GPS found on COM1…COM9
 Карты областей	Region maps
 маршрут и поиск без интернета	routes and search without internet
 СКАЧАТЬ	DOWNLOAD MAPS
+СКАЧАТЬ (%d)	DOWNLOAD (%d)
+СЕРВЕР	SERVER
+Я.ДИСК —	YA.DISK —
+Я.ДИСК %.2S.%.2S	YA.DISK %.2S.%.2S
+ИЗ: СЕРВЕР	FROM: SERVER
+ИЗ: Я.ДИСК	FROM: YA.DISK
 %d м	%d m
 %d,%d км	%d.%d km
 %d км	%d km

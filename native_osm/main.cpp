@@ -4020,7 +4020,7 @@ static void MapsRow(HDC dc, int r, int i, const MapRegion& m)
             continue;
         }
         if (src == MAPS_SRC_DISK)   // "Я.ДИСК 05.11"
-            _snwprintf(dl, 32, L"Я.ДИСК %.2S.%.2S", m.diskDate + 8, m.diskDate + 5);
+            _snwprintf(dl, 32, Tr(L"Я.ДИСК %.2S.%.2S"), m.diskDate + 8, m.diskDate + 5);
         DrawCtl(dc, b, s_mapsPressed == (src ? R_DISK0 : R_ROW0) + r, src == MAPS_SRC_DISK ? s_fontSmall : s_fontLabel,
                 busy ? L"ОТМЕНА" : src == MAPS_SRC_DISK ? dl : L"СЕРВЕР");
         if (src == MAPS_SRC_DISK && MapsDiskOld(m) && !busy)
@@ -4144,7 +4144,7 @@ static void DrawRegions(HDC dc)
     if (MapsBusyRegion() >= 0)
         wcscpy(s, L"ОТМЕНА");
     else
-        _snwprintf(s, 32, ticked ? L"СКАЧАТЬ (%d)" : L"СКАЧАТЬ", ticked);
+        _snwprintf(s, 32, ticked ? Tr(L"СКАЧАТЬ (%d)") : Tr(L"СКАЧАТЬ"), ticked);
     DrawCtl(dc, kRegCtl[R_GETSEL], s_mapsPressed == R_GETSEL, s_fontLabel, s);
 }
 
