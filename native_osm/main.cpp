@@ -321,12 +321,13 @@ static int SheetTop()   // (the route's sheet a row taller: the favourites)
 
 // The favourites' page over the settings (the user 2026-11-14: Settings -> Маршрут -> Избранное): all of them, kFavRows
 // a page, a row each - up, down (the order is VestaHome's too: its widget shows the first ones), the name (the keyboard),
-// delete ("ТОЧНО?" first)
+// delete ("ТОЧНО?" first); its sign and name - the signs to choose from (the user 2026-11-14, sheet 34 p. 16)
 enum { kFavRows = 6 };
 enum { L_UP0, L_DOWN0 = L_UP0 + kFavRows, L_NAME0 = L_DOWN0 + kFavRows, L_DEL0 = L_NAME0 + kFavRows,
-       L_PREV = L_DEL0 + kFavRows, L_NEXT, L_BACK, L_COUNT };
+       L_PREV = L_DEL0 + kFavRows, L_NEXT, L_BACK, L_SIGN0, L_ICON0 = L_SIGN0 + kFavRows, L_COUNT = L_ICON0 + VFAV_ICONS };
 static bool s_favList;
 static int  s_flPressed = -1, s_flPage, s_flSure = -1;   // the control held, the page, the favourite asked "ТОЧНО?"
+static int  s_flSign = -1;   // the favourite whose sign is being chosen (the signs instead of the rows)
 
 // The map's page (the user 2026-10-30: Settings -> the map's row "КАРТЫ"): the map's kind and detail, the regions'
 // maps - their own page (the user 2026-10-30): the regions' maps downloaded here (offmaps.cpp's job; the user
@@ -1256,7 +1257,7 @@ static void OnSettingsCtl(int id)
     case S_FAVS:
         s_favList = true;
         s_flPage = 0;
-        s_flSure = -1;
+        s_flSure = s_flSign = -1;
         break;
     case S_PORT_PREV:  s_setPort = s_setPort > 1 ? s_setPort - 1 : 9; ApplySettings(); break;
     case S_PORT_NEXT:  s_setPort = s_setPort < 9 ? s_setPort + 1 : 1; ApplySettings(); break;
@@ -3911,7 +3912,7 @@ static void DrawRouteSheet(HDC dc)
     static const wchar_t* const kVol[4] = { L"Выкл", L"Тихо", L"Средне", L"Громко" };
     Stepper(dc, S_VOICE_PREV, S_VOICE_NEXT, kVol[g_cfg.voice ? g_cfg.voiceVol : 0]   /* (1..3: the ini's clamped) */);
     wchar_t s[64];
-    _snwprintf(s, 64, Tr(L"мест: %d из %d · порядок, имена"), s_favs.n, VFAV_MAX);
+    _snwprintf(s, 64, Tr(L"мест: %d из %d · порядок, имена, значки"), s_favs.n, VFAV_MAX);
     SetRow(dc, kSetCtl[S_FAVS].top - 3, L"Избранное", s, false);
     DrawCtl(dc, kSetCtl[S_FAVS], s_setPressed == S_FAVS, s_fontLabel, L"ИЗМЕНИТЬ");
     DoneButton(dc, S_ROUTE_DONE);
@@ -5522,9 +5523,23 @@ static bool FavCtlShown(int id, int i)   // that favourite there; no "up" for th
 
 static bool FavListRect(int id, RECT* r)   // a row's control, or the page's; false: not shown
 {
-    if (id == L_BACK)
+    if (id == L_BACK) {
         *r = kBackRect;
-    else if (id == L_PREV || id == L_NEXT)
+        return true;
+    }
+    if (id >= L_ICON0) {   // the signs: 2 rows of 6
+        int k = id - L_ICON0;
+        SetRect(r, 36 + k % 6 * 124, 150 + k / 6 * 108, 136 + k % 6 * 124, 246 + k / 6 * 108);
+        return s_flSign >= 0;
+    }
+    if (s_flSign >= 0)
+        return false;
+    if (id >= L_SIGN0) {   // the sign and the name
+        int row = id - L_SIGN0, y = kSetRow0 + row * kSetRowH + 5;
+        SetRect(r, 24, y, 384, y + 40);
+        return s_flPage * kFavRows + row < s_favs.n;
+    }
+    if (id == L_PREV || id == L_NEXT)
         SetRect(r, id == L_PREV ? 300 : 452, 420, id == L_PREV ? 348 : 500, 468);
     else {
         int row = id % kFavRows, i = s_flPage * kFavRows + row, y = kSetRow0 + row * kSetRowH + 5;
@@ -5567,8 +5582,16 @@ static void OnFavListCtl(int id)
 {
     int i = s_flPage * kFavRows + id % kFavRows, sure = s_flSure;
     s_flSure = -1;   // (any other tap: not asked any more)
-    if (id == L_BACK)
+    if (id == L_BACK && s_flSign >= 0)
+        s_flSign = -1;
+    else if (id == L_BACK)
         s_favList = false;
+    else if (id >= L_ICON0) {
+        s_favs.f[s_flSign].icon = id - L_ICON0;
+        FavsSave();
+        s_flSign = -1;
+    } else if (id >= L_SIGN0)
+        s_flSign = s_flPage * kFavRows + id - L_SIGN0;
     else if (id == L_PREV)
         s_flPage = s_flPage > 0 ? s_flPage - 1 : 0;
     else if (id == L_NEXT)
@@ -5613,6 +5636,10 @@ static void FavListRow(HDC dc, int row)
     const VFav& f = s_favs.f[i];
     wchar_t s[48];
     _snwprintf(s, 48, L"%.5f, %.5f", f.lat, f.lon);
+    RECT r;
+    bool down = s_flPressed == L_SIGN0 + row;
+    if (down && FavListRect(L_SIGN0 + row, &r))   // the sign and the name: the signs to choose from
+        Tile(dc, r, kPanel2, kOrange, 12);
     SetRow(dc, y - 3, L"", s, row + 1 < kFavRows && i + 1 < s_favs.n);
     FavSign(dc, f.icon, 48, y + 16, 9, kOrange, kPanel);
     Text(dc, s_fontLabel, kText, 64, y, 384, y + 25, DT_LEFT, f.name);
@@ -5620,8 +5647,28 @@ static void FavListRow(HDC dc, int row)
         FavListCtl(dc, k * kFavRows + row, i);
 }
 
+static void DrawFavSignPick(HDC dc)   // the signs for s_flSign: its own in the accent's frame
+{
+    wchar_t t[64];
+    _snwprintf(t, 64, Tr(L"Значок: %s"), s_favs.f[s_flSign].name);
+    t[63] = 0;
+    PageTop(dc, t, s_flPressed == L_BACK, 412);
+    RECT r;
+    for (int k = 0; k < VFAV_ICONS; k++) {
+        FavListRect(L_ICON0 + k, &r);
+        bool on = s_favs.f[s_flSign].icon == k, down = s_flPressed == L_ICON0 + k;
+        Tile(dc, r, down ? kOrange : kPanel2, on || down ? kOrange : kPanel2, 16);
+        FavSign(dc, k, (r.left + r.right) / 2, (r.top + r.bottom) / 2, 22, down ? kInk : on ? kOrange : kText,
+                down ? kOrange : kPanel2);
+    }
+}
+
 static void DrawFavList(HDC dc)
 {
+    if (s_flSign >= 0) {
+        DrawFavSignPick(dc);
+        return;
+    }
     PageTop(dc, L"Избранное", s_flPressed == L_BACK, 412);
     if (!s_favs.n)
         Text(dc, s_fontLabel, kTextDim, 36, 76, s_cw - 36, 376, DT_CENTER,
