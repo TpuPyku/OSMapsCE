@@ -107,6 +107,13 @@ int MarkAt(const POINT* pts, const bool* on, int n, int x, int y, int r)
     return best;
 }
 
+// A sign drawn at (x, y), r px round, reaches the screen (the third person's view lifts far points to huge places:
+// GDI there was the 3D frame's most - the emulator's 5 s a frame for ~130 signs off the screen)
+bool MarkSeen(double x, double y, int w, int h, int r)
+{
+    return x > -r && x < w + r && y > -r && y < h + r;
+}
+
 double TiltEase(double shown, double target, DWORD ms)
 {
     if (shown < 0)

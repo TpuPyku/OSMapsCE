@@ -6,11 +6,16 @@
 // 16.16 fixed point (offsets from the view's centre: small numbers), the first ring having the pixel gives it, none:
 // the fog's colour; the fog laid over the far rows by its fade.
 
-unsigned short Blend565(unsigned short a, unsigned short b, int alpha32)
+static inline unsigned short Blend(unsigned short a, unsigned short b, int alpha32)   // (inlined in the walks)
 {
     int ar = a >> 11, ag = (a >> 5) & 63, ab = a & 31, br = b >> 11, bg = (b >> 5) & 63, bb = b & 31;
     return (unsigned short)((ar + (br - ar) * alpha32 / 32) << 11 | (ag + (bg - ag) * alpha32 / 32) << 5 |
                             (ab + (bb - ab) * alpha32 / 32));
+}
+
+unsigned short Blend565(unsigned short a, unsigned short b, int alpha32)
+{
+    return Blend(a, b, alpha32);
 }
 
 static const double kFix = 1 << 16;   // 16.16 fixed point
@@ -81,21 +86,48 @@ static void Inside(const RingFast& f, const RowWalk& w, int width, int* lo, int*
 // Steps from..to - 1 through each ring's check
 static void WalkAny(const RingFast* rings, int n, RowWalk* w, int from, int to, unsigned short fog, int alpha, unsigned short* d)
 {
-    for (int x = from; x < to; x++, w->ox += w->dx, w->oy += w->dy) {
-        unsigned short p = RingPixel(rings, n, w->bx + (int)(w->ox >> 16), w->by + (int)(w->oy >> 16), fog);
-        d[x] = alpha ? Blend565(p, fog, alpha) : p;
+    long ox = w->ox, oy = w->oy;   // (locals: see WalkNear)
+    const long dx = w->dx, dy = w->dy;
+    const int bx = w->bx, by = w->by;
+    for (int x = from; x < to; x++, ox += dx, oy += dy) {
+        unsigned short p = RingPixel(rings, n, bx + (int)(ox >> 16), by + (int)(oy >> 16), fog);
+        d[x] = alpha ? Blend(p, fog, alpha) : p;
     }
+    w->ox = ox;
+    w->oy = oy;
 }
 
 // ... all in the first ring
 static void WalkNear(const RingFast& f, RowWalk* w, int from, int to, unsigned short fog, int alpha, unsigned short* d)
 {
-    const RingView& r = f.v;
-    for (int x = from; x < to; x++, w->ox += w->dx, w->oy += w->dy) {
-        int px = w->bx + (int)(w->ox >> 16), py = w->by + (int)(w->oy >> 16);
-        unsigned short p = r.top[Wrapped((py >> r.shift) - f.by, r.size) * r.stride + Wrapped((px >> r.shift) - f.bx, r.size)];
-        d[x] = alpha ? Blend565(p, fog, alpha) : p;
+    // (all in locals: VS2005 keeps no field of a struct in a register past a store through a pointer - each pixel
+    // read and wrote them, the emulator's 3D frame 62 ms)
+    const unsigned short* top = f.v.top;
+    const int stride = f.v.stride, size = f.v.size, shift = f.v.shift, bx = w->bx, by = w->by, fbx = f.bx, fby = f.by;
+    long ox = w->ox, oy = w->oy;
+    const long dx = w->dx, dy = w->dy;
+    if (!alpha && !shift) {   // (the rows by the car: the ring of the view's zoom, no fog - the most of the frame;
+        // the loaded part no wider than the ring: one wrap at most)
+        const int ub = bx - fbx, vb = by - fby;
+        for (int x = from; x < to; x++, ox += dx, oy += dy) {
+            int u = ub + (int)(ox >> 16), v = vb + (int)(oy >> 16);
+            if (u >= size)
+                u -= size;
+            if (v >= size)
+                v -= size;
+            d[x] = top[v * stride + u];
+        }
+        w->ox = ox;
+        w->oy = oy;
+        return;
     }
+    for (int x = from; x < to; x++, ox += dx, oy += dy) {
+        int u = Wrapped(((bx + (int)(ox >> 16)) >> shift) - fbx, size), v = Wrapped(((by + (int)(oy >> 16)) >> shift) - fby, size);
+        unsigned short p = top[v * stride + u];
+        d[x] = alpha ? Blend(p, fog, alpha) : p;
+    }
+    w->ox = ox;
+    w->oy = oy;
 }
 
 static void WarpRow(const RingFast* rings, int n, const RowWalk& w0, int width, unsigned short fog, int alpha,

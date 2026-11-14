@@ -857,6 +857,14 @@ static void TiltChecks()
     Check(MarkAt(&corner, both, 1, 0, 0, 26) == -1, "mark at: 20 across, 20 down (28 px) - not, a circle not a box");
     POINT tie[2] = { { 10, 0 }, { -10, 0 } };
     Check(MarkAt(tie, both, 2, 0, 0, 26) == 0, "mark at: two as near - the first");
+    Check(MarkSeen(400, 240, 800, 480, 20) && MarkSeen(-19, -19, 800, 480, 20) && MarkSeen(819, 499, 800, 480, 20),
+          "mark seen: on the screen, or its sign reaching in from 19 px past the edge");
+    Check(!MarkSeen(-21, 240, 800, 480, 20) && !MarkSeen(821, 240, 800, 480, 20) && !MarkSeen(400, -21, 800, 480, 20) &&
+          !MarkSeen(400, 501, 800, 480, 20), "mark seen: 21 px past an edge - not drawn");
+    Check(!MarkSeen(-30934, 36666, 800, 480, 20) && !MarkSeen(1e9, -1e9, 800, 480, 20),
+          "mark seen: far off (the 3D view's far points) - not drawn (the emulator: 40 ms each in GDI)");
+    Check(!MarkSeen(-20, 240, 800, 480, 20) && !MarkSeen(820, 240, 800, 480, 20) && !MarkSeen(400, -20, 800, 480, 20) &&
+          !MarkSeen(400, 500, 800, 480, 20), "mark seen: r px past an edge - the sign ends at the screen's edge, not in");
     Check(fabs(TiltEase(0, 55, 200) - 5) < 1e-9, "tilt ease: from 0 (a shown pitch, not the first) - eased");
     Check(fabs(TiltEase(55, 65, 200) - 60) < 1e-9, "tilt ease: 200 ms - 5 degrees on (25 a second)");
     Check(fabs(TiltEase(65, 55, 200) - 60) < 1e-9, "tilt ease: down the same");
@@ -1314,8 +1322,18 @@ static void TiltWarpSameChecks()
             RingView big = { bigBits, 256, 256, 0, (int)vx - 200, (int)vy - 150 + v, (int)vx + 10 - v % 7, (int)vy + 90 };
             rings[0] = big;
         }
+        if (v % 4 == 1) {   // the first ring a coarser one over the rows, the fog's too (its loaded part wraps), to
+            // one side of the car's column
+            RingView coarse = { farBits, 64, 64, 2, (int)vx - 900 + v, (int)vy - 1900, (int)vx + 10 - v % 5, (int)vy + 1900 - v };
+            rings[0] = coarse;
+        }
         Tilt t;
         TiltMake(&t, 60 + v % 7, 60, 900 + v * 10, 45 + v % 3 * 10);
+        if (v % 8 == 2) {   // a near fog: the ring of the view's zoom (no wrap twice) over the rows fading in it
+            RingView fogged = { bigBits, 256, 256, 0, (int)vx - 127, (int)vy - 127, (int)vx + 128, (int)vy + 128 };
+            rings[0] = fogged;
+            TiltMake(&t, 30, 60, 100, 45 + v % 3 * 10);
+        }
         int n = 1 + v % 2, w = 120 - v % 4, h = 240;
         TiltWarp(rings, n, t, w, h, vx, vy, angle, v % 3 == 0, got, w);
         RefWarp(rings, n, t, w, h, vx, vy, angle, v % 3 == 0, ref, w);

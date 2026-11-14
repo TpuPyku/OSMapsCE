@@ -2245,6 +2245,7 @@ static void RotateRing(double vx, double vy, double angle)
     if (cx < 0) cx += R;
     if (cy < 0) cy += R;
     long dx = (long)(ca * 65536), dy = (long)(sa * 65536);
+    const unsigned short* bits = s_near.bits;   // (a local: VS2005 read the global again after each pixel's store)
     for (int y = 0; y < H; y++) {
         // screen offset s -> world offset w = Rot(angle) s, then the ring's pixel
         double sx = -W / 2.0, sy = y - H / 2.0;
@@ -2255,7 +2256,7 @@ static void RotateRing(double vx, double vy, double angle)
             int px = (int)(wx >> 16), py = (int)(wy >> 16);
             if (px < 0) px += R; else if (px >= R) px -= R;
             if (py < 0) py += R; else if (py >= R) py -= R;
-            d[x] = s_near.bits[(R - 1 - py) * R + px];
+            d[x] = bits[(R - 1 - py) * R + px];
         }
     }
 }
@@ -3287,6 +3288,20 @@ static void DrawParkLines(HDC dc, const int* box, double cx, double cy, double v
     DeleteObject(none);
 }
 
+static const int kMarkR = 20;   // a layer's sign: the most it reaches from its point (the parking's 12)
+
+static void MarkPaint(HDC dc, int x, int y, void* arg)
+{
+    LayerMark(dc, *(const LayerPoint*)arg, x, y);
+}
+
+// A layer's sign as ready pixels (stamp.cpp): GDI's brushes, pens and shapes once a kind, not each sign each frame
+static void LayerStamp(HDC dc, const LayerPoint& p, int x, int y)
+{
+    StampKey key = { L"#layer", 6, p.kind, p.kind == LAY_PARKING ? p.fee : 0, kMarkR, 0 };
+    StampDraw(dc, key, x - kMarkR, y - kMarkR, 2 * kMarkR + 1, 2 * kMarkR + 1, MarkPaint, (void*)&p, kMarkR, kMarkR);
+}
+
 static void DrawLayers(HDC dc, double cx, double cy, double vx, double vy, double angle)
 {
     int box[4];
@@ -3302,8 +3317,9 @@ static void DrawLayers(HDC dc, double cx, double cy, double vx, double vy, doubl
         const LayerPoint& p = s_layer[i];
         s_layerParks += p.kind == LAY_PARKING;
         double sx, sy;
-        if (LayerShown(p) && ViewPoint(v, p.lat, p.lon, &sx, &sy) && (!s_dockShown || sy + 16 <= kDockY + s_dockOff))
-            LayerMark(dc, p, Round(sx), Round(sy));
+        if (LayerShown(p) && ViewPoint(v, p.lat, p.lon, &sx, &sy) && MarkSeen(sx, sy, s_cw, s_ch, kMarkR) &&
+            (!s_dockShown || sy + 16 <= kDockY + s_dockOff))
+            LayerStamp(dc, p, Round(sx), Round(sy));
     }
 }
 

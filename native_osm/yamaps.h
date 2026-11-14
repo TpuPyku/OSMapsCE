@@ -369,6 +369,7 @@ double TiltEase(double shown, double target, DWORD ms);
 // The mark under the finger (x, y): the nearest of those on (pts[i] where drawn) within r px, -1: none. (A Shturmann
 // 2026-11-11: a mark 48000 px off in the tilted view - its squared distance past int, any tap opened it.)
 int MarkAt(const POINT* pts, const bool* on, int n, int x, int y, int r);
+bool MarkSeen(double x, double y, int w, int h, int r);   // a sign r px round (x, y) on a w x h screen
 bool TiltPoint(const Tilt& t, double fx, double fy, double* sx, double* sy);   // false: in the fog
 void TiltProject(const Tilt& t, double fx, double fy, double* sx, double* sy);   // the same, no fog
 bool TiltRow(const Tilt& t, double sy, double* fy, double* k, double* fade);   // a screen row: the flat row fy, its
