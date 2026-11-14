@@ -654,6 +654,12 @@ static void LevelChecks()
     Check(TurnCostDs(60, 80, 80, 60) == 0 && TurnCostDs(60, 80, 80, -60) == 20 && TurnCostDs(-60, 80, 80, 60) == 20,
           "turn cost: moves off the axes (16, 90, 90 degrees)", NULL);
     Check(TurnCostDs(0, 100000, 100000, 0) == 20, "turn cost: 100 km moves, no overflow", NULL);
+    // off a road that goes on (the user 2026-11-14: Щёлковское шоссе -> its дублёр and back for a light less): 6 s
+    Check(LeaveCostDs(5, 9, true) == 60, "leave: off a named road that goes on, onto another - 6 s", NULL);
+    Check(LeaveCostDs(5, 0, true) == 60, "leave: off it onto an unnamed one (a link) - 6 s", NULL);
+    Check(LeaveCostDs(5, 5, true) == 0, "leave: on along it - none", NULL);
+    Check(LeaveCostDs(5, 9, false) == 0, "leave: the road ends here (or only renames) - none", NULL);
+    Check(LeaveCostDs(0, 9, true) == 0, "leave: from an unnamed road - none", NULL);
     // by the graph's bearings (256 a circle): 21 = 29.5 degrees, 22 = 30.9, 42 = 59, 43 = 60.5, 64 = 90, 65 = 91.4,
     // 85 = 119.5, 86 = 120.9, 106 = 149, 107 = 150.5
     Check(TurnCostB(64, 64) == 0 && TurnCostB(64, 85) == 0 && TurnCostB(64, 43) == 0 && TurnCostB(250, 15) == 0,

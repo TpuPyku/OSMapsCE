@@ -404,6 +404,17 @@ int TurnCostDs(int x1, int y1, int x2, int y2)
     return cr * 1000 > dot * 1732 ? 45 : cr * 1000 > dot * 577 ? 65 : 200;
 }
 
+// Off a road that goes on, onto another (the user 2026-11-14: Щёлковское шоссе -> "Щёлковское шоссе (дублёр)" and back
+// past Хабаровская - both "primary" in OSM, the дублёр a light the fewer; "the way often leaves a main road for a
+// lesser one a few metres shorter"): 6 s - off and back on costs 12, more than a light. The road ending or only
+// renamed (none of its name goes on), or an unnamed one left (a link): nothing. Names: the graph's offsets, 0 none.
+enum { kLeaveDs = 60 };
+
+int LeaveCostDs(DWORD inName, DWORD outName, bool goesOn)
+{
+    return inName && outName != inName && goesOn ? kLeaveDs : 0;
+}
+
 // By the roads' own bearings (0..255): their difference's angle class, the same costs.
 int TurnCostB(int in, int out)
 {
@@ -561,25 +572,52 @@ static void ReachEnds(Fastest& f, DWORD n, DWORD d, Way* w)   // node n settled 
     }
 }
 
+static bool RoadGoesOn(DWORD n, DWORD inE, DWORD from)   // a road of the way in's name leaves n, not back to from
+{
+    DWORD nm = s_g.edges[inE].name;
+    for (DWORD e = s_g.first[n]; nm && e < s_g.first[n + 1]; e++)
+        if (s_g.edges[e].name == nm && s_g.edges[e].to != from)
+            return true;
+    return false;
+}
+
+// The way into a node, for the turns out of it: its edge (a start's: its seed's), the node it came from, its end's
+// bearing or (no bearings in the graph) its move in metres, its name, whether a road of that name goes on
+struct WayIn { DWORD e, from; int bear, ix, iy; DWORD name; bool goesOn; };
+
+static void WayInto(DWORD n, WayIn* w)
+{
+    DWORD in = s_prevE[n];
+    bool seed = (in & 0x80000000) != 0;
+    w->e = seed ? s_seedE[in & 1] : in;
+    w->from = seed ? s_seedFrom[in & 1] : FromNode(in);
+    w->ix = w->iy = 0;
+    if (!s_g.bear)
+        MoveM(w->from, n, &w->ix, &w->iy);
+    w->bear = s_g.bear ? s_g.bear[w->e * 2 + 1] : 0;
+    w->name = s_g.edges[w->e].name;
+    w->goesOn = RoadGoesOn(n, w->e, w->from);
+}
+
+static int TurnOnto(const WayIn& w, DWORD n, DWORD e)   // the turn from the way in onto edge e, 0.1 s
+{
+    if (s_g.bear)
+        return TurnCostB(w.bear, s_g.bear[e * 2]);
+    int ox, oy;
+    MoveM(n, s_g.edges[e].to, &ox, &oy);
+    return TurnCostDs(w.ix, w.iy, ox, oy);
+}
+
 static bool Relax(DWORD n, DWORD d)   // node n's edges, each with the turn onto it; false = no memory
 {
-    int nearM = s_hier ? NearM(n) : 0, ix = 0, iy = 0, ox, oy;
-    DWORD in = s_prevE[n];   // the way in (a start's: its edge); no bearings in the graph - node to node
-    if (!s_g.bear)
-        MoveM(in & 0x80000000 ? s_seedFrom[in & 1] : FromNode(in), n, &ix, &iy);
-    int inB = s_g.bear ? s_g.bear[(in & 0x80000000 ? s_seedE[in & 1] : in) * 2 + 1] : 0;
+    int nearM = s_hier ? NearM(n) : 0;
+    WayIn w;
+    WayInto(n, &w);
     for (DWORD e = s_g.first[n]; e < s_g.first[n + 1]; e++) {
         const GEdge& g = s_g.edges[e];
         if ((s_noToll && (g.flags & 8)) || !HierAllows(RoadTier(g.cls), nearM, s_hier))
             continue;
-        int turn;
-        if (s_g.bear) {
-            turn = TurnCostB(inB, s_g.bear[e * 2]);
-        } else {
-            MoveM(n, g.to, &ox, &oy);
-            turn = TurnCostDs(ix, iy, ox, oy);
-        }
-        DWORD c = d + g.timeDs + turn;
+        DWORD c = d + g.timeDs + TurnOnto(w, n, e) + LeaveCostDs(w.name, g.name, w.goesOn);
         if (c < s_dist[g.to]) {
             s_dist[g.to] = c;
             s_prevE[g.to] = e;

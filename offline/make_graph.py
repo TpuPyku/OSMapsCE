@@ -41,6 +41,7 @@ kClasses = [('motorway', 110), ('trunk', 90), ('primary', 60), ('secondary', 50)
              ('tertiary_link', 30), ('road', 30), ('track', 15)]
 kCls = {c: i for i, (c, _) in enumerate(kClasses)}
 kSignalS = 8   # a traffic light's wait, seconds (on average: half the time it is red)
+kSignalJoinM = 60   # lights this close along a way (each to the one before): one crossing's - counted once
 # The barriers on roads (the user 2026-10-29: a route through a hospital's grounds, closed by gates): a gate with no
 # access tag - kGateS more (a way through avoided, a place inside still reached), the passed ones - nothing, any
 # other (a block, a bollard) - the road cut there. A gate closed by its access tag (private, no...) - kLockedGates gates'
@@ -302,6 +303,20 @@ def make_piece(w, seg, nm, loc, signals, nodes, tol_m=0, bars=NONE):
                  w.wid, w.limit)
 
 
+def lone_signals(ids, loc, signals):
+    """The way's lights that count: one a crossing (the user 2026-11-14: OSM marks each stop line - Щёлковское шоссе
+    at Хабаровская has four on 92 m, 32 s, its дублёр two: the route took the дублёр). A light within kSignalJoinM
+    along the way of the light before it is that one's crossing's."""
+    out, at, last = set(), 0.0, None
+    for k, n in enumerate(ids):
+        at += dist_m(loc[ids[k - 1]], loc[n]) if k else 0
+        if n in signals:
+            if last is None or at - last > kSignalJoinM:
+                out.add(n)
+            last = at
+    return out
+
+
 def make_pieces(ways, loc, signals, junction, tol_m=0, bars=NONE):
     nodes, names, pieces = Nodes(loc), Names(), []
     for w in ways:
@@ -309,7 +324,8 @@ def make_pieces(ways, loc, signals, junction, tol_m=0, bars=NONE):
         if len(ids) < 2:
             continue
         nm = names.add(w.name, w.ref)
-        pieces += [make_piece(w, seg, nm, loc, signals, nodes, tol_m, bars) for seg in segments(ids, junction)]
+        lone = lone_signals(ids, loc, signals)
+        pieces += [make_piece(w, seg, nm, loc, lone, nodes, tol_m, bars) for seg in segments(ids, junction)]
     return nodes.pts, names.data, pieces
 
 

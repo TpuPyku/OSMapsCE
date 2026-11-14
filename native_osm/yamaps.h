@@ -215,6 +215,7 @@ void MapsCancel();                // the download stopped (its part kept: goes o
 int   RoadTier(int cls);   // a road class's level: 0 main (motorway..primary, links), 1 secondary / tertiary, 2 minor
 bool  HierAllows(int tier, int nearM, int hier);   // its edge searched nearM from the nearer end (hier: 2, 1, 0 none)
 int   TurnCostDs(int x1, int y1, int x2, int y2);   // a turn from move 1 to move 2 (metres): its time, 0.1 s
+int   LeaveCostDs(DWORD inName, DWORD outName, bool goesOn);   // off a road that goes on (names: 0 none), 0.1 s
 int   TurnCostB(int in, int out);   // the same by bearings (256 = a full circle: the graph's own, make_graph.py)
 bool  OfflineRoute(const char* osrmPath, char** body, int* len);   // false: no region / no way - ask OSRM
 bool  OfflineTrunkRoute(const char* osrmPath, char** body, int* len);   // over the trunk roads (4b): after OSRM failed

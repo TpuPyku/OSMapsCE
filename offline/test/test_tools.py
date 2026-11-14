@@ -452,6 +452,27 @@ class Tools(unittest.TestCase):
         sides = {b for a, b, _, _, n in edges if n == 'Блочная' and a == at7}
         self.assertEqual(sides, {(53100000, 50004000), (53102000, 50004000)})   # up to it from both, no further
 
+    def test_graph_signals_one_crossing(self):
+        """A crossing's lights count once (the user 2026-11-14: Щёлковское шоссе at Хабаровская - four lights of one
+        crossing on 92 m, 32 s, the дублёр beside it two: the route took the дублёр): along a way, a light within
+        kSignalJoinM of the last one counted is the same crossing's. Here three 20 m apart, then one 300 m on: two."""
+        osm = os.path.join(self.tmp, 'signals.osm')
+        nodes = {1: (53.1, 50.000), 2: (53.1, 50.0030), 3: (53.1, 50.0033), 4: (53.1, 50.0036), 5: (53.1, 50.0080),
+                 6: (53.1, 50.0100)}
+        with open(osm, 'w', encoding='utf-8') as f:
+            f.write('<?xml version="1.0" encoding="UTF-8"?>\n<osm version="0.6">\n')
+            for i, (la, lo) in nodes.items():
+                light = '<tag k="highway" v="traffic_signals"/>' if i in (2, 3, 4, 5) else ''
+                f.write('<node id="%d" lat="%s" lon="%s" version="1">%s</node>\n' % (i, la, lo, light))
+            f.write('<way id="1" version="1">%s<tag k="highway" v="residential"/><tag k="name" v="Шоссе"/>'
+                    '</way>\n</osm>\n' % ''.join('<nd ref="%d"/>' % i for i in nodes))
+        out = os.path.join(self.tmp, 'signals.grf')
+        make_graph.build(osm, out)
+        _, edges = graph(out)
+        self.assertEqual(len(edges), 2)   # (both ways: the lights count in each)
+        for a, b, dm, ds, n in edges:
+            self.assertAlmostEqual(ds / 10 - dm / 10 / (25 / 3.6), 2 * make_graph.kSignalS, delta=0.2)
+
     def test_graph_toll(self):
         """A toll road's edges flagged (8): the unit keeps off them when asked (the user 2026-10-29)."""
         import make_test_toll
