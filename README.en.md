@@ -9,7 +9,7 @@ A navigation app on [OpenStreetMap](https://www.openstreetmap.org) maps for Wind
 | ![Day map without traffic](docs/day.png) | ![Night map without traffic](docs/night.png) | ![Route with traffic on its line](docs/route.png) |
 
 ## Features
-- **Offline:** regions of Russia and the CIS with a map, address search and routes. Routes between regions follow the main roads.
+- **Offline:** regions of Russia, the CIS, the Baltic states, Poland, Germany, Czechia, Slovakia and Hungary with a map, address search and routes. Routes between regions follow the main roads (their graph covers Russia and the CIS only for now).
 - **Map:** raster (OSM tiles) or vector (OpenFreeMap) with day and night palettes, a 3D view, bridges, tunnels, house numbers, filling stations and car parks. Places you have viewed are cached.
 - **Routes:** search for addresses and places, turn guidance, rerouting when you leave the route, alternatives with time estimates, avoiding toll roads, a card for complex junctions.
 - **Voice guidance:** a female voice in Russian or English, following the interface language. Each maneuver is announced in advance and again just before it, with the timing adjusted to your speed. It works offline too. On the Lada Vesta with VestaHome the prompts play over the radio. Turn it off in the route sheet: Voice prompts.
@@ -25,7 +25,7 @@ A navigation app on [OpenStreetMap](https://www.openstreetmap.org) maps for Wind
 - **On the Lada Vesta with VestaHome:** the theme color and a map widget on the home screen. During a route the widget shows the road and the maneuver, and other screens show the maneuver in the top bar.
 
 ## Outside Russia and the CIS
-Online mode is not tied to a region: map tiles, search and routing use worldwide services, so it should work elsewhere, although it has not been tested there. Offline maps cover only Russia and the CIS. Traffic comes from Yandex and 2GIS, so coverage in other countries may be limited.
+Online mode is not tied to a region: map tiles, search and routing use worldwide services, so it should work elsewhere, although it has not been tested there. Offline maps cover Russia, the CIS, Estonia, Latvia, Lithuania, Poland (by voivodeship), Germany (by state), Czechia, Slovakia and Hungary; the trunk road graph between regions covers Russia and the CIS only for now. Traffic comes from Yandex and 2GIS, so coverage in other countries may be limited.
 
 ## Installation
 1. Download the archive from [Releases](../../releases) and unpack the `OSMapsCE` folder to a memory card.
