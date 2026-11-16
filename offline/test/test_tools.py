@@ -636,6 +636,11 @@ class Tools(unittest.TestCase):
         a, b = (p.a, p.b) if p.oneway > 0 else (p.b, p.a)
         self.assertEqual((got_nodes[a], got_nodes[b]), ((0, 0), (0, 2000)))
         self.assertEqual(p.inner if p.oneway > 0 else p.inner[::-1], [(0, 300), (0, 700), (0, 1000)])
+        # the joined shape simplified again (the joints' points on a straight road: gone; a bend: kept)
+        _, got = make_graph.contract(nodes, [road(0, 1, 1), road(1, 2, 2), road(2, 3, 3)], 10)
+        self.assertEqual((got[0].inner, got[0].length), ([], 300))
+        _, got = make_graph.contract(nodes, [road(0, 4, 1), road(4, 3, 2)], 10)
+        self.assertEqual(got[0].inner, [(1000, 1000)])
         # a ring of joints alone: as it was
         ring = [road(1, 2, 1), road(2, 4, 2), road(4, 1, 3)]
         self.assertEqual(len(make_graph.contract(nodes, ring)[1]), 3)
