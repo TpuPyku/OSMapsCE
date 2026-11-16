@@ -1133,6 +1133,20 @@ class Tools(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(data, 'tiny', 'tiles.mbtiles')))   # the go-between removed
         self.assertIsNone(make_region.tile_builder(self.tmp))                           # no planetiler: no tiles
 
+    def test_sources_spread(self):
+        """The load spread (the user 2026-11-16: Geofabrik refuses some runners - maybe for the volume): what
+        openstreetmap.fr has comes from there, Geofabrik keeps what it alone has."""
+        fr = 'https://download.openstreetmap.fr/extracts/'
+        self.assertEqual(make_region.FAR['lodzkie'], fr + 'europe/poland/lodzkie-latest.osm.pbf')
+        self.assertEqual(make_region.FAR['kujawsko_pomorskie'], fr + 'europe/poland/kujawsko_pomorskie-latest.osm.pbf')
+        self.assertEqual(make_region.FAR['czech_republic'], fr + 'europe/czech_republic-latest.osm.pbf')
+        self.assertEqual(make_region.FAR['slovakia'], fr + 'europe/slovakia-latest.osm.pbf')
+        self.assertEqual(make_region.COUNTRIES['georgia'], fr + 'asia/georgia-latest.osm.pbf')
+        self.assertEqual(make_region.COUNTRIES['armenia'], fr + 'asia/armenia-latest.osm.pbf')
+        self.assertTrue(make_region.FAR['bayern'].startswith('https://download.geofabrik.de/'))
+        self.assertTrue(make_region.COUNTRIES['estonia'].startswith('https://download.geofabrik.de/'))
+        self.assertEqual(len(make_region.FAR), 16 + 13 + 3)   # (Poland, Germany without its city states, 3 countries)
+
     def test_fetch_tries_again(self):
         """A source not reached (2026-11-16: Geofabrik refused some runners - Lodzkie lost) tried again after a pause;
         a missing file (404) not; tries over - the error raised."""
@@ -1216,8 +1230,8 @@ class Tools(unittest.TestCase):
         a state titled "Страна — область"."""
         got = make_region.regions(get={make_region.BASE: '', make_region.UKRAINE_DIR: ''}.get)
         g = make_region.GEOFABRIK
-        self.assertEqual(got['slovakia'], g % 'europe/slovakia')
-        self.assertEqual(got['czech_republic'], g % 'europe/czech-republic')
+        self.assertEqual(got['slovakia'], make_region.OSMFR % 'europe/slovakia')   # (2026-11-16: openstreetmap.fr)
+        self.assertEqual(got['czech_republic'], make_region.OSMFR % 'europe/czech_republic')
         self.assertEqual(got['bayern'], g % 'europe/germany/bayern')
         self.assertEqual(got['brandenburg'], [g % 'europe/germany/brandenburg', g % 'europe/germany/berlin'])
         self.assertEqual(got['niedersachsen'], [g % 'europe/germany/niedersachsen', g % 'europe/germany/bremen'])
@@ -1226,7 +1240,7 @@ class Tools(unittest.TestCase):
         for gone in ('berlin', 'bremen', 'hamburg'):
             self.assertNotIn(gone, got)
         self.assertNotIn('poland', got)   # (the user 2026-11-12: by its voivodeships, ~1.9 GB whole)
-        self.assertEqual(got['mazowieckie'], g % 'europe/poland/mazowieckie')
+        self.assertEqual(got['mazowieckie'], make_region.OSMFR % 'europe/poland/mazowieckie')
         self.assertEqual(len([n for n in got if n in make_region.FAR]), 3 + 16 + 13)
         self.assertEqual(release_regions.title('bayern'), 'Германия — Бавария')
         self.assertEqual(release_regions.title('mazowieckie'), 'Польша — Мазовецкое воеводство')

@@ -50,19 +50,22 @@ GONE = ('crimea_republic', 'sevastopol', 'saint_petersburg')
 UKRAINE_APART = ('crimea', 'sevastopol', 'donetsk_oblast', 'luhansk_oblast')
 INSIDE_UA = {'kiev': 'kiev_oblast'}
 GEOFABRIK = 'https://download.geofabrik.de/%s-latest.osm.pbf'
-COUNTRIES = {n: GEOFABRIK % (part + '/' + n) for part, names in (
-    ('europe', ('belarus', 'moldova', 'georgia', 'lithuania', 'latvia', 'estonia')),   # (the Baltic ones: the user 2026-11-12)
-    ('asia', ('kazakhstan', 'uzbekistan', 'kyrgyzstan', 'tajikistan', 'turkmenistan', 'azerbaijan', 'armenia')))
-    for n in names}
+# The load spread (the user 2026-11-16: Geofabrik refuses some runners, maybe for the volume): what openstreetmap.fr
+# has comes from there - Georgia, Armenia, Czechia, Slovakia, Poland's voivodeships; Geofabrik keeps the rest
+OSMFR = 'https://download.openstreetmap.fr/extracts/%s-latest.osm.pbf'
+COUNTRIES = dict({n: GEOFABRIK % (part + '/' + n) for part, names in (
+    ('europe', ('belarus', 'moldova', 'lithuania', 'latvia', 'estonia')),   # (the Baltic ones: the user 2026-11-12)
+    ('asia', ('kazakhstan', 'uzbekistan', 'kyrgyzstan', 'tajikistan', 'turkmenistan', 'azerbaijan')))
+    for n in names}, georgia=OSMFR % 'asia/georgia', armenia=OSMFR % 'asia/armenia')
 # Outside the former USSR (the users 2026-11-07, the user 2026-11-12: "far" - the lists' end, an icon): whole countries,
 # Poland by its voivodeships (the user 2026-11-12: ~1.9 GB whole), Germany by its states (Geofabrik's); the German city
 # states inside the states round them (FAR_INSIDE, as Moscow)
 POLAND = ('dolnoslaskie', 'kujawsko-pomorskie', 'lodzkie', 'lubelskie', 'lubuskie', 'malopolskie', 'mazowieckie',
           'opolskie', 'podkarpackie', 'podlaskie', 'pomorskie', 'slaskie', 'swietokrzyskie', 'warminsko-mazurskie',
           'wielkopolskie', 'zachodniopomorskie')
-FAR = dict({n: GEOFABRIK % ('europe/' + p) for n, p in (
-    ('slovakia', 'slovakia'), ('czech_republic', 'czech-republic'), ('hungary', 'hungary'))},
-    **{n.replace('-', '_'): GEOFABRIK % ('europe/poland/' + n) for n in POLAND},
+FAR = dict(slovakia=OSMFR % 'europe/slovakia', czech_republic=OSMFR % 'europe/czech_republic',
+    hungary=GEOFABRIK % 'europe/hungary',
+    **{n.replace('-', '_'): OSMFR % ('europe/poland/' + n.replace('-', '_')) for n in POLAND},
     **{n.replace('-', '_'): GEOFABRIK % ('europe/germany/' + n) for n in (
         'baden-wuerttemberg', 'bayern', 'berlin', 'brandenburg', 'bremen', 'hamburg', 'hessen',
         'mecklenburg-vorpommern', 'niedersachsen', 'nordrhein-westfalen', 'rheinland-pfalz', 'saarland', 'sachsen',

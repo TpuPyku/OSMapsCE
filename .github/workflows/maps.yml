@@ -149,7 +149,10 @@ jobs:
            # Geofabrik's countries, each cut to the trunk roads at once (the disk: Russia alone is 4 GB), merged.
            # The new countries (2026-11-16): their primary roads too - the graph's chains joined (make_graph.contract),
            # all of them ~ Russia's and the CIS's graph before (a trial unjoined: 930 k nodes, 58 MB; Germany 23 MB).
-    if: ${{ inputs.only == '' || inputs.only == 'all' || inputs.only == 'trunk' }}
+           # Less from the sources (the user 2026-11-16: Geofabrik refuses some runners - maybe for the volume): what
+           # openstreetmap.fr has from there (Russia, Ukraine, Poland, Czechia, Slovakia, Georgia, Armenia - 13 of ~19
+           # GB), and only in the Disk's runs (the 1st, the 15th) or by hand - the trunk roads change slowly.
+    if: ${{ inputs.only == 'all' || inputs.only == 'trunk' || github.event.schedule == '0 22 1,15 * *' }}
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
@@ -163,13 +166,14 @@ jobs:
         run: |
           df -h / | tail -1
           mkdir -p cut dist
-          for c in russia europe/belarus europe/ukraine europe/moldova europe/georgia asia/kazakhstan asia/uzbekistan \
-                   asia/kyrgyzstan asia/tajikistan asia/turkmenistan asia/azerbaijan asia/armenia \
-                   europe/estonia europe/latvia europe/lithuania europe/poland europe/germany europe/czech-republic \
-                   europe/slovakia europe/hungary; do
-            n=$(basename $c)
+          fr=https://download.openstreetmap.fr/extracts gf=https://download.geofabrik.de
+          for u in $fr/russia $fr/europe/ukraine $fr/europe/poland $fr/europe/czech_republic $fr/europe/slovakia \
+                   $fr/asia/georgia $fr/asia/armenia $gf/europe/belarus $gf/europe/moldova $gf/asia/kazakhstan \
+                   $gf/asia/uzbekistan $gf/asia/kyrgyzstan $gf/asia/tajikistan $gf/asia/turkmenistan $gf/asia/azerbaijan \
+                   $gf/europe/estonia $gf/europe/latvia $gf/europe/lithuania $gf/europe/germany $gf/europe/hungary; do
+            n=$(basename $u)
             # (Geofabrik refuses some runners now and then - 2026-11-16: tried again, over IPv4)
-            curl -4 -sSfL --retry 10 --retry-delay 60 --retry-all-errors -o src.pbf "https://download.geofabrik.de/$c-latest.osm.pbf"
+            curl -4 -sSfL --retry 10 --retry-delay 60 --retry-all-errors -o src.pbf "$u-latest.osm.pbf"
             osmium tags-filter src.pbf w/highway=motorway,trunk,primary,motorway_link,trunk_link,primary_link \
               -o cut/$n.pbf --overwrite
             echo "$n: $(du -m src.pbf | cut -f1) MB -> $(du -m cut/$n.pbf | cut -f1) MB"
