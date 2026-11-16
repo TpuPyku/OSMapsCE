@@ -40,7 +40,7 @@ There are two ways to install regions:
 
 The data goes into an `OSMapsData` folder in the root of any volume on the device. A region takes about 125 MB on average, and the largest takes about 1.3 GB. A region comes with the overview and main roads pack, which provides the small zoom levels and routes between regions.
 
-Maps are rebuilt every week.
+Maps are rebuilt twice a month, on the 1st and the 15th.
 
 ## GPS
 The app only reads the GPS port and picks NMEA sentences from the stream. The default is `COM4:` at 115200. For another device, use Settings → GPS → FIND GPS, which tries COM1…COM9 and the common speeds, or set the port and speed by hand.
