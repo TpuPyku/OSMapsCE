@@ -1078,6 +1078,37 @@ class Tools(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(data, 'tiny', 'tiles.mbtiles')))   # the go-between removed
         self.assertIsNone(make_region.tile_builder(self.tmp))                           # no planetiler: no tiles
 
+    def test_fetch_tries_again(self):
+        """A source not reached (2026-11-16: Geofabrik refused some runners - Lodzkie lost) tried again after a pause;
+        a missing file (404) not; tries over - the error raised."""
+        src = os.path.join(self.tmp, 'src.pbf')
+        with open(src, 'wb') as f:
+            f.write(b'osm')
+        real = make_region.urllib.request.urlopen
+        down = make_region.urllib.error.URLError('Network is unreachable')
+        out = os.path.join(self.tmp, 'got.pbf')
+        answers = [down, down]
+
+        def urlopen(req, timeout):                      # not reached twice, then the file
+            if answers:
+                raise answers.pop()
+            return real(pathlib.Path(src).as_uri())
+        with mock.patch.object(make_region.urllib.request, 'urlopen', side_effect=urlopen), \
+                mock.patch.object(make_region.time, 'sleep') as sleep:
+            self.assertTrue(make_region.fetch('http://h/a.pbf', out))
+        with open(out, 'rb') as f:
+            self.assertEqual(f.read(), b'osm')
+        self.assertEqual(sleep.call_count, 2)
+        gone = make_region.urllib.error.HTTPError('http://h/b.pbf', 404, 'Not Found', {}, None)
+        with mock.patch.object(make_region.urllib.request, 'urlopen', side_effect=gone) as get, \
+                mock.patch.object(make_region.time, 'sleep'):
+            self.assertRaises(make_region.urllib.error.HTTPError, make_region.fetch, 'http://h/b.pbf', out)
+        self.assertEqual(get.call_count, 1)
+        with mock.patch.object(make_region.urllib.request, 'urlopen', side_effect=down) as get, \
+                mock.patch.object(make_region.time, 'sleep'):
+            self.assertRaises(make_region.urllib.error.URLError, make_region.fetch, 'http://h/c.pbf', out)
+        self.assertEqual(get.call_count, make_region.kTries)
+
     def test_region_links(self):
         top = '<a href="volga_federal_district/">v</a><a href="ural_federal_district/">u</a>'
         page = '<a href="samara_oblast-latest.osm.pbf">s</a><a href="x.txt">x</a>'

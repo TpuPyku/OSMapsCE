@@ -116,7 +116,24 @@ def regions(get=get):
     return out
 
 
+kTries, kPause = 5, 60   # a source not reached: tried again a minute later (2026-11-16: Geofabrik refused some runners)
+
+
 def fetch(url, path):
+    """fetch_once, tried again when the source was not reached or broke off (a missing file - an HTTP error - not)."""
+    for left in range(kTries - 1, -1, -1):
+        try:
+            return fetch_once(url, path)
+        except urllib.error.HTTPError:
+            raise
+        except OSError as e:   # (URLError, a reset, a timeout)
+            if not left:
+                raise
+            print('%s: %s - again in %d s' % (url, e, kPause), flush=True)
+            time.sleep(kPause)
+
+
+def fetch_once(url, path):
     """Downloads when the source's copy is newer than ours (its Last-Modified against our file's time, which is set to
     the source's); True = a new file. The .part file never replaces a good one half written."""
     req = urllib.request.Request(url, headers=UA)
