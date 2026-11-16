@@ -3486,6 +3486,27 @@ static void LayerStamp(HDC dc, const LayerPoint& p, int x, int y)
     StampDraw(dc, key, x - kMarkR, y - kMarkR, 2 * kMarkR + 1, 2 * kMarkR + 1, MarkPaint, (void*)&p, kMarkR, kMarkR);
 }
 
+// The shown points on the screen (lat, lon: y, x), car parks' and bumps' signs over one another merged into one at their
+// middle (the user 2026-11-16; LayersMergeOnScreen); s_layerParks counted
+enum { kMarkGap = 24 };   // (a car park's or a bump's sign: 23 - 26 px wide)
+static LayerPoint s_marks[3000];   // (layers.cpp's kMaxPoints)
+
+static int LayerMarks(const ParkView& v)
+{
+    int k = 0;
+    for (int i = 0; i < s_layerN && k < (int)(sizeof(s_marks) / sizeof(s_marks[0])); i++) {
+        const LayerPoint& p = s_layer[i];
+        s_layerParks += p.kind == LAY_PARKING;
+        double sx, sy;
+        if (!LayerShown(p) || !ViewPoint(v, p.lat, p.lon, &sx, &sy))
+            continue;
+        s_marks[k] = p;
+        s_marks[k].lat = Round(sy);
+        s_marks[k++].lon = Round(sx);
+    }
+    return LayersMergeOnScreen(s_marks, k, kMarkGap);
+}
+
 static void DrawLayers(HDC dc, double cx, double cy, double vx, double vy, double angle)
 {
     int box[4];
@@ -3497,13 +3518,11 @@ static void DrawLayers(HDC dc, double cx, double cy, double vx, double vy, doubl
     s_layer = LayersIn(box, &s_layerN);
     ParkView v;
     ParkViewOf(&v, box, cx, cy, vx, vy, angle);
-    for (int i = 0; i < s_layerN; i++) {
-        const LayerPoint& p = s_layer[i];
-        s_layerParks += p.kind == LAY_PARKING;
-        double sx, sy;
-        if (LayerShown(p) && ViewPoint(v, p.lat, p.lon, &sx, &sy) && MarkSeen(sx, sy, s_cw, s_ch, kMarkR) &&
-            (!s_dockShown || sy + 16 <= kDockY + s_dockOff))
-            LayerStamp(dc, p, Round(sx), Round(sy));
+    int n = LayerMarks(v);
+    for (int i = 0; i < n; i++) {
+        const LayerPoint& q = s_marks[i];
+        if (MarkSeen(q.lon, q.lat, s_cw, s_ch, kMarkR) && (!s_dockShown || q.lat + 16 <= kDockY + s_dockOff))
+            LayerStamp(dc, q, q.lon, q.lat);
     }
 }
 

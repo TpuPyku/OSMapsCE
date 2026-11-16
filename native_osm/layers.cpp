@@ -110,10 +110,10 @@ static int ByKindLat(const void* a, const void* b)
     return x->lat < y->lat ? -1 : x->lat > y->lat ? 1 : 0;
 }
 
-static int MergeM(int kind)   // how near one thing's points are; 0 - never merged
-{
-    return kind == LAY_SIGNAL ? 40 : kind == LAY_BUMP ? 20 : 0;
-}
+// How near the points of one kind are merged: by kind (LAY_*); 0 - never. In metres on the ground, or on the screen in
+// pixels across and along (lat, lon: y, x)
+struct Nearness { int reach[4]; double unit; bool screen; };
+static const Nearness kGround = { { 0, 40, 40, 0 }, kDegM, false };   // lights 40 m, bumps 40 m (the user 2026-11-16)
 
 static int Root(int* up, int i)
 {
@@ -129,14 +129,19 @@ static bool Near(const LayerPoint& a, const LayerPoint& b, int m)
 }
 
 // Each pair near enough joined (sorted by kind and latitude: only the next ones up to m north looked at)
-static void Join(const LayerPoint* p, int n, int* up)
+static void Join(const LayerPoint* p, int n, int* up, const Nearness& by)
 {
     for (int i = 0; i < n; i++) {
-        int m = MergeM(p[i].kind);
-        for (int j = i + 1; m && j < n && p[j].kind == p[i].kind && (p[j].lat - p[i].lat) * kDegM <= m; j++)
-            if (Near(p[i], p[j], m))
+        int m = by.reach[p[i].kind & 3];
+        for (int j = i + 1; m && j < n && p[j].kind == p[i].kind && (p[j].lat - p[i].lat) * by.unit <= m; j++)
+            if (by.screen ? abs(p[j].lon - p[i].lon) <= m : Near(p[i], p[j], m))
                 up[Root(up, j)] = Root(up, i);
     }
+}
+
+static int FeeJoin(int a, int b)   // car parks merged: free when both are, paid when one is, else not told
+{
+    return a == b ? a : a == FEE_PAID || b == FEE_PAID ? FEE_PAID : FEE_UNKNOWN;
 }
 
 static int Mean(int sum, int count)   // rounded
@@ -144,7 +149,7 @@ static int Mean(int sum, int count)   // rounded
     return (sum + (sum >= 0 ? count / 2 : -count / 2)) / count;
 }
 
-int LayersMerge(LayerPoint* p, int n)
+static int Merge(LayerPoint* p, int n, const Nearness& by)
 {
     int* up = (int*)malloc(n * 4 * sizeof(int) + sizeof(int));   // a group's root; its sums from it, its points
     if (!up)
@@ -155,12 +160,13 @@ int LayersMerge(LayerPoint* p, int n)
         up[i] = i;
         dLat[i] = dLon[i] = count[i] = 0;
     }
-    Join(p, n, up);
+    Join(p, n, up, by);
     for (int i = 0; i < n; i++) {
         int r = Root(up, i);
         dLat[r] += p[i].lat - p[r].lat;
         dLon[r] += p[i].lon - p[r].lon;
         count[r]++;
+        p[r].fee = (unsigned char)FeeJoin(p[r].fee, p[i].fee);
     }
     int k = 0;
     for (int i = 0; i < n; i++) {
@@ -173,6 +179,17 @@ int LayersMerge(LayerPoint* p, int n)
     }
     free(up);
     return k;
+}
+
+int LayersMerge(LayerPoint* p, int n)
+{
+    return Merge(p, n, kGround);
+}
+
+int LayersMergeOnScreen(LayerPoint* p, int n, int px)
+{
+    Nearness by = { { 0, 0, px, px }, 1.0, true };   // bumps, car parks
+    return Merge(p, n, by);
 }
 
 // ---------------------------------------------------------------- the points in hand

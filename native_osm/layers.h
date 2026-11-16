@@ -16,8 +16,14 @@ void LayersPause(bool on);   // a region being written: the points in hand stay,
 void LayersDrop();
 
 // One point for one thing (the user 2026-11-12): traffic lights near one another (a crossing's approaches, 40 m) and
-// bumps (one each way of a divided road, 20 m) - one at their middle; car parks as they are. In place; the points left
+// bumps (one each way of a divided road; the user 2026-11-16: 40 m) - one at their middle; car parks as they are. In
+// place; the points left
 int LayersMerge(LayerPoint* p, int n);
+
+// Signs over one another on the screen (the user 2026-11-16): car parks and bumps whose signs overlap (centres at most
+// px apart across and along) - one at the middle of them all; a car park's fee: free when all are, paid when one is,
+// else not told. lat, lon hold the screen's y, x. Lights never merged here. In place; the signs left
+int LayersMergeOnScreen(LayerPoint* p, int n, int px);
 
 // The nearest point of that kind on the way ahead: along the course, at most maxM, at most kLayerWideM off the line;
 // *dist - its metres

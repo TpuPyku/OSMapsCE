@@ -1153,7 +1153,9 @@ static void LayerMergeChecks()
     Check(LayersMerge(two, 2) == 1 && two[0].lat == 53000054 && two[0].lon == 50000000 && two[0].kind == LAY_BUMP,
           "merge: a bump each way (12 m) - one, between them", NULL);
     LayerPoint apart[2] = { { 53000000, 50000000, LAY_BUMP, 0, 0 }, { 53000270, 50000000, LAY_BUMP, 0, 0 } };
-    Check(LayersMerge(apart, 2) == 2, "merge: bumps 30 m apart along a road - both", NULL);
+    Check(LayersMerge(apart, 2) == 1, "merge: bumps 30 m apart along a road - one (the user 2026-11-16: 40 m)", NULL);
+    LayerPoint far50[2] = { { 53000000, 50000000, LAY_BUMP, 0, 0 }, { 53000450, 50000000, LAY_BUMP, 0, 0 } };
+    Check(LayersMerge(far50, 2) == 2, "merge: bumps 50 m apart - both", NULL);
     LayerPoint east18[2] = { { 53000000, 50000000, LAY_BUMP, 0, 0 }, { 53000000, 50000270, LAY_BUMP, 0, 0 } };
     Check(LayersMerge(east18, 2) == 1, "merge: east of each other, 18 m - one (longitude's metres)", NULL);
     LayerPoint cross[5] = { { 53001180, 50001000, LAY_SIGNAL, 0, 0 }, { 53000820, 50001000, LAY_SIGNAL, 0, 0 },
@@ -1176,23 +1178,54 @@ static void LayerMergeChecks()
                             { 53000600, 50000000, LAY_SIGNAL, 0, 0 } };   // (33 m steps: a wide crossing's approaches)
     Check(LayersMerge(chain, 3) == 1 && chain[0].lat == 53000300, "merge: near one another in a row - one, the middle", NULL);
     Check(LayersMerge(two, 0) == 0, "merge: none", NULL);
-    // the edges (180 units of latitude: 20.02 m, 179: 19.90 m; 360: 40.03 m, 359: 39.92 m)
-    LayerPoint edge[2] = { { 53000000, 50000000, LAY_BUMP, 0, 0 }, { 53000180, 50000000, LAY_BUMP, 0, 0 } };
-    Check(LayersMerge(edge, 2) == 2, "merge: bumps just over 20 m - both", NULL);
-    edge[1].lat = 53000179;
-    Check(LayersMerge(edge, 2) == 1, "merge: bumps just under 20 m - one", NULL);
+    // the edges (360 units of latitude: 40.03 m, 359: 39.92 m)
+    LayerPoint edge[2] = { { 53000000, 50000000, LAY_BUMP, 0, 0 }, { 53000360, 50000000, LAY_BUMP, 0, 0 } };
+    Check(LayersMerge(edge, 2) == 2, "merge: bumps just over 40 m - both", NULL);
+    edge[0].lat = 53000000;
+    edge[1].lat = 53000359;
+    Check(LayersMerge(edge, 2) == 1, "merge: bumps just under 40 m - one", NULL);
     edge[0].kind = edge[1].kind = LAY_SIGNAL;
+    edge[0].lat = 53000000;
     edge[0].lat = 53000000;
     edge[1].lat = 53000360;
     Check(LayersMerge(edge, 2) == 2, "merge: lights just over 40 m - both", NULL);
     edge[0].lat = 53000000;
     edge[1].lat = 53000359;
     Check(LayersMerge(edge, 2) == 1, "merge: lights just under 40 m - one", NULL);
-    LayerPoint diag[2] = { { 53000000, 50000000, LAY_BUMP, 0, 0 }, { 53000135, 50000225, LAY_BUMP, 0, 0 } };
-    Check(LayersMerge(diag, 2) == 2, "merge: 15 m north and 15 m east (21 m) - both", NULL);
+    LayerPoint diag[2] = { { 53000000, 50000000, LAY_BUMP, 0, 0 }, { 53000270, 50000450, LAY_BUMP, 0, 0 } };
+    Check(LayersMerge(diag, 2) == 2, "merge: 30 m north and 30 m east (42 m) - both", NULL);
     LayerPoint half[2] = { { 53000000, 50000000, LAY_BUMP, 0, 0 }, { 53000101, 50000001, LAY_BUMP, 0, 0 } };
     Check(LayersMerge(half, 2) == 1 && half[0].lat == 53000051 && half[0].lon == 50000001,
           "merge: the middle rounded (half up)", NULL);
+}
+
+// Signs over one another on the screen (the user 2026-11-16): car parks and bumps - one at the middle of the ones around
+// (lat, lon: the screen's y, x; 24 px - a sign's width)
+static void LayerScreenChecks()
+{
+    LayerPoint two[2] = { { 100, 200, LAY_PARKING, FEE_PAID, 0 }, { 110, 220, LAY_PARKING, FEE_FREE, 0 } };
+    Check(LayersMergeOnScreen(two, 2, 24) == 1 && two[0].lat == 105 && two[0].lon == 210 && two[0].fee == FEE_PAID,
+          "screen: two car parks over each other - one between them; paid and free - paid", NULL);
+    LayerPoint free2[2] = { { 100, 200, LAY_PARKING, FEE_FREE, 0 }, { 100, 210, LAY_PARKING, FEE_FREE, 0 } };
+    Check(LayersMergeOnScreen(free2, 2, 24) == 1 && free2[0].fee == FEE_FREE, "screen: free and free - free", NULL);
+    LayerPoint told[2] = { { 100, 200, LAY_PARKING, FEE_UNKNOWN, 0 }, { 100, 210, LAY_PARKING, FEE_FREE, 0 } };
+    Check(LayersMergeOnScreen(told, 2, 24) == 1 && told[0].fee == FEE_UNKNOWN, "screen: not told and free - not told (never free)", NULL);
+    LayerPoint side[2] = { { 100, 200, LAY_PARKING, 0, 0 }, { 100, 225, LAY_PARKING, 0, 0 } };
+    Check(LayersMergeOnScreen(side, 2, 24) == 2, "screen: 25 px apart, side by side - both", NULL);
+    side[0].lon = 200;   // (both set again: the merge sorts them in place)
+    side[1].lon = 224;
+    Check(LayersMergeOnScreen(side, 2, 24) == 1, "screen: 24 px apart - one", NULL);
+    LayerPoint above[2] = { { 100, 200, LAY_BUMP, 0, 0 }, { 125, 200, LAY_BUMP, 0, 0 } };
+    Check(LayersMergeOnScreen(above, 2, 24) == 2, "screen: 25 px one above the other - both", NULL);
+    above[0].lat = 100;
+    above[1].lat = 124;
+    Check(LayersMergeOnScreen(above, 2, 24) == 1, "screen: 24 px one above the other - one", NULL);
+    LayerPoint row[3] = { { 100, 200, LAY_BUMP, 0, 0 }, { 100, 220, LAY_BUMP, 0, 0 }, { 100, 240, LAY_BUMP, 0, 0 } };
+    Check(LayersMergeOnScreen(row, 3, 24) == 1 && row[0].lon == 220, "screen: bumps in a row - one, the middle", NULL);
+    LayerPoint kinds[4] = { { 100, 200, LAY_BUMP, 0, 0 }, { 100, 200, LAY_PARKING, 0, 0 },
+                            { 100, 200, LAY_SIGNAL, 0, 0 }, { 100, 200, LAY_SIGNAL, 0, 0 } };
+    int m = LayersMergeOnScreen(kinds, 4, 24);
+    Check(m == 4, "screen: a bump and a car park at one place - each; lights never merged here", NULL);
 }
 
 static void LayerAheadChecks()
@@ -1372,6 +1405,7 @@ int main()
     ParkPriceChecks();
     LayerAheadChecks();
     LayerMergeChecks();
+    LayerScreenChecks();
     LimitChecks();
     MagnetChecks();
 
