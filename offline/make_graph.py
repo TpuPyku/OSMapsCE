@@ -63,7 +63,8 @@ HEADER = '<4s5I4i2IiI6I'
 # a car road as read: its node ids, class, one-way (1 forward, -1 backward, 0 both), roundabout, km/h, name, ref
 Way = namedtuple('Way', 'ids cls oneway rb speed name ref toll wid limit', defaults=(0, 0))   # wid: its OSM id; limit: km/h
 # a junction-to-junction part of a way: node indices a -> b, inner points, metres, its way's data, lights on it
-Piece = namedtuple('Piece', 'a b inner length cls oneway rb speed name signals gates toll wid limit', defaults=(0, 0))
+Piece = namedtuple('Piece', 'a b inner length cls oneway rb speed name signals gates toll wid limit wid2',
+                   defaults=(0, 0, 0))   # wid2: the way's id at the end b when not wid's (a joined piece - contract)
 # the countries' limits by the kind of road (maxspeed's "RU:urban" and the like): Russia's and its neighbours' rules
 kKindLimits = {'urban': 60, 'rural': 90, 'motorway': 110, 'living_street': 20, 'trunk': 90}
 
@@ -165,7 +166,7 @@ def turn_rule(tags):
 # The trunk graph (4b, the user 2026-10-27/29: from one region to another, Vladivostok - Moscow, without the internet):
 # the main roads only, their shapes simplified, a coarse grid - for the whole country
 TRUNK = dict(classes={'motorway', 'trunk', 'primary', 'motorway_link', 'trunk_link', 'primary_link'},
-             simplify_m=50, cell=200000, west=0)   # (west: Chukotka's east beyond 180 degrees left out)
+             simplify_m=50, cell=200000, west=0, chains=True)   # (west: Chukotka's east beyond 180 degrees left out)
 
 
 class Ways(osmium.SimpleHandler):
@@ -341,6 +342,62 @@ def main_network(nodes, pieces):
     return renumbered(nodes, [p for p in pieces if comp[p.a] == main and comp[p.b] == main])
 
 
+def end_wid(p, v):
+    """The OSM way's id at the piece's end v (a turn restriction names the way that reaches its junction)."""
+    return p.wid2 if v == p.b and p.wid2 else p.wid
+
+
+def ending_at(p, v):
+    """The piece drawn so that it ends at v (the other way round: its ends, shape, direction and ways' ids swapped)."""
+    if p.b == v:
+        return p
+    return p._replace(a=p.b, b=p.a, inner=p.inner[::-1], oneway=-p.oneway, wid=end_wid(p, p.b), wid2=p.wid)
+
+
+def contract(nodes, pieces):
+    """The pieces that only go on joined (the trunk graph, 2026-11-16: a road is split into OSM ways at each bridge,
+    lane change, name of a part - 66 % of Estonia's trunk nodes were such joints): a node with two pieces of one road
+    (class, name, speed, limit, ring, toll, one way or not alike; one way - one in, one out) is dropped and its two
+    pieces become one - the length, the lights and the gates summed, the shape through the node. A ring of such nodes
+    alone stays. The nodes left renumbered."""
+    at = [[] for _ in nodes]
+    for i, p in enumerate(pieces):
+        at[p.a].append(i)
+        at[p.b].append(i)
+    road = lambda p: (p.cls, p.name, p.speed, p.limit, p.rb, p.toll, p.oneway != 0)   # noqa: E731
+
+    def goes_on(v):
+        if len(at[v]) != 2 or at[v][0] == at[v][1]:
+            return False
+        x, y = pieces[at[v][0]], pieces[at[v][1]]
+        return road(x) == road(y) and ending_at(x, v).oneway == -ending_at(y, v).oneway
+
+    used, out = [False] * len(pieces), []
+    for i, p in enumerate(pieces):
+        if used[i] or (goes_on(p.a) and goes_on(p.b)):
+            continue
+        used[i] = True
+        cur = ending_at(p, p.a if goes_on(p.a) else p.b)   # from its end that is a junction
+        out.append(walk(cur, at, pieces, used, goes_on, nodes))
+    out += [p for i, p in enumerate(pieces) if not used[i]]
+    return renumbered(nodes, out)
+
+
+def walk(cur, at, pieces, used, goes_on, nodes):
+    """cur (from a junction) and the pieces after it joined, up to the next junction."""
+    v = cur.b
+    while goes_on(v):
+        rest = [k for k in at[v] if not used[k]]
+        if not rest:
+            break
+        used[rest[0]] = True
+        nxt = ending_at(pieces[rest[0]], v)   # (drawn to v: taken from v the other way round)
+        cur = cur._replace(b=nxt.a, inner=cur.inner + [nodes[v]] + nxt.inner[::-1], length=cur.length + nxt.length,
+                           signals=cur.signals + nxt.signals, gates=cur.gates + nxt.gates, wid2=nxt.wid)
+        v = cur.b
+    return cur
+
+
 def adjacency(pieces, n):   # each node's next nodes by the pieces' directions
     adj = [[] for _ in range(n)]
     for p in pieces:
@@ -472,12 +529,12 @@ def turn_rules(nodes, edges, pieces, rules, loc):
         v = at.get(tuple(loc[via])) if via in loc else None
         if v is None:
             continue
-        outs = {j for j, e in enumerate(edges[v]) if pieces[e[8]].wid in tos}
+        outs = {j for j, e in enumerate(edges[v]) if end_wid(pieces[e[8]], v) in tos}
         if not outs:
             continue
         forbid = outs if kind == 'no' else set(range(len(edges[v]))) - outs
         for u, k in into.get(v, []):
-            if pieces[edges[u][k][8]].wid in froms:
+            if end_wid(pieces[edges[u][k][8]], v) in froms:
                 banned.setdefault((u, k), (v, set()))[1].update(forbid)
     for (u, k), (v, forbid) in banned.items():
         nodes.append(nodes[v])
@@ -584,7 +641,7 @@ def write(out, nodes, first, flat, geom, names, bbox, grid, cell=kCell, limits=b
     return off[-1] + (len(cstart) + len(items)) * 4 + 4 + len(flat) * 2 + (pad + 4 + len(limits) if limits else 0)
 
 
-def build(src, out, classes=None, simplify_m=0, cell=kCell, west=None, max_cells=kMaxCells):
+def build(src, out, classes=None, simplify_m=0, cell=kCell, west=None, max_cells=kMaxCells, chains=False):
     w = Ways(classes)
     w.apply_file(src)
     locs = Locs(set(w.uses), west)
@@ -593,6 +650,8 @@ def build(src, out, classes=None, simplify_m=0, cell=kCell, west=None, max_cells
     nodes, names, pieces = make_pieces(w.ways, locs.loc, locs.signals, junction, simplify_m,
                                        Barriers(locs.gates, locs.blocks, locs.locked))
     nodes, pieces = main_network(nodes, pieces)
+    if chains:   # (the trunk graph: a region's keeps each way's nodes)
+        nodes, pieces = contract(nodes, pieces)
     edges, geom = directed(pieces, len(nodes))
     turn_rules(nodes, edges, pieces, w.rules, locs.loc)
     first, flat, piece_edge = flatten(edges)

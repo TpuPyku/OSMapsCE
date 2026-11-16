@@ -595,6 +595,61 @@ class Tools(unittest.TestCase):
         self.assertLessEqual(abs(sum(dm for _, _, dm, _, _ in edges) - sum(main)), 4)   # the same length, one piece
         self.assertEqual(len(edges), 2)               # (the side roads' junctions gone: one piece, both ways)
 
+    def test_trunk_chains_joined(self):
+        """The trunk graph's pieces that only go on (2026-11-16: 66 % of Estonia's trunk nodes - a road split into OSM
+        ways at bridges, lanes) joined into one: the length, the lights, the shape kept; each end keeps its own way's id
+        (the turn restrictions at a junction ask for the way that reaches it)."""
+        P = make_graph.Piece
+        nodes = [(0, 0), (0, 1000), (0, 2000), (0, 3000), (1000, 1000)]
+
+        def road(a, b, wid, name=1, oneway=0, inner=(), signals=0, gates=0):
+            return P(a, b, list(inner), 100, 1, oneway, False, 60, name, signals, gates, False, wid, 60)
+        got_nodes, got = make_graph.contract(nodes, [road(0, 1, 1, inner=[(0, 500)], signals=1), road(1, 2, 2, gates=1),
+                                                     road(3, 2, 3, inner=[(0, 2700), (0, 2300)], signals=1, gates=1)])
+        self.assertEqual(len(got), 1)
+        p = got[0]
+        self.assertEqual((got_nodes[p.a], got_nodes[p.b]), ((0, 0), (0, 3000)))
+        self.assertEqual(p.inner, [(0, 500), (0, 1000), (0, 2000), (0, 2300), (0, 2700)])   # the joints' points too
+        self.assertEqual((p.length, p.signals, p.gates, p.name, p.oneway), (300, 2, 2, 1, 0))
+        self.assertEqual((make_graph.end_wid(p, p.a), make_graph.end_wid(p, p.b)), (1, 3))
+        self.assertEqual(len(got_nodes), 2)                                       # the joints' nodes gone
+        # another name, another limit, a junction (three pieces): not joined
+        _, got = make_graph.contract(nodes, [road(0, 1, 1), road(1, 2, 2, name=2)])
+        self.assertEqual(len(got), 2)
+        _, got = make_graph.contract(nodes, [road(0, 1, 1), road(1, 2, 2)._replace(limit=90)])
+        self.assertEqual(len(got), 2)
+        _, got = make_graph.contract(nodes, [road(0, 1, 1), road(1, 2, 2), road(1, 4, 4)])
+        self.assertEqual(len(got), 3)
+        # one way: both into the joint - not joined; one in, one out (the second drawn backwards) - one, along the flow
+        _, got = make_graph.contract(nodes, [road(0, 1, 1, oneway=1), road(2, 1, 2, oneway=1)])
+        self.assertEqual(len(got), 2)
+        _, got = make_graph.contract(nodes, [road(0, 1, 1, oneway=1), road(1, 2, 2, oneway=0)])
+        self.assertEqual(len(got), 2)                                             # one way and both ways: not joined
+        got_nodes, got = make_graph.contract(nodes, [road(0, 1, 1, oneway=1), road(2, 1, 2, oneway=-1)])
+        self.assertEqual(len(got), 1)
+        p = got[0]
+        a, b = (p.a, p.b) if p.oneway > 0 else (p.b, p.a)
+        self.assertEqual((got_nodes[a], got_nodes[b]), ((0, 0), (0, 2000)))     # the flow: 0 -> 2
+        got_nodes, got = make_graph.contract(nodes, [road(1, 0, 1, oneway=-1, inner=[(0, 700), (0, 300)]),
+                                                     road(1, 2, 2, oneway=1)])   # (the first drawn backwards)
+        p = got[0]
+        a, b = (p.a, p.b) if p.oneway > 0 else (p.b, p.a)
+        self.assertEqual((got_nodes[a], got_nodes[b]), ((0, 0), (0, 2000)))
+        self.assertEqual(p.inner if p.oneway > 0 else p.inner[::-1], [(0, 300), (0, 700), (0, 1000)])
+        # a ring of joints alone: as it was
+        ring = [road(1, 2, 1), road(2, 4, 2), road(4, 1, 3)]
+        self.assertEqual(len(make_graph.contract(nodes, ring)[1]), 3)
+        self.assertTrue(make_graph.TRUNK['chains'])
+
+    def test_turn_rules_by_the_ends_way(self):
+        """A joined piece: a restriction's "from" way is the one at the end that reaches the junction."""
+        P = make_graph.Piece
+        e = lambda to, pi: (to, 10, 10, 0, 0, 0, 0, 0, pi)   # noqa: E731
+        for frm, made in ((7, 1), (1, 0)):
+            pieces = [P(2, 0, [], 1, 0, 1, False, 50, 0, 0, 0, False, 1, 0, 7), P(0, 1, [], 1, 0, 1, False, 50, 0, 0, 0, False, 5)]
+            nodes, lst = [(0, 0), (0, 1000), (0, -1000)], [[e(1, 1)], [], [e(0, 0)]]
+            self.assertEqual(make_graph.turn_rules(nodes, lst, pieces, [('no', {frm}, 100, {5})], {100: (0, 0)}), made)
+
     def test_trunk_graph_west_cut(self):
         """Chukotka's east beyond 180 degrees (negative longitudes) stretched the grid round the globe (2026-10-29:
         3601 x 385 cells, 5.5 MB of 26): the nodes west of `west` left out."""
