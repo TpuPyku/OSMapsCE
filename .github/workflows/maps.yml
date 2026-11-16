@@ -78,6 +78,21 @@ jobs:
           name: ${{ matrix.region }}
           path: dist/
           retention-days: 3
+      # its trunk roads for the job trunk (the user 2026-11-16: not every country fetched again for the graph - the
+      # regions' sources cover them all): ~1 MB of its source already here
+      - name: The region's trunk roads
+        run: |
+          sudo apt-get install -y osmium-tool >/dev/null
+          src=offline/work/${{ matrix.region }}.merged.osm.pbf
+          [ -f "$src" ] || src=offline/work/${{ matrix.region }}.osm.pbf
+          mkdir -p cut
+          osmium tags-filter "$src" w/highway=motorway,trunk,primary,motorway_link,trunk_link,primary_link -o cut/${{ matrix.region }}.pbf --overwrite
+          du -k cut/${{ matrix.region }}.pbf
+      - uses: actions/upload-artifact@v6
+        with:
+          name: cut-${{ matrix.region }}
+          path: cut/
+          retention-days: 3
 
   publish:
     needs: [build, trunk]   # (trunk: its date into the catalog first - this run's catalog keeps it)
@@ -117,7 +132,7 @@ jobs:
       - run: gh release upload maps dist/*.zip dist/catalog.json dist/outlines.json --clobber
       - name: The zips no longer in the catalog (regions merged or gone) removed
         run: |
-          keep=" catalog.json outlines.json trunk.zip $(python -c "import json; print(' '.join(r['zip'] for r in json.load(open('dist/catalog.json'))['regions']))") "
+          keep=" catalog.json outlines.json trunk.zip trunk-src.zip $(python -c "import json; print(' '.join(r['zip'] for r in json.load(open('dist/catalog.json'))['regions']))") "
           for a in $(gh release view maps --json assets --jq '.assets[].name'); do
             case "$keep" in *" $a "*) ;; *) gh release delete-asset maps "$a" -y ;; esac
           done
@@ -146,13 +161,13 @@ jobs:
 
   trunk:   # 4b (the user 2026-10-29; the new countries 2026-11-16): the trunk roads - motorway / trunk / primary with their
            # links (offline/make_graph.py TRUNK) - for routes from one region to another without the internet.
-           # Geofabrik's countries, each cut to the trunk roads at once (the disk: Russia alone is 4 GB), merged.
            # The new countries (2026-11-16): their primary roads too - the graph's chains joined (make_graph.contract),
            # all of them ~ Russia's and the CIS's graph before (a trial unjoined: 930 k nodes, 58 MB; Germany 23 MB).
-           # Less from the sources (the user 2026-11-16: Geofabrik refuses some runners - maybe for the volume): what
-           # openstreetmap.fr has from there (Russia, Ukraine, Poland, Czechia, Slovakia, Georgia, Armenia - 13 of ~19
-           # GB), and only in the Disk's runs (the 1st, the 15th) or by hand - the trunk roads change slowly.
-    if: ${{ inputs.only == 'all' || inputs.only == 'trunk' || github.event.schedule == '0 22 1,15 * *' }}
+           # Nothing fetched for it (the user 2026-11-16: Geofabrik refuses some runners - maybe for the volume; ~19 GB
+           # of countries each time): the regions' jobs cut their trunk roads out of their sources (cut-<region>); the
+           # cuts are kept in the release (trunk-src.zip) - a region not built this time keeps its previous cut.
+    needs: build
+    if: ${{ !cancelled() && (inputs.only == '' || inputs.only == 'all' || inputs.only == 'trunk') }}
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
@@ -162,25 +177,25 @@ jobs:
         with:
           python-version: '3.12'
       - run: sudo apt-get install -y osmium-tool && pip install osmium pmtiles
-      - name: The countries' trunk roads
+      - uses: actions/download-artifact@v7   # (none in a run of the trunk alone)
+        continue-on-error: true
+        with:
+          pattern: cut-*
+          path: cut
+          merge-multiple: true
+      - name: The regions' trunk roads (this run's, the others' from the release)
         run: |
-          df -h / | tail -1
-          mkdir -p cut dist
-          fr=https://download.openstreetmap.fr/extracts gf=https://download.geofabrik.de
-          for u in $fr/russia $fr/europe/ukraine $fr/europe/poland $fr/europe/czech_republic $fr/europe/slovakia \
-                   $fr/asia/georgia $fr/asia/armenia $gf/europe/belarus $gf/europe/moldova $gf/asia/kazakhstan \
-                   $gf/asia/uzbekistan $gf/asia/kyrgyzstan $gf/asia/tajikistan $gf/asia/turkmenistan $gf/asia/azerbaijan \
-                   $gf/europe/estonia $gf/europe/latvia $gf/europe/lithuania $gf/europe/germany $gf/europe/hungary; do
-            n=$(basename $u)
-            # (Geofabrik refuses some runners now and then - 2026-11-16: tried again, over IPv4)
-            curl -4 -sSfL --retry 10 --retry-delay 60 --retry-all-errors -o src.pbf "$u-latest.osm.pbf"
-            osmium tags-filter src.pbf w/highway=motorway,trunk,primary,motorway_link,trunk_link,primary_link \
-              -o cut/$n.pbf --overwrite
-            echo "$n: $(du -m src.pbf | cut -f1) MB -> $(du -m cut/$n.pbf | cut -f1) MB"
-            rm src.pbf
-          done
+          mkdir -p cut old dist
+          echo "this run: $(ls cut | wc -l) regions"
+          if gh release download maps -p trunk-src.zip -D old; then
+            unzip -q -n old/trunk-src.zip -d cut   # (-n: this run's cut wins)
+          fi
+          n=$(ls cut/*.pbf 2>/dev/null | wc -l)
+          echo "in all: $n regions"
+          [ "$n" -gt 0 ] || { echo "no cuts: run the regions first (only=all)"; exit 1; }
+          (cd cut && zip -q -9 ../trunk-src.zip *.pbf)
           osmium merge cut/*.pbf -o trunk.pbf --overwrite
-          du -m trunk.pbf
+          du -m trunk.pbf trunk-src.zip
       - name: The graph
         run: |
           /usr/bin/time -v python offline/make_graph.py trunk.pbf dist/trunk.grf trunk 2>&1 | \
@@ -195,7 +210,7 @@ jobs:
           retention-days: 7
       - name: Into the release maps (and how big it is now)
         run: |
-          gh release upload maps dist/trunk.zip --clobber
+          gh release upload maps dist/trunk.zip trunk-src.zip --clobber
           gh release view maps --json assets --jq '[.assets[].size] | add / 1e6 | "release maps: \(.) MB"'
       - name: Its build into the catalog (the app and OSMapsCE tell an older one on the card - 2026-10-30)
         run: |
