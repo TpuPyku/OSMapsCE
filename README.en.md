@@ -25,7 +25,7 @@ A navigation app on [OpenStreetMap](https://www.openstreetmap.org) maps for Wind
 - **On the Lada Vesta with VestaHome:** the theme color and a map widget on the home screen. During a route the widget shows the road and the maneuver, and other screens show the maneuver in the top bar.
 
 ## Outside Russia and the CIS
-Online mode is not tied to a region: map tiles, search and routing use worldwide services, so it should work elsewhere, although it has not been tested there. Offline maps cover Russia, the CIS, Estonia, Latvia, Lithuania, Poland (by voivodeship), Germany (by state), Czechia, Slovakia and Hungary; the trunk road graph between regions covers Russia and the CIS only for now. Traffic comes from Yandex and 2GIS, so coverage in other countries may be limited.
+Online mode is not tied to a region: map tiles, search and routing use worldwide services, so it should work elsewhere, although it has not been tested there. Offline maps cover Russia, the CIS, Estonia, Latvia, Lithuania, Poland (by voivodeship), Germany (by state), Czechia, Slovakia and Hungary; routes between regions follow the trunk roads of all these countries. Traffic comes from Yandex and 2GIS, so coverage in other countries may be limited.
 
 ## Installation
 1. Download the archive from [Releases](../../releases) and unpack the `OSMapsCE` folder to a memory card.
