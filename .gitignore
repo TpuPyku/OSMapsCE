@@ -13,3 +13,4 @@ offline/app_build.py
 *.mutator-orig
 offline/app.ico
 .mosapi
+OSMapsCE/favorites.txt

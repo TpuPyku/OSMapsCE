@@ -13,11 +13,17 @@ on:
         type: choice
         options: [all, trunk, app]
   schedule:
-    # the 1st and the 15th, 22:00 UTC = 01:00 Moscow (GitHub may start a scheduled run hours late - 2026-11-02:
-    # 03:00 queued at 10:12). Twice a month, not weekly: a whole run puts ~21 GB onto Yandex Disk, whose upload
-    # limit is per 30 days, twice the Disk (52 GB: ~104 GB) - weekly ran past it (2026-11-09: HTTP 423)
-    # (the regions now on the maps' own server - its secrets set; the Disk's without them)
+    # 22:00 UTC = 01:00 Moscow (GitHub may start a scheduled run hours late - 2026-11-02: 03:00 queued at 10:12).
+    # The own server weekly (Sunday's night); Yandex Disk only twice a month - the 1st and the 15th (the user
+    # 2026-11-16): a whole run puts ~21 GB onto the Disk, whose upload limit is per 30 days, twice the Disk (52 GB:
+    # ~104 GB) - weekly ran past it (2026-11-09: HTTP 423). The Disk's run is told by its cron ('0 22 1,15 * *').
+    - cron: '0 22 * * 0'
     - cron: '0 22 1,15 * *'
+
+# a Sunday that is the 1st or the 15th starts both: the second waits for the first (the same files on the server)
+concurrency:
+  group: maps
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -60,8 +66,8 @@ jobs:
       # Disk's upload limit ran out), without its key onto the owner's Yandex Disk; only its entry into the artifact
       - run: python offline/release_regions.py build ${{ matrix.region }} dist
         env:
-          # onto Yandex Disk as well only on the schedule's run (the user 2026-11-12: its upload limit; twice a month)
-          MAPS_DISK_TOO: ${{ github.event_name == 'schedule' && '1' || '' }}
+          # onto Yandex Disk as well only on the 1st/15th schedule's run (its cron; the Disk's upload limit)
+          MAPS_DISK_TOO: ${{ github.event.schedule == '0 22 1,15 * *' && '1' || '' }}
           YANDEX_DISK_TOKEN: ${{ secrets.YANDEX_DISK_TOKEN }}
           MAPS_SSH_KEY: ${{ secrets.MAPS_SSH_KEY }}
           MAPS_HOST: ${{ secrets.MAPS_HOST }}
@@ -79,7 +85,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
-      MAPS_DISK_TOO: ${{ github.event_name == 'schedule' && '1' || '' }}
+      MAPS_DISK_TOO: ${{ github.event.schedule == '0 22 1,15 * *' && '1' || '' }}
       YANDEX_DISK_TOKEN: ${{ secrets.YANDEX_DISK_TOKEN }}
       MAPS_SSH_KEY: ${{ secrets.MAPS_SSH_KEY }}
       MAPS_HOST: ${{ secrets.MAPS_HOST }}
