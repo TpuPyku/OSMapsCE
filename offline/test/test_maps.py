@@ -12,9 +12,11 @@ import sys
 import tempfile
 import unittest
 import unittest.mock
+import urllib.error
 import zipfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+os.environ['OSMAPS_LANG'] = 'ru'   # (the texts below are the Russian ones, whatever the PC's language)
 sys.path.insert(0, os.path.dirname(HERE))
 sys.path.insert(0, HERE)
 import make_region       # noqa: E402
@@ -91,7 +93,8 @@ class Maps(unittest.TestCase):
         with zipfile.ZipFile(buf, 'w') as z:
             z.writestr('trunk.grf', b'OSMG' * 100)
             z.writestr('region.txt', 'name=trunk\ndate=2026-10-31\n')
-        with unittest.mock.patch.object(maps_app, 'download', lambda url, tell: buf.getvalue()):
+        with unittest.mock.patch.object(maps_app, 'download', lambda url, tell: buf.getvalue()), \
+                unittest.mock.patch.object(release_regions.yadisk, 'public_listing', lambda url: {}):   # (no network)
             got = release_regions.publish_disk(self.dist, disk, self.planet(), '20261030')
         self.assertEqual(up[0][0], 'app:/maps/overview.zip')
         with zipfile.ZipFile(io.BytesIO(up[0][1])) as z:                        # one pack, as a region's: the map and the graph
@@ -109,34 +112,6 @@ class Maps(unittest.TestCase):
         os.makedirs(os.path.join(self.tmp, 'd2'))
         again = release_regions.catalog(os.path.join(self.tmp, 'd2'), got, {'tiny'})
         self.assertEqual((again['disk'], again['overview']), (got['disk'], got['overview']))
-
-    def test_ready_links(self):
-        """The ready archives (the user 2026-10-30: the app gets their links too): the chosen ones whole on the disk -
-        their download links (the overview too); none chosen - the disk's folder; no disk in the catalog - none."""
-        cat = {'disk': 'https://disk.yandex.ru/d/x', 'overview': {'zip': 'overview.zip'},
-               'regions': [{'name': 'a', 'full': {'zip': 'a.zip'}}, {'name': 'b'}]}
-        asked = []
-        href = lambda pub, name: asked.append(pub) or 'https://dl/' + name   # noqa: E731
-        self.assertEqual(maps_app.ready_links(cat, {'a', 'b', maps_app.OVERVIEW}, href),
-                         ['https://dl/a.zip', 'https://dl/overview.zip'])      # (b: not whole there)
-        self.assertEqual(set(asked), {'https://disk.yandex.ru/d/x'})
-        self.assertEqual(maps_app.ready_links(cat, set(), href), ['https://disk.yandex.ru/d/x'])
-        self.assertEqual(maps_app.ready_links({'regions': []}, {'a'}, href), [])
-
-    def test_ready_links_own_server(self):
-        """The maps' own server (the user 2026-11-09: Yandex Disk's upload limit ran out): the catalog's "files" -
-        the archives' folder on the web - those put there ("files" in their entry) by their links straight; the others
-        (a region not rebuilt since: kept from the previous catalog) still the disk's."""
-        cat = {'files': 'http://203.0.113.5/maps/', 'disk': 'https://disk.yandex.ru/d/x',
-               'overview': {'zip': 'overview.zip', 'files': True},
-               'regions': [{'name': 'a', 'full': {'zip': 'a.zip', 'files': True}}, {'name': 'b'},
-                           {'name': 'c', 'full': {'zip': 'c.zip'}}]}
-        href = lambda pub, name: 'https://dl/' + name   # noqa: E731
-        self.assertEqual(maps_app.ready_links(cat, {'a', 'b', 'c', maps_app.OVERVIEW}, href),
-                         ['http://203.0.113.5/maps/a.zip', 'https://dl/c.zip', 'http://203.0.113.5/maps/overview.zip'])
-        self.assertEqual(maps_app.ready_links(dict(cat, disk=None), {'a', 'c'}, href),
-                         ['http://203.0.113.5/maps/a.zip'])              # (c: no disk to have it of)
-        self.assertEqual(maps_app.ready_links(dict(cat, files=None), {'a'}, href), ['https://dl/a.zip'])
 
     def test_release_full_region_own_server(self):
         """A region put onto the own server: its entry tells it ("files") - the clients know it there, not on the
@@ -160,7 +135,8 @@ class Maps(unittest.TestCase):
         with zipfile.ZipFile(buf, 'w') as z:
             z.writestr('trunk.grf', b'OSMG')
             z.writestr('region.txt', 'name=trunk\ndate=2026-11-09\n')
-        with unittest.mock.patch.object(maps_app, 'download', lambda url, tell: buf.getvalue()):
+        with unittest.mock.patch.object(maps_app, 'download', lambda url, tell: buf.getvalue()), \
+                unittest.mock.patch.object(release_regions.yadisk, 'public_listing', lambda url: {}):   # (no network)
             got = release_regions.publish_disk(self.dist, store, self.planet(), '20261030')
         self.assertEqual((got['files'], got['disk']), ('http://203.0.113.5/maps/', 'https://disk.example/d/x'))
         self.assertIs(got['overview']['files'], True)
@@ -175,6 +151,55 @@ class Maps(unittest.TestCase):
                                                 tmp).KEY, 'files')
         self.assertEqual(release_regions.store({'YANDEX_DISK_TOKEN': 'T'}, tmp).KEY, 'disk')
         self.assertIsNone(release_regions.store({}, tmp))
+
+    def test_secure_first(self):
+        """The own server's archives over HTTPS first (the user 2026-11-12: its certificate for its address; Windows 7
+        may lack Let's Encrypt's root), plain HTTP if that fails before anything came; other links as they are."""
+        self.assertEqual(maps_app.secure_first('http://203.0.113.5/maps/a.zip'),
+                         ['https://203.0.113.5:9443/maps/a.zip', 'http://203.0.113.5/maps/a.zip'])
+        self.assertEqual(maps_app.secure_first('https://dl.example/a'), ['https://dl.example/a'])
+        asked = []
+
+        class Answer(io.BytesIO):
+            headers = {'Content-Length': '3'}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        def opener(req, timeout=0):
+            asked.append(req.full_url)
+            if req.full_url.startswith('https://'):
+                raise urllib.error.URLError('certificate verify failed')
+            return Answer(b'zip')
+        path = os.path.join(self.tmp, 'a.zip')
+        maps_app.download_any(maps_app.secure_first('http://203.0.113.5/maps/a.zip'), path, lambda p, t: None, opener)
+        self.assertEqual(asked, ['https://203.0.113.5:9443/maps/a.zip', 'http://203.0.113.5/maps/a.zip'])
+        with open(path, 'rb') as f:
+            self.assertEqual(f.read(), b'zip')
+        self.assertRaises(urllib.error.URLError, maps_app.download_any, ['https://x/a'], path, lambda p, t: None, opener)
+
+    def test_disk_copies(self):
+        """The disk's copies into the catalog (the user 2026-11-12: two sources, the disk's dated - older ones told):
+        each region's and the overview's {size, date} by the public folder's listing; none there - none."""
+        cat = {'regions': [{'name': 'a', 'zip': 'a.zip'}, {'name': 'b', 'zip': 'b.zip', 'disk': {'size': 1}}],
+               'overview': {'zip': 'overview.zip'}}
+        listing = {'a.zip': {'size': 10, 'date': '2026-11-05'}, 'overview.zip': {'size': 5, 'date': '2026-11-01'}}
+        got = release_regions.disk_copies(cat, listing)
+        self.assertEqual(got['regions'][0]['disk'], {'size': 10, 'date': '2026-11-05'})
+        self.assertNotIn('disk', got['regions'][1])   # (gone from the disk: not offered)
+        self.assertEqual(got['overview']['disk'], {'size': 5, 'date': '2026-11-01'})
+
+    def test_disk_too(self):
+        """The disk as well as the own server only on the schedule's run (the user 2026-11-12: its upload limit -
+        twice a month), with its token; without the own server the disk is the store itself."""
+        both = {'MAPS_SSH_KEY': 'K', 'MAPS_HOST': 'h', 'YANDEX_DISK_TOKEN': 'T', 'MAPS_DISK_TOO': '1'}
+        self.assertEqual(release_regions.also_disk(both).KEY, 'disk')
+        self.assertIsNone(release_regions.also_disk(dict(both, MAPS_DISK_TOO='')))
+        self.assertIsNone(release_regions.also_disk(dict(both, YANDEX_DISK_TOKEN='')))
+        self.assertIsNone(release_regions.also_disk({'YANDEX_DISK_TOKEN': 'T', 'MAPS_DISK_TOO': '1'}))
 
     def test_release_trunk_date(self):
         """The trunk roads' build in the catalog (the user 2026-10-30: an old graph on the card took the toll road -
@@ -484,13 +509,13 @@ class Maps(unittest.TestCase):
             self.assertTrue(app.tree['yscrollcommand'])                             # the list scrolls (2026-10-29)
             self.assertEqual(app.scroll.get(), (0.0, 1.0))
             y = app.tree.bbox('a_oblast')[1] + 5
-            app.click(type('E', (), {'y': y})())
+            app.click(type('E', (), {'x': 5, 'y': y})())
             self.assertEqual(app.chosen, {'a_oblast'})
             self.assertEqual(app.tree.item('a_oblast', 'tags'), ('chosen',))
             self.assertIn('выбрано 1 (2 МБ', app.status.get())
-            app.click(type('E', (), {'y': y})())
+            app.click(type('E', (), {'x': 5, 'y': y})())
             self.assertEqual(app.chosen, set())
-            app.click(type('E', (), {'y': 10000})())                                # no row there
+            app.click(type('E', (), {'x': 5, 'y': 10000})())                                # no row there
             self.assertEqual(app.chosen, set())
             app.pick_all()
             self.assertEqual(app.chosen, {'a_oblast', 'b_oblast'})
@@ -526,9 +551,40 @@ class Maps(unittest.TestCase):
                 app.write_chosen()
                 self.assertEqual(thread.call_args[1]['args'][1:], ([], drive, True, True))
                 app.on_done(None)
-                self.assertEqual(app.go['text'], 'Записать выбранные')
+                self.assertEqual(app.go['text'], 'Собрать выбранные карты')   # (renamed: the user 2026-11-12)
                 self.assertEqual(str(app.go['style']), 'Go.TButton')
                 self.assertFalse(app.go.instate(['disabled']))
+            self.assertEqual(app.tree.item('a_oblast', 'values')[3:], ('—', '—'))   # no ready zip: no buttons
+            app.cat = dict(cat, files='http://f/', regions=[dict(cat['regions'][0], full={'zip': 'a.zip', 'files': True}),
+                                                            cat['regions'][1]])
+            app.chosen = set()
+            app.refresh()
+            self.assertEqual(app.tree.item('a_oblast', 'values')[3:], ('⬇ скачать', '—'))
+            bx = app.tree.bbox('a_oblast', 'files')
+            with unittest.mock.patch.object(maps_app.threading, 'Thread') as thread:
+                app.click(type('E', (), {'x': bx[0] + 5, 'y': bx[1] + 5})())        # its button: that source's zip
+                self.assertEqual(app.chosen, set())                                 # (not picked)
+                self.assertEqual(thread.call_args[1]['args'][1:], ([('a_oblast', app.cat['regions'][0])], 'files',
+                                                                   drive))
+                self.assertEqual(app.go['text'], 'Отменить запись')                 # the bottom button cancels it
+                app.get_ready('a_oblast', 'files')
+                self.assertEqual(thread.call_count, 1)                              # not twice at once
+                app.on_done(None)
+                app.root.update()                                                   # (laid out: the buttons placed)
+                buttons = [(b['text'], str(b['cursor'])) for b in app.cell_buttons]
+                self.assertEqual(buttons, [(app.tree.item('a_oblast', 'values')[3], 'hand2')])   # a real button,
+                cell = app.tree.bbox('a_oblast', 'files')
+                put = {k: int(v) for k, v in app.cell_buttons[0].place_info().items() if k in 'x y width height'}
+                self.assertTrue(cell[0] < put['x'] and put['x'] + put['width'] < cell[0] + cell[2] and
+                                cell[1] < put['y'] and put['y'] + put['height'] < cell[1] + cell[3])   # in its cell
+                app.cell_buttons[0].invoke()                                        # the hand over it (2026-11-13)
+                self.assertEqual(thread.call_count, 2)
+                app.on_done(None)
+                bx = app.tree.bbox('b_oblast', 'disk')
+                app.click(type('E', (), {'x': bx[0] + 5, 'y': bx[1] + 5})())        # none there: told, nothing done
+                self.assertEqual(thread.call_count, 2)
+                self.assertIn('нет', app.status.get())
+            app.cat = cat
             app.chosen = {'a_oblast', 'b_oblast'}                                    # only b on the card
             asked = []
             with unittest.mock.patch.object(maps_app, 'ask', lambda title, text: asked.append(text) or False):
@@ -545,17 +601,6 @@ class Maps(unittest.TestCase):
                 app.remove_chosen()
             self.assertEqual(len(asked), 1)                                          # not asked
             self.assertIn('Нечего удалять', app.status.get())
-            opened = []
-            told = []
-            with unittest.mock.patch.object(maps_app.webbrowser, 'open', opened.append),                     unittest.mock.patch.object(maps_app, 'inform', lambda title, text: told.append(text)):
-                app.open_ready()                       # no disk in the catalog: told in a window (the user 2026-10-30:
-                self.assertEqual(opened, [])           # the status line unseen - "nothing happened")
-                self.assertIn('пока нет', told[0])
-                app.cat = dict(cat, disk='https://disk.yandex.ru/d/x')
-                app.chosen = set()
-                app.open_ready()
-                self.assertEqual(opened, ['https://disk.yandex.ru/d/x'])               # the folder
-                self.assertIn('в браузере', app.status.get())
         finally:
             app.root.destroy()
 
@@ -591,6 +636,147 @@ class Maps(unittest.TestCase):
         self.assertEqual([p for p, _ in told], [min(1.0, k * 100000 / len(body)) for k in range(1, 9)])   # 8 pieces
         self.assertEqual(told[-1], (1.0, '0.8 из 0.8 МБ'))
         self.assertEqual([p for p, _ in told], sorted(p for p, _ in told))
+
+    def test_ready_sources(self):
+        """A row's two buttons (the user 2026-11-12): the own server's whole zip (its entry's "files", the catalog's
+        folder), the disk's copy (its entry's "disk": dated dd.mm, older than the region's build - marked); none there -
+        '—'; the overview's entry the same."""
+        cat = {'files': 'http://f/maps/', 'disk': 'https://disk.yandex.ru/d/x',
+               'overview': {'zip': 'overview.zip', 'files': True, 'disk': {'date': '2026-11-01'}},
+               'regions': [{'name': 'a', 'date': '2026-11-10', 'zip': 'a.zip',
+                            'full': {'zip': 'a.zip', 'files': True}, 'disk': {'size': 5, 'date': '2026-11-05'}},
+                           {'name': 'b', 'date': '2026-11-05', 'zip': 'b.zip', 'full': {'zip': 'b.zip'},
+                            'disk': {'size': 5, 'date': '2026-11-05'}},
+                           {'name': 'c', 'date': '2026-11-05', 'zip': 'c.zip'}]}
+        a, b, c = cat['regions']
+        A = maps_app
+        self.assertEqual([A.source_ok(cat, e, A.FILES) for e in (a, b, c, cat['overview'])], [True, False, False, True])
+        self.assertEqual([A.source_ok(cat, e, A.DISK) for e in (a, b, c, cat['overview'])], [True, True, False, True])
+        self.assertFalse(A.source_ok(dict(cat, files=None), a, A.FILES))      # no server folder in the catalog
+        self.assertFalse(A.source_ok(dict(cat, disk=None), a, A.DISK))
+        self.assertEqual(A.whole_url(cat, a, A.FILES), 'http://f/maps/a.zip')
+        self.assertEqual(A.whole_url(cat, cat['overview'], A.FILES), 'http://f/maps/overview.zip')
+        href = lambda pub, name: 'https://dl/%s/%s' % (pub[-1], name)   # noqa: E731
+        self.assertEqual(A.whole_url(cat, b, A.DISK, href), 'https://dl/x/b.zip')
+        self.assertEqual((A.disk_old(a), A.disk_old(b), A.disk_old(c)), (True, False, False))
+        self.assertEqual(A.source_cell(cat, a, A.FILES), '⬇ скачать')
+        self.assertEqual(A.source_cell(cat, a, A.DISK), '⬇ 05.11 ⚠ старая')   # older than the region's build
+        self.assertEqual(A.source_cell(cat, b, A.DISK), '⬇ 05.11')
+        self.assertEqual((A.source_cell(cat, b, A.FILES), A.source_cell(cat, c, A.DISK)), ('—', '—'))
+        self.assertEqual(A.source_cell(cat, dict(b, disk={'size': 5}), A.DISK), '⬇ скачать')   # (no date known)
+
+    def test_far_regions_last(self):
+        """Regions outside the former USSR (the user 2026-11-12): last in the list, each group by its title, marked."""
+        cat = {'regions': [{'name': 'bavaria', 'title': 'Германия — Бавария', 'far': True},
+                           {'name': 'samara', 'title': 'Самарская область'},
+                           {'name': 'poland', 'title': 'Польша', 'far': True},
+                           {'name': 'crimea', 'title': 'Крым'}]}
+        self.assertEqual([r['name'] for r in maps_app.matching(cat, '')], ['crimea', 'samara', 'bavaria', 'poland'])
+        self.assertEqual([r['name'] for r in maps_app.matching(cat, 'по')], ['poland'])   # the search as before
+        self.assertEqual(maps_app.row_title(cat['regions'][2]), maps_app.FAR_MARK + 'Польша')
+        self.assertEqual(maps_app.row_title(cat['regions'][1]), 'Самарская область')
+
+    def test_ready_job(self):
+        """What a row's button gets: the region whole, the overview's pack when the drive needs it (none there, an
+        older trunk graph) and that source has it; the overview's own row - the pack; nothing there - nothing."""
+        ov = {'zip': 'overview.zip', 'files': True, 'date': 't2'}
+        a = {'name': 'a', 'full': {'zip': 'a.zip', 'files': True}}
+        cat = {'files': 'http://f/', 'overview': ov, 'regions': [a, {'name': 'b'}]}
+        J, F = maps_app.ready_job, maps_app.FILES
+        self.assertEqual(J(cat, 'a', F, None, None), [('a', a), ('overview', ov)])          # none on the drive
+        self.assertEqual(J(cat, 'a', F, '20261101', 't1'), [('a', a), ('overview', ov)])    # an older graph
+        self.assertEqual(J(cat, 'a', F, '20261101', 't2'), [('a', a)])                      # the pack fresh
+        self.assertEqual(J(dict(cat, overview=dict(ov, date=None)), 'a', F, '20261101', 't1'), [('a', a)])
+        self.assertEqual(J(cat, 'overview', F, '20261101', 't2'), [('overview', ov)])
+        self.assertEqual(J(cat, 'a', maps_app.DISK, None, None), [])                         # not on the disk
+        self.assertEqual(J(cat, 'b', F, None, None), [('overview', ov)])                     # (b: no zip - the caller
+                                                                                            # tells, gets nothing)
+
+    def test_download_to_and_unpack(self):
+        """A whole zip into a file in pieces (.part until whole), its progress told; unpacked into its folder - the
+        old region.txt off first, the new one last, the zip's paths never followed."""
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, 'w') as z:
+            z.writestr('region.txt', 'date=d2\ntiles=t\n')
+            z.writestr('tiles.vtp', b'T' * 1000)
+            z.writestr('../evil.txt', 'x')
+            z.writestr('sub/x.txt', 'x')
+        body = buf.getvalue()
+
+        class Resp(io.BytesIO):
+            headers = {'Content-Length': str(len(body))}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                self.close()
+        told = []
+        zpath = os.path.join(self.tmp, 'a.zip')
+        maps_app.download_to('http://x/a.zip', zpath, lambda part, text: told.append(part),
+                             lambda req, timeout: Resp(body), piece=300)
+        self.assertEqual(read(zpath), body)
+        self.assertFalse(os.path.exists(zpath + '.part'))
+        self.assertEqual(told[-1], 1.0)
+        dst = os.path.join(self.tmp, 'S', 'OSMapsData', 'a')
+        os.makedirs(dst)
+        with open(os.path.join(dst, 'region.txt'), 'w') as f:
+            f.write('date=d1\n')
+        order = []
+        keep = maps_app.zipfile.ZipFile.open
+        with unittest.mock.patch.object(maps_app.zipfile.ZipFile, 'open',
+                                        lambda z, n, *a: order.append(n) or keep(z, n, *a)):
+            maps_app.unpack_whole(zpath, dst)
+        self.assertEqual(order, ['tiles.vtp', 'region.txt'])                      # region.txt last
+        self.assertEqual(sorted(os.listdir(dst)), ['region.txt', 'tiles.vtp'])
+        self.assertEqual(maps_app.installed(os.path.join(self.tmp, 'S')), {'a': 'd2'})
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, 'S', 'OSMapsData', 'evil.txt')))
+
+    def test_app_fetches_a_ready_zip(self):
+        """A row's button's job: the zips (the region's, the overview's) into the PC's temp folder, unpacked, then onto
+        the card; one bar for it all; the old trunk folder gone with the pack; the temp folder gone after."""
+        def zipped(files):
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, 'w') as z:
+                for n, data in files.items():
+                    z.writestr(n, data)
+            return buf.getvalue()
+        bodies = {'http://f/a.zip': zipped({'tiles.vtp': b'T' * 100, 'region.txt': 'date=d\ntiles=t\n'}),
+                  'http://f/overview.zip': zipped({'overview.vtp': b'O', 'trunk.grf': b'G',
+                                                   'region.txt': 'name=overview\ntiles=t\ndate=g\n'})}
+        ov = {'zip': 'overview.zip', 'files': True}
+        a = {'name': 'a', 'title': 'A', 'full': {'zip': 'a.zip', 'files': True}}
+        app = type('A', (), {})()
+        app.news, app.cat = __import__('queue').Queue(), {'files': 'http://f/', 'overview': ov, 'regions': [a]}
+        app.stop = __import__('threading').Event()
+        app.tell = lambda head, part, text: maps_app.App.tell(app, head, part, text)
+        got = []
+
+        def download_to(url, path, tell):
+            got.append(url)
+            if url.startswith('https://'):   # (the server's certificate refused: plain HTTP next)
+                raise OSError('certificate verify failed')
+            tell(1.0, 'done')
+            with open(path, 'wb') as f:
+                f.write(bodies[url])
+        target = os.path.join(self.tmp, 'E')
+        os.makedirs(os.path.join(target, 'OSMapsData', 'trunk'))
+        patch = unittest.mock.patch.object
+        with patch(maps_app, 'download_to', download_to), \
+                patch(maps_app.tempfile, 'gettempdir', lambda: os.path.join(self.tmp, 'T')):
+            maps_app.App.work(app, maps_app.App.fetch_ready.__get__(app), [('a', a), ('overview', ov)], 'files', target)
+        news = []
+        while not app.news.empty():
+            news.append(app.news.get())
+        self.assertEqual(got, ['https://f:9443/a.zip', 'http://f/a.zip', 'https://f:9443/overview.zip', 'http://f/overview.zip'])
+        bar = [v for k, v in news if k == 'progress']
+        self.assertEqual(bar[:4], [0, 1 / 3, 1 / 3, 2 / 3])
+        self.assertEqual((bar[-1], bar), (1.0, sorted(bar)))
+        self.assertEqual(maps_app.installed(target), {'a': 'd'})
+        self.assertEqual((maps_app.overview_date(target), maps_app.trunk_date(target)), ('t', 'g'))
+        self.assertFalse(os.path.exists(os.path.join(target, 'OSMapsData', 'trunk')))
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, 'T', maps_app.STAGE, 'ready')))
+        self.assertTrue(any(k == 'status' and v.startswith('Готово с сервера: A, ') for k, v in news), news)
 
     installs = []
 
@@ -856,6 +1042,102 @@ class Maps(unittest.TestCase):
         kinds = {'C:\\': 3, 'E:\\': 2, 'F:\\': 2}                          # 2: removable (a card, a flash drive)
         mask = 1 << 2 | 1 << 4 | 1 << 5                                    # C:, E:, F:
         self.assertEqual(maps_app.removable_drives(lambda: mask, kinds.get), ['E:\\', 'F:\\'])
+
+
+class English(unittest.TestCase):
+    """The loader in English (the user 2026-11-12): each Russian text through T, its English one in EN."""
+
+    def texts(self):
+        """The source's Cyrillic strings outside docstrings, and whether each is T's argument."""
+        import ast
+        tree = ast.parse(io.open(maps_app.__file__, encoding='utf-8').read())
+        docs = set()
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Module, ast.FunctionDef, ast.ClassDef)) and node.body and \
+                    isinstance(node.body[0], ast.Expr) and isinstance(node.body[0].value, ast.Constant):
+                docs.add(id(node.body[0].value))
+        wrapped = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and getattr(node.func, 'id', '') == 'T' and node.args:
+                wrapped.add(id(node.args[0]))
+        cyr = lambda v: any('\u0400' <= ch <= '\u04ff' for ch in v)   # noqa: E731
+        return [(n.value, id(n) in wrapped) for n in ast.walk(tree)
+                if isinstance(n, ast.Constant) and isinstance(n.value, str) and cyr(n.value) and id(n) not in docs]
+
+    def test_every_text_translated(self):
+        import re
+        texts = self.texts()
+        self.assertGreater(len(texts), 40)
+        self.assertEqual([t for t, ok in texts if not ok], [], 'Russian texts not through T')
+        self.assertEqual([t for t, _ in texts if t not in maps_app.EN], [], 'no English for these')
+        spec = re.compile(r'%[-.0-9]*[sdf]')
+        for ru, en in maps_app.EN.items():
+            self.assertFalse(any('\u0400' <= ch <= '\u04ff' for ch in en), en)
+            self.assertEqual(spec.findall(ru), spec.findall(en), ru)
+        used = {t for t, _ in texts}
+        self.assertEqual([k for k in maps_app.EN if k not in used], [], 'English for texts no longer there')
+
+    def test_t(self):
+        with unittest.mock.patch.object(maps_app, 'LANG', 'en'):
+            self.assertEqual(maps_app.T('Поиск:'), 'Search:')
+            self.assertEqual(maps_app.T('unknown'), 'unknown')
+        self.assertEqual(maps_app.T('Поиск:'), 'Поиск:')
+
+    def test_choose_lang(self):
+        pref = os.path.join(tempfile.mkdtemp(), 'lang')
+        self.assertEqual(maps_app.choose_lang({'OSMAPS_LANG': 'en'}, pref, lambda: 0x419), 'en')
+        self.assertEqual(maps_app.choose_lang({}, pref, lambda: 0x419), 'ru')      # Russian Windows
+        self.assertEqual(maps_app.choose_lang({}, pref, lambda: 0x409), 'en')      # any other
+        self.assertEqual(maps_app.choose_lang({}, pref, lambda: 0x422), 'en')
+        maps_app.save_lang(pref, 'en')
+        self.assertEqual(maps_app.choose_lang({}, pref, lambda: 0x419), 'en')      # the saved choice first
+        maps_app.save_lang(pref, 'ru')
+        self.assertEqual(maps_app.choose_lang({}, pref, lambda: 0x409), 'ru')
+        with open(pref, 'w') as f:
+            f.write('xx')
+        self.assertEqual(maps_app.choose_lang({}, pref, lambda: 0x409), 'en')      # nonsense saved: as if none
+        self.assertEqual(maps_app.choose_lang({}, pref, None), 'ru')               # the language not known
+
+    def test_switch(self):
+        """"RU / EN": the other language kept, the app started anew in it; not while writing."""
+        import tkinter
+        import tkinter.ttk
+        cat = {'regions': [{'name': 'a_oblast', 'title': 'Альфа', 'size': 2e6, 'date': 'd2'}]}
+        tmp = tempfile.mkdtemp()
+        pref = os.path.join(tmp, 'lang')
+        started = []
+        patch = unittest.mock.patch.object
+        with patch(maps_app, 'load_catalog', lambda: cat), patch(maps_app, 'load_outlines', lambda: {}), \
+                patch(maps_app, 'removable_drives', lambda: [tmp]):
+            app = maps_app.App(tkinter, tkinter.ttk)
+        try:
+            app.root.geometry('+-3000+-3000')
+            with patch(maps_app, 'LANG_FILE', pref), patch(maps_app.subprocess, 'Popen', started.append):
+                app.go.configure(text=maps_app.BUSY)
+                app.switch_lang()
+                self.assertEqual((started, os.path.exists(pref)), ([], False))      # writing: no
+                self.assertEqual(app.status.get(), 'Идёт запись')
+                app.go.configure(text=maps_app.GO)
+                app.switch_lang()
+            with open(pref) as f:
+                self.assertEqual(f.read(), 'en')
+            self.assertEqual(len(started), 1)
+            self.assertEqual(started[0][0], sys.executable)
+        finally:
+            try:
+                app.root.destroy()
+            except tkinter.TclError:
+                pass                                                           # (the switch closed it)
+
+    def test_english_titles(self):
+        far = {'name': 'dolnoslaskie', 'title': 'Польша — Нижнесилезское воеводство', 'far': True}
+        near = {'name': 'moscow_oblast', 'title': 'Московская область'}
+        with unittest.mock.patch.object(maps_app, 'LANG', 'en'):
+            self.assertEqual(maps_app.region_title(near), 'Moscow Oblast')
+            self.assertEqual(maps_app.row_title(far), maps_app.FAR_MARK + 'Dolnoslaskie')
+            self.assertEqual(maps_app.region_title({'name': 'czech_republic'}), 'Czech Republic')
+        self.assertEqual(maps_app.region_title(near), 'Московская область')
+        self.assertEqual(maps_app.region_title({'name': 'x_y'}), 'x_y')            # no title: its name
 
 
 if __name__ == '__main__':

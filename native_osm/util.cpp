@@ -138,6 +138,7 @@ void ConfigDefaults()
     g_cfg.traffic = 1;
     g_cfg.layerBumps = 1;
     g_cfg.voice = 1;
+    g_cfg.voiceVol = 3;
     g_cfg.trafficSrc = TRF_YANDEX;
     g_cfg.follow = 1;
     g_cfg.trafficTtlMin = 10;
@@ -274,6 +275,7 @@ static void ConfigSet(const char* key, const char* val)
     else if (!strcmp(key, "junction"))     g_cfg.junction = atoi(val) != 0;
     else if (!strcmp(key, "no_toll"))      g_cfg.noToll = atoi(val) != 0;
     else if (!strcmp(key, "voice"))        g_cfg.voice = atoi(val) != 0;
+    else if (!strcmp(key, "voice_vol"))    g_cfg.voiceVol = Clamp(atoi(val), 1, 3);
     else if (!strcmp(key, "detail"))       g_cfg.detail = Clamp(atoi(val), 0, 3);
     else if (!strcmp(key, "log"))          g_cfg.log = atoi(val) != 0;
     else if (!strcmp(key, "tilt"))         g_cfg.tilt = atoi(val) != 0;
@@ -360,6 +362,8 @@ void ConfigSave()
         "no_toll=%d\r\n"
         "; the voice prompts on the route: 1 on (Voice\\ru, Voice\\en beside the program)\r\n"
         "voice=%d\r\n"
+        "; their volume: 1 quiet, 2 medium, 3 loud (as recorded)\r\n"
+        "voice_vol=%d\r\n"
         "; the vector map's detail: 0 auto (by the device's speed), 1 full, 2 medium, 3 fast\r\n"
         "detail=%d\r\n"
         "; the third person's view (the 3D button: heading-up from z15): 1 on\r\n"
@@ -399,7 +403,7 @@ void ConfigSave()
         "map_w=%d\r\n"
         "map_h=%d\r\n",
         g_cfg.lon, g_cfg.lat, g_cfg.lastLon, g_cfg.lastLat, g_cfg.lang, g_cfg.z, g_cfg.traffic, g_cfg.trafficRoute, g_cfg.parking, g_cfg.layerSignals, g_cfg.layerBumps, kTrafficNames[g_cfg.trafficSrc],
-        g_cfg.follow, g_cfg.night, g_cfg.vector, g_cfg.junction, g_cfg.noToll, g_cfg.voice, g_cfg.detail, g_cfg.tilt, g_cfg.trafficTtlMin, g_cfg.yandexLimit, g_cfg.twogisLimit,
+        g_cfg.follow, g_cfg.night, g_cfg.vector, g_cfg.junction, g_cfg.noToll, g_cfg.voice, g_cfg.voiceVol, g_cfg.detail, g_cfg.tilt, g_cfg.trafficTtlMin, g_cfg.yandexLimit, g_cfg.twogisLimit,
         g_cfg.autoReserve, g_cfg.cacheMb, g_cfg.cacheKb, g_cfg.cacheDays, g_cfg.reqDay,
         g_cfg.yandexCount, g_cfg.twogisCount, g_cfg.osmCount, g_cfg.apiLimit, g_cfg.apiCount,
         g_cfg.gpsEnabled, DeviceName(), port, DeviceName(), g_cfg.gpsBaud, kill, g_cfg.hideTaskbar, g_cfg.log,

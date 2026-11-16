@@ -594,7 +594,8 @@ static void FreeParsed(VTile& t)
 // A tile's names: places at their point, streets at the middle of their longest segment (dx, dy: the segment).
 // Only the ones whose point is inside the tile: the tiles' buffers repeat their neighbours' names.
 struct VLabel { unsigned char kind, rank, minz; short x, y, dx, dy; int name; };
-struct VLabelSet { MapRequest key; VLabel* l; int n; wchar_t* names; int nn; DWORD useTick; };
+struct VLabelSet { MapRequest key; VLabel* l; int n; wchar_t* names; int nn; DWORD useTick; unsigned kinds; };
+// (kinds: a bit (1 << kind) for each kind of label it has - Deeper: a z14 label yields only to its own kind)
 enum { kLabelSets = 48 };       // a z13 view needs ~24 data tiles
 static VLabelSet s_labels[kLabelSets];
 
@@ -690,8 +691,10 @@ static void LabelsFrom(const VTile& t)
         return;
     for (int i = 0; i < t.nf; i++) {
         VLabel l;
-        if (t.f[i].name >= 0 && LabelOf(t, t.f[i], l))
+        if (t.f[i].name >= 0 && LabelOf(t, t.f[i], l)) {
             set->l[set->n++] = l;
+            set->kinds |= 1u << l.kind;
+        }
     }
     set->key = t.key;
     set->useTick = GetTickCount();
@@ -1188,12 +1191,33 @@ static bool LocalFrom(const MapRequest& r, const MapRequest& key, bool cached, I
     return ok;
 }
 
+// A pack's z15 tile read for its labels only (the house numbers; parsed once, as a drawn tile's)
+static void PackLabels(const MapRequest& key)
+{
+    EnterCriticalSection(&s_cs);
+    bool have = Parsed(key, NULL, 0) != NULL;
+    LeaveCriticalSection(&s_cs);
+    unsigned char* data = NULL;
+    int len = 0;
+    if (have || !TileData(key, false, &data, &len))
+        return;
+    if (len && data[0] == 0x1A) {
+        EnterCriticalSection(&s_cs);
+        Parsed(key, data, len);
+        LeaveCriticalSection(&s_cs);
+    }
+    free(data);
+}
+
 // A shown tile from the data at hand (the user 2026-10-29: no waiting for the download thread's queue where the data
-// is here): the region's pack's z15 tile (the house numbers), else the z14 one - the pack's, the cache's file
+// is here): the map from the z14 one - the pack's, the cache's file; a pack's z15 tile for its labels only (2026-11-11:
+// the packs' z15 has the house numbers only - the same roads and houses again were 300 of the Moscow oblast's 530 MB)
 bool VTileLocal(const MapRequest& r, Image* out, bool draft)
 {
     MapRequest p = VTileDataAt(r, VEC_PACKZ), d = VTileData(r);
-    return (!SameKey(p, d) && LocalFrom(r, p, false, out, draft)) || LocalFrom(r, d, true, out, draft);
+    if (!SameKey(p, d))
+        PackLabels(p);
+    return LocalFrom(r, d, true, out, draft);
 }
 
 void VTileInit()   // before the download thread starts
@@ -1271,10 +1295,12 @@ static void NamePaint(HDC dc, int x, int y, void* arg)
     ExtTextOut(dc, x, y, 0, NULL, a->s, (UINT)a->n, NULL);
 }
 
-// The name at (x, y), inside the box l, t, r, b: as a stamp (stamp.cpp), the dc's font; 3 px around for the halo
+// The name at (x, y), inside the box l, t, r, b: as a stamp (stamp.cpp), the dc's font. The stamp's canvas wider than
+// the box (the user 2026-11-14 on the unit: long names cut, Ленинградский проспект at z16 - CE's turned text runs past
+// the box measured unturned): 3 px for the halo and a twelfth of the box's size; the box itself stays the placing's.
 static void Name(HDC dc, int x, int y, const wchar_t* s, int n, const Style& st, bool halo, int l, int t, int r, int b)
 {
-    enum { kM = 3 };
+    int kM = 3 + (r - l + b - t) / 12;
     HGDIOBJ font = GetCurrentObject(dc, OBJ_FONT);
     NameArg a = { s, n, font, &st, halo };
     COLORREF c = RGB(st.r, st.g, st.b), ch = halo ? RGB(st.cr, st.cg, st.cb) : c;
@@ -1548,7 +1574,8 @@ static void PlaceLabel(LabelView& v, int kind, HFONT pf, const VLabelSet& set, c
         s_placed[v.np++] = box;
 }
 
-// A z14 tile's label in a quarter a pack's z15 tile has its own labels for (drawn instead: no name twice)
+// A z14 tile's label in a quarter a pack's z15 tile has labels of its kind for (drawn instead: no name twice); of
+// another kind it stays (2026-11-11: a pack's z15 has the house numbers only - the street names are the z14 tile's)
 static bool Deeper(const VLabelSet& set, const VLabel& lb)
 {
     if (set.key.z != VEC_ZBASE + VEC_PACKZ - 1)
@@ -1556,7 +1583,8 @@ static bool Deeper(const VLabelSet& set, const VLabel& lb)
     MapRequest quarter = { SRC_OSM, VEC_ZBASE + VEC_PACKZ, set.key.x * 2 + (lb.x >= kExtent / 2),
                            set.key.y * 2 + (lb.y >= kExtent / 2) };
     VLabelSet* oldest;
-    return Recent(s_labels, kLabelSets, quarter, oldest) != NULL;
+    const VLabelSet* q = Recent(s_labels, kLabelSets, quarter, oldest);
+    return q && (q->kinds & (1u << lb.kind));
 }
 
 static void DrawSet(LabelView& v, const LabelPass& p, HFONT pf, const VLabelSet& set)   // one tile's labels of a pass
@@ -1630,4 +1658,82 @@ void VLabelsDraw(HDC dc, const RECT& mr, double cx, double cy, double vx, double
     if (v.font0)
         SelectObject(dc, v.font0);
     LogLabelTime(GetTickCount() - t0, v.np - navoid);
+}
+
+// ---------------------------------------------------------------- tunnels near a place (the dead reckoning's gate)
+
+static bool NearSeg(int u, int v, int x0, int y0, int x1, int y1, int r)   // (u, v) within r of the segment
+{
+    double dx = x1 - x0, dy = y1 - y0, len2 = dx * dx + dy * dy;
+    double k = len2 > 0 ? ((u - x0) * dx + (v - y0) * dy) / len2 : 0;
+    k = k < 0 ? 0 : k > 1 ? 1 : k;
+    double ex = x0 + k * dx - u, ey = y0 + k * dy - v;
+    return ex * ex + ey * ey <= (double)r * r;
+}
+
+static bool FeatNear(const VTile& t, const Feat& f, int u, int v, int r)   // any of its parts' segments
+{
+    for (int p = 0; p < f.nparts; p++) {
+        const int* part = t.parts + 2 * (f.part0 + p);
+        const short* q = t.pts + 2 * part[0];
+        for (int i = 1; i < part[1]; i++)
+            if (NearSeg(u, v, q[2 * i - 2], q[2 * i - 1], q[2 * i], q[2 * i + 1], r))
+                return true;
+    }
+    return false;
+}
+
+static bool RoadTunnel(const Feat& f)   // a road's (not a railway's: the metro) under the ground
+{
+    return f.kind >= K_SERVICE && f.kind <= K_MAJOR && f.level < 0;
+}
+
+static bool BoxNear(const Feat& f, int u, int v, int r)
+{
+    return u >= f.x0 - r && u <= f.x1 + r && v >= f.y0 - r && v <= f.y1 + r;
+}
+
+static bool TunnelNear(const VTile& t, int u, int v, int r)
+{
+    for (int i = 0; i < t.nf; i++)
+        if (RoadTunnel(t.f[i]) && BoxNear(t.f[i], u, v, r) && FeatNear(t, t.f[i], u, v, r))
+            return true;
+    return false;
+}
+
+bool VTileTunnelIn(const MapRequest& key, const unsigned char* data, int len, int u, int v, int r)
+{
+    EnterCriticalSection(&s_cs);
+    VTile* t = Parsed(key, data, len);
+    bool hit = t && TunnelNear(*t, u, v, r);
+    LeaveCriticalSection(&s_cs);
+    return hit;
+}
+
+void VTileTunnelPlace(double lon, double lat, double m, MapRequest* key, int* u, int* v, int* r)
+{
+    enum { kZ = 14, kUnits = 4096 };
+    double world = (double)TILE * (1 << kZ), sl = sin(lat * M_PI / 180);   // (Web Mercator, as util.cpp GeoToWorld)
+    double x = (lon + 180) / 360 * world, y = (0.5 - log((1 + sl) / (1 - sl)) / (4 * M_PI)) * world;
+    MapRequest k = { SRC_OSM, VEC_ZBASE + kZ, (int)(x / TILE), (int)(y / TILE) };
+    *key = k;
+    *u = (int)((x - k.x * TILE) * kUnits / TILE);
+    *v = (int)((y - k.y * TILE) * kUnits / TILE);
+    *r = (int)(m / (40075016.686 * cos(lat * M_PI / 180) / (1 << kZ) / kUnits) + 0.5);
+}
+
+bool VTileTunnelNear(double lon, double lat, double m)
+{
+    MapRequest key;
+    int u, v, r;
+    VTileTunnelPlace(lon, lat, m, &key, &u, &v, &r);
+    if (VTileTunnelIn(key, NULL, 0, u, v, r))   // (parsed already: the view's own tile, mostly)
+        return true;
+    unsigned char* data = NULL;
+    int len = 0;
+    if (!TileData(key, true, &data, &len))
+        return false;
+    bool hit = VTileTunnelIn(key, data, len, u, v, r);
+    free(data);
+    return hit;
 }

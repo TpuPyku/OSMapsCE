@@ -14,19 +14,68 @@ import os
 import queue
 import shutil
 import string
+import subprocess
+import sys
 import tempfile
 import threading
 import time
 import urllib.request
-import webbrowser
 import zipfile
 
 import pmextract
 import release_regions
 import yadisk
+from maps_lang import EN
+
+LANG_FILE = os.path.join(os.environ.get('APPDATA') or tempfile.gettempdir(), 'OSMapsCE-Maps.lang')   # the choice kept
+
+
+def ui_lang():
+    """Windows' display language (its id); None - not known."""
+    try:
+        return ctypes.windll.kernel32.GetUserDefaultUILanguage()
+    except (AttributeError, OSError):
+        return None
+
+
+def choose_lang(env, pref, system):
+    """'ru' or 'en' (the user 2026-11-12): OSMAPS_LANG (the tests), else the user's choice kept in pref, else Windows'
+    language - Russian: ru, any other: en; not known: ru."""
+    if env.get('OSMAPS_LANG') in ('ru', 'en'):
+        return env['OSMAPS_LANG']
+    try:
+        with open(pref) as f:
+            saved = f.read().strip()
+        if saved in ('ru', 'en'):
+            return saved
+    except OSError:
+        pass
+    code = system() if system else None
+    return 'ru' if code is None or code & 0x3FF == 0x19 else 'en'
+
+
+def save_lang(pref, lang):
+    with open(pref, 'w') as f:
+        f.write(lang)
+
+
+LANG = choose_lang(os.environ, LANG_FILE, ui_lang)   # (at the start: the texts below are made once)
+
+
+def T(text):
+    """A Russian text of the app in its language."""
+    return EN.get(text, text) if LANG == 'en' else text
+
+
+def region_title(r):
+    """A region's name: its title from the catalog (Russian), in English its catalog name ("moscow_oblast" - "Moscow
+    Oblast")."""
+    if LANG == 'en':
+        return ' '.join(w.capitalize() for w in r['name'].split('_'))
+    return r.get('title', r['name'])
 
 MAXZOOM = 15   # Protomaps' deepest: the house numbers, the car parks
-STATE = {'new': 'нет', 'update': 'есть новее', 'ok': 'свежая'}
+STATE = {'new': T('нет'), 'update': T('есть новее'), 'ok': T('свежая')}
 kTilesPart = 0.75   # a region's progress: its tiles up to here, then the release's zip (the graph, the search)
 RELEASE = '1.0'   # the loader's own number, raised by hand (it changes less often than OSMapsCE); the date: build_app.bat's
 try:
@@ -51,18 +100,55 @@ class Cancelled(Exception):
     """"Отменить запись" pressed (the user 2026-10-30): raised from the job's progress, where it is."""
 
 
-def download(url, tell, open_url=urllib.request.urlopen, piece=256 * 1024):
-    """A release's file read in pieces, tell(part, 'x из y МБ') after each (the user 2026-10-29: the graph's zip and
-    the trunk roads came for minutes, the bar full, nothing told)."""
+def stream(url, put, tell, open_url, piece):
+    """A file read in pieces, put(chunk) and tell(part, 'x из y МБ') after each (the user 2026-10-29: the graph's zip
+    and the trunk roads came for minutes, the bar full, nothing told)."""
     with open_url(urllib.request.Request(url, headers=pmextract.UA), timeout=120) as r:
-        total, data = int(r.headers.get('Content-Length') or 0), bytearray()
+        total, got = int(r.headers.get('Content-Length') or 0), 0
         while True:
             chunk = r.read(piece)
             if not chunk:
-                return bytes(data)
-            data += chunk
+                return
+            put(chunk)
+            got += len(chunk)
             if total:
-                tell(min(1.0, len(data) / total), '%.1f из %.1f МБ' % (len(data) / 1e6, total / 1e6))
+                tell(min(1.0, got / total), T('%.1f из %.1f МБ') % (got / 1e6, total / 1e6))
+
+
+def download(url, tell, open_url=urllib.request.urlopen, piece=256 * 1024):
+    """A release's file in memory, read in pieces (stream)."""
+    data = bytearray()
+    stream(url, data.extend, tell, open_url, piece)
+    return bytes(data)
+
+
+def download_to(url, path, tell, open_url=urllib.request.urlopen, piece=1 << 20):
+    """A whole archive into a file (hundreds of MB: not in memory), path.part until it is all there."""
+    with open(path + '.part', 'wb') as f:
+        stream(url, f.write, tell, open_url, piece)
+    os.replace(path + '.part', path)
+
+
+HTTPS_PORT = 9443   # the own server's HTTPS (2026-11-12: its 443 is another service's)
+
+
+def secure_first(url):
+    """The links to try for an archive: the own server's (plain http://) over HTTPS first - its certificate for its
+    address on HTTPS_PORT (the user 2026-11-12: the browser warned); others as they are."""
+    if not url.startswith('http://'):
+        return [url]
+    host, _, path = url[7:].partition('/')
+    return ['https://%s:%d/%s' % (host.split(':')[0], HTTPS_PORT, path), url]
+
+
+def download_any(urls, path, tell, open_url=None):
+    """download_to from the first link that answers; the last one's error when none does."""
+    for i, url in enumerate(urls):
+        try:
+            return download_to(url, path, tell) if open_url is None else download_to(url, path, tell, open_url)
+        except (OSError, ValueError):   # (urllib's errors: OSError; a refused certificate too)
+            if i == len(urls) - 1:
+                raise
 
 
 def load_catalog(get=http_get):
@@ -83,7 +169,7 @@ def installed(drive):
 
 TRUNK = 'trunk'   # the old folder of the trunk roads (cards from before 2026-11-06), and their archive in the release
 OVERVIEW = 'overview'   # one pack as a region's (the user 2026-11-06): the map's small zooms inside the regions' borders
-OVERVIEW_TITLE = 'Обзорная карта и магистрали'   # (a region's pack holds its region only - empty round it; OSMapsCE takes
+OVERVIEW_TITLE = T('Обзорная карта и магистрали')   # (a region's pack holds its region only - empty round it; OSMapsCE takes
 OVERVIEW_Z = 8          # them when no cached tile) and the trunk roads' graph (routes from one region to another)
 
 
@@ -178,9 +264,10 @@ def install(entry, drive, get_file, get_bytes, maxzoom, progress=None, tiles_dat
     tiles = os.path.join(dst, 'tiles.vtp')
     pmextract.extract(get_bytes, entry['bbox'], maxzoom, tiles + '.part',
                       lambda part, text: tell(part * kTilesPart, text), pmextract.slim)
+    # (z15 whole for now, as release_regions: deepest=pmextract.numbers with the OSMapsCE release drawing z15+ from z14)
     os.replace(tiles + '.part', tiles)
     data = get_file(release_regions.ASSETS + entry['zip'],
-                    lambda part, text: tell(kTilesPart + (1 - kTilesPart) * part, 'граф и поиск: ' + text))
+                    lambda part, text: tell(kTilesPart + (1 - kTilesPart) * part, T('граф и поиск: ') + text))
     with zipfile.ZipFile(io.BytesIO(data)) as z:
         for f in release_regions.FILES:   # (only these: the zip's own names never chose a path)
             if f not in z.namelist():   # (a region not rebuilt since: its old zip has no layers)
@@ -228,18 +315,18 @@ def copy_to(stage, drive, tell):
     total = sum(os.path.getsize(os.path.join(src_root, n, f)) for n, f in files)
     free = shutil.disk_usage(drive).free
     if free < total:
-        raise OSError('Мало места на флешке: свободно %.0f МБ, нужно %.0f МБ' % (free / 1e6, total / 1e6))
+        raise OSError(T('Мало места на флешке: свободно %.0f МБ, нужно %.0f МБ') % (free / 1e6, total / 1e6))
     done = [0]
 
     def step(n):
         done[0] += n
-        tell(done[0] / total, '%.1f из %.1f МБ' % (done[0] / 1e6, total / 1e6))
+        tell(done[0] / total, T('%.1f из %.1f МБ') % (done[0] / 1e6, total / 1e6))
     for name in sorted({n for n, _ in files}):   # an older one's region.txt off first: stopped midway, never whole
         unmark(os.path.join(drive, 'OSMapsData', name))
     for name, f in files:
         os.makedirs(os.path.join(drive, 'OSMapsData', name), exist_ok=True)
         copy_file(os.path.join(src_root, name, f), os.path.join(drive, 'OSMapsData', name, f), step)
-    tell(1.0, 'готово')
+    tell(1.0, T('готово'))
 
 
 def remove_regions(drive, names):
@@ -263,29 +350,71 @@ def drop_old_trunk(drive):
     shutil.rmtree(os.path.join(drive, 'OSMapsData', TRUNK), ignore_errors=True)
 
 
-def ready_links(cat, chosen, href=yadisk.public_href):
-    """The ready archives on the catalog's Yandex Disk (the user 2026-10-30: the app for one's own build; the ready
-    ones by their links): the chosen regions whole there (and the overview) - their download links; none chosen - the
-    disk's folder; no disk - none. Those on the maps' own server (their entry's "files": the catalog's "files" folder,
-    the user 2026-11-09: the disk's upload limit ran out) by their links straight."""
-    files, disk = cat.get('files'), cat.get('disk')
-    if not chosen:
-        return [disk] if disk else []
-    links = []
-    for whole in ready_wholes(cat, chosen):
-        if whole.get('files') and files:
-            links.append(files + whole['zip'])
-        elif disk:
-            links.append(href(disk, whole['zip']))
-    return links
+FILES, DISK = 'files', 'disk'   # a row's two buttons (the user 2026-11-12): the own server's whole zip, the disk's copy
+OLD_MARK = T('⚠ старая')          # the disk's copy older than the region's build (the disk: uploaded twice a month)
+FAR_MARK = '✈ '                # a region outside the former USSR: last in the list (BMP symbols: Windows 7's Tk)
 
 
-def ready_wholes(cat, chosen):
-    """The chosen regions' whole archives' entries (and the overview's) the catalog tells."""
-    wholes = [r['full'] for r in cat['regions'] if r['name'] in chosen and 'full' in r]
-    if OVERVIEW in chosen and 'overview' in cat:
-        wholes.append(cat['overview'])
-    return wholes
+def source_ok(cat, entry, source):
+    """The entry's whole zip (a region's, or the overview's) there: on the own server (its "files"), on the disk (its
+    "disk" copy, the catalog's listing)."""
+    if source == FILES:
+        return bool(cat.get('files') and entry.get('full', entry).get('files'))
+    return bool(cat.get('disk') and entry.get('disk'))
+
+
+def whole_url(cat, entry, source, href=yadisk.public_href):
+    """The entry's whole zip's download link from that source (the disk's: asked of it - a network call)."""
+    name = entry.get('full', entry)['zip']
+    return cat['files'] + name if source == FILES else href(cat['disk'], name)
+
+
+def disk_old(entry):
+    """The disk's copy older than the entry's build (both YYYY-MM-DD)."""
+    copy, date = entry.get('disk', {}).get('date'), entry.get('date')
+    return bool(copy and date and copy < date)
+
+
+def source_cell(cat, entry, source):
+    """A row's button: '—' none there; the disk's with its copy's date (dd.mm), an older one marked."""
+    if not source_ok(cat, entry, source):
+        return '—'
+    if source == FILES:
+        return T('⬇ скачать')
+    day = entry['disk'].get('date', '')
+    text = '⬇ ' + ('%s.%s' % (day[8:10], day[5:7]) if len(day) == 10 else T('скачать'))
+    return text + ' ' + OLD_MARK if disk_old(entry) else text
+
+
+def row_title(r):
+    return (FAR_MARK if r.get('far') else '') + region_title(r)
+
+
+def ready_job(cat, name, source, have_tiles, have_trunk):
+    """[(folder, entry)] a row's button gets from that source: the region whole, and the overview's pack when the
+    drive needs it (none there, or an older trunk graph) - or that row itself the overview's."""
+    jobs = [(r['name'], r) for r in cat['regions'] if r['name'] == name]
+    ov = cat.get('overview')
+    if ov and (name == OVERVIEW or pack_needed(ov, have_tiles, have_trunk)):
+        jobs.append((OVERVIEW, ov))
+    return [(n, e) for n, e in jobs if source_ok(cat, e, source)]
+
+
+def pack_needed(ov, have_tiles, have_trunk):
+    """The overview's pack wanted on the drive: none there, or its trunk graph older than the pack's."""
+    return have_tiles is None or bool(ov.get('date')) and ov['date'] != have_trunk
+
+
+def unpack_whole(zpath, dst):
+    """A whole zip into its folder: its old region.txt off first, the new one last (half done never looks whole);
+    only the zip's plain names (no paths of its own)."""
+    os.makedirs(dst, exist_ok=True)
+    unmark(dst)
+    with zipfile.ZipFile(zpath) as z:
+        names = [n for n in z.namelist() if plain_name(n)]
+        for n in sorted(names, key=lambda n: n == 'region.txt'):
+            with z.open(n) as src, open(os.path.join(dst, n), 'wb') as out:
+                shutil.copyfileobj(src, out, 1 << 20)
 
 
 def inform(title, text):   # a message in its window (tests: replaced)
@@ -328,10 +457,11 @@ def chosen_size(cat, chosen):
 
 
 def matching(cat, text):
-    """The regions whose Russian or latin name has the text, by the Russian name."""
+    """The regions whose Russian or latin name has the text, by the Russian name - those outside the former USSR
+    ("far") last (the user 2026-11-12)."""
     t = text.strip().casefold()
-    hit = [r for r in cat['regions'] if t in r.get('title', r['name']).casefold() or t in r['name'].casefold()]
-    return sorted(hit, key=lambda r: r.get('title', r['name']))
+    hit = [r for r in cat['regions'] if t in region_title(r).casefold() or t in r['name'].casefold()]
+    return sorted(hit, key=lambda r: (bool(r.get('far')), region_title(r)))
 
 
 def trunk_state(cat, drive):
@@ -388,8 +518,8 @@ def box_area(rings):
 INK, PANEL, ROW, TEXT, DIM, ACCENT = '#0E1013', '#1A1D22', '#23272E', '#F5F3EE', '#AAB0B8', '#FF6B1A'
 FRESH, EDGE = '#2E5D45', '#4A505A'   # the map: a region on the drive and fresh; the regions' borders
 WHITE, BLACK = '#FFFFFF', '#000000'   # ... one with an update on the drive (the user 2026-10-30), its edge
-GO, BUSY, STOPPING = 'Записать выбранные', 'Отменить запись', 'Отмена…'   # the button; while it writes it cancels
-                                                                           # (the user 2026-10-30)
+GO, BUSY, STOPPING = T('Собрать выбранные карты'), T('Отменить запись'), T('Отмена…')   # the button (the user 2026-11-12:
+                                                    # renamed); while it writes it cancels (the user 2026-10-30)
 MAP_W, MAP_H = 560, 520
 
 
@@ -403,11 +533,11 @@ class App:
         self.chosen = set()
         self.press = None
         self.root = tk.Tk()
-        self.root.title('Карты OSMapsCE ' + app_version())
+        self.root.title(T('Карты OSMapsCE ') + app_version())
         self.root.configure(bg=INK)
         self.drive = tk.StringVar(value=(removable_drives() or [''])[0])
         self.find = tk.StringVar()
-        self.status = tk.StringVar(value='Загрузка списка областей…')
+        self.status = tk.StringVar(value=T('Загрузка списка областей…'))
         self.style()
         self.layout()
         self.find.trace_add('write', lambda *a: self.refresh())
@@ -437,42 +567,46 @@ class App:
                      lightcolor=ROW, darkcolor=ROW)
         st.configure('Horizontal.TProgressbar', background=ACCENT, troughcolor=PANEL, borderwidth=0)
         st.configure('Dim.TLabel', foreground=DIM)
+        st.configure('Cell.TButton', padding=0)
 
     def layout(self):
         ttk, top = self.ttk, self.ttk.Frame(self.root)
         top.pack(fill='x', padx=12, pady=10)
-        ttk.Label(top, text='Флешка / карта:').pack(side='left')
+        ttk.Label(top, text=T('Флешка / карта:')).pack(side='left')
         ttk.Combobox(top, textvariable=self.drive, values=removable_drives(), width=8).pack(side='left', padx=6)
-        ttk.Button(top, text='Папка…', command=self.choose).pack(side='left')
-        ttk.Button(top, text='Обновить', command=self.refresh).pack(side='left', padx=6)
-        ttk.Entry(top, textvariable=self.find, width=24).pack(side='right')
-        ttk.Label(top, text='Поиск:', style='Dim.TLabel').pack(side='right', padx=6)
+        ttk.Button(top, text=T('Папка…'), command=self.choose).pack(side='left')
+        ttk.Button(top, text=T('Обновить'), command=self.refresh).pack(side='left', padx=6)
+        ttk.Button(top, text='RU / EN', command=self.switch_lang).pack(side='right')
+        ttk.Entry(top, textvariable=self.find, width=24).pack(side='right', padx=(0, 16))   # (apart: 2026-11-13)
+        ttk.Label(top, text=T('Поиск:'), style='Dim.TLabel').pack(side='right', padx=6)
         picks = ttk.Frame(self.root)
         picks.pack(fill='x', padx=12)
-        for text, cmd in (('Все', self.pick_all), ('Ничего', self.pick_none), ('Устаревшие', self.pick_old)):
+        for text, cmd in ((T('Все'), self.pick_all), (T('Ничего'), self.pick_none), (T('Устаревшие'), self.pick_old)):
             ttk.Button(picks, text=text, command=cmd).pack(side='left', padx=(0, 6))
-        ttk.Label(picks, text='щелчок по области на карте или по строке — выбрать или снять; колесо — ближе, '
-                              'перетаскивание — сдвинуть карту', style='Dim.TLabel').pack(side='left', padx=6)
+        ttk.Label(picks, text=T('щелчок по области на карте или по строке — выбрать или снять; колесо — ближе, '
+                              'перетаскивание — сдвинуть карту'), style='Dim.TLabel').pack(side='left', padx=6)
         middle = ttk.Frame(self.root)
         middle.pack(fill='both', expand=True, padx=12, pady=8)
         self.map = self.tk.Canvas(middle, width=MAP_W, height=MAP_H, bg=PANEL, highlightthickness=0)
         self.map.pack(side='left', fill='both')
-        self.map.create_text(MAP_W // 2, MAP_H // 2, text='Карта областей загружается…', fill=DIM, tags='note')
+        self.map.create_text(MAP_W // 2, MAP_H // 2, text=T('Карта областей загружается…'), fill=DIM, tags='note')
         self.hover = self.map.create_text(12, 12, anchor='nw', text='', fill=TEXT, font=('Segoe UI', 11, 'bold'))
         for event, handler in (('<ButtonPress-1>', self.map_press), ('<B1-Motion>', self.map_drag),
                                ('<ButtonRelease-1>', self.map_release), ('<MouseWheel>', self.map_wheel),
                                ('<Motion>', self.map_motion)):
             self.map.bind(event, handler)
-        self.tree = ttk.Treeview(middle, columns=('size', 'have', 'state'), height=16, selectmode='none')
-        for col, text, w in (('#0', 'Область', 300), ('size', 'Граф и поиск', 110), ('have', 'На флешке', 110),
-                             ('state', 'Состояние', 110)):
+        self.tree = ttk.Treeview(middle, columns=('size', 'have', 'state', FILES, DISK), height=16, selectmode='none')
+        for col, text, w in (('#0', T('Область'), 280), ('size', T('Граф и поиск'), 100), ('have', T('На флешке'), 100),
+                             ('state', T('Состояние'), 100), (FILES, T('С сервера'), 100), (DISK, T('С Я.Диска'), 140)):
             self.tree.heading(col, text=text, anchor='w')
             self.tree.column(col, width=w)
         self.tree.tag_configure('chosen', background=ACCENT, foreground=INK)   # the chosen ones: lit
         self.tree.tag_configure('update', foreground=ACCENT)
         self.tree.bind('<Button-1>', self.click)
         self.scroll = ttk.Scrollbar(middle, orient='vertical', command=self.tree.yview)   # (the user 2026-10-29)
-        self.tree.configure(yscrollcommand=self.scroll.set)
+        self.tree.configure(yscrollcommand=self.scrolled)
+        self.tree.bind('<Configure>', lambda e: self.place_buttons())
+        self.cell_buttons = []
         self.scroll.pack(side='right', fill='y')
         self.tree.pack(side='right', fill='both', expand=True, padx=(8, 0))
         self.bar = ttk.Progressbar(self.root, maximum=1.0)
@@ -482,16 +616,15 @@ class App:
         bottom.pack(fill='x', padx=12, pady=(0, 12))
         self.go = ttk.Button(bottom, text=GO, style='Go.TButton', command=self.write_chosen)
         self.go.pack(side='left')
-        ttk.Button(bottom, text='Удалить с флешки', command=self.remove_chosen).pack(side='right')
-        ttk.Button(bottom, text='Готовые архивы', command=self.open_ready).pack(side='right', padx=6)
+        ttk.Button(bottom, text=T('Удалить с флешки'), command=self.remove_chosen).pack(side='right')
 
     def work(self, job, *args):   # (in the thread: an error shown, not lost; then the button back)
         try:
             job(*args)
         except Cancelled:
-            self.news.put(('status', 'Остановлено. Скачанное осталось на ПК — следующая запись продолжит с него.'))
+            self.news.put(('status', T('Остановлено. Скачанное осталось на ПК — следующая запись продолжит с него.')))
         except Exception as e:    # noqa: BLE001 - the user sees it
-            self.news.put(('status', 'Ошибка: %s' % e))
+            self.news.put(('status', T('Ошибка: %s') % e))
         self.news.put(('done', None))
 
     def fetch_catalog(self):
@@ -528,11 +661,13 @@ class App:
         self.special_rows(self.find.get().strip().casefold())
         for r in matching(self.cat, self.find.get()):
             tags = ('chosen',) if r['name'] in self.chosen else ('update',) if st[r['name']] == 'update' else ()
-            self.tree.insert('', 'end', iid=r['name'], text=r.get('title', r['name']), tags=tags,
-                             values=('%.1f МБ' % (r['size'] / 1e6), have.get(r['name'], '—'), STATE[st[r['name']]]))
+            self.tree.insert('', 'end', iid=r['name'], text=row_title(r), tags=tags,
+                             values=(T('%.1f МБ') % (r['size'] / 1e6), have.get(r['name'], '—'), STATE[st[r['name']]],
+                                     source_cell(self.cat, r, FILES), source_cell(self.cat, r, DISK)))
         self.paint(st)
-        self.status.set('Областей: %d, выбрано %d (%.0f МБ графа и поиска; плитки ещё в 5–15 раз больше). '
-                        'Свободно: %s' % (len(self.cat['regions']), len(self.chosen - {TRUNK, OVERVIEW}),
+        self.root.after_idle(self.place_buttons)   # (the rows laid out first)
+        self.status.set(T('Областей: %d, выбрано %d (%.0f МБ графа и поиска; плитки ещё в 5–15 раз больше). '
+                        'Свободно: %s') % (len(self.cat['regions']), len(self.chosen - {TRUNK, OVERVIEW}),
                                           chosen_size(self.cat, self.chosen) / 1e6, self.free()))
 
     def special_rows(self, find):
@@ -540,15 +675,40 @@ class App:
         drive = self.drive.get()
         state = trunk_state(self.cat, drive)
         state = 'new' if not overview_date(drive) else state
-        for name, title, size, date in ((OVERVIEW, OVERVIEW_TITLE, '≈70 МБ', overview_date(drive)),):
+        for name, title, size, date in ((OVERVIEW, OVERVIEW_TITLE, T('≈70 МБ'), overview_date(drive)),):
             if find in title.casefold():
                 tags = ('chosen',) if name in self.chosen else ('update',) if state == 'update' else ()
+                ov = self.cat.get('overview', {})
                 self.tree.insert('', 'end', iid=name, text=title, tags=tags,
-                                 values=(size, date or '—', {'new': 'нет', 'update': 'есть новее', 'ok': 'есть'}[state]))
+                                 values=(size, date or '—', {'new': T('нет'), 'update': T('есть новее'), 'ok': T('есть')}[state],
+                                         source_cell(self.cat, ov, FILES), source_cell(self.cat, ov, DISK)))
 
-    def click(self, event):   # a click picks a region or lets it go (no Ctrl)
+    def scrolled(self, first, last):
+        self.scroll.set(first, last)
+        self.place_buttons()
+
+    def place_buttons(self):
+        """The rows' downloads as real buttons over their cells, a hand over them (the user 2026-11-13: the cells'
+        text did not look clickable); only the rows in sight, placed anew as the list moves."""
+        for b in self.cell_buttons:
+            b.destroy()
+        self.cell_buttons = []
+        for name in self.tree.get_children():
+            for source in (FILES, DISK):
+                box = self.tree.bbox(name, source)
+                if not box or self.tree.set(name, source) == '—':
+                    continue
+                b = self.ttk.Button(self.tree, text=self.tree.set(name, source), cursor='hand2', style='Cell.TButton',
+                                    command=lambda n=name, s=source: self.get_ready(n, s))
+                b.place(x=box[0] + 2, y=box[1] + 1, width=box[2] - 4, height=box[3] - 2)
+                self.cell_buttons.append(b)
+
+    def click(self, event):   # a click picks a region or lets it go (no Ctrl); on its button: that source's zip
         name = self.tree.identify_row(event.y)
-        if name:
+        source = {'#4': FILES, '#5': DISK}.get(self.tree.identify_column(event.x))
+        if name and source:
+            self.get_ready(name, source)
+        elif name:
             self.chosen = toggled(self.chosen, name)
             self.refresh()
         return 'break'
@@ -558,7 +718,7 @@ class App:
     def on_outlines(self, shapes):
         self.shapes = shapes
         self.map.delete('region')
-        self.map.itemconfigure('note', text='' if shapes else 'Карты областей нет — выбор по списку')
+        self.map.itemconfigure('note', text='' if shapes else T('Карты областей нет — выбор по списку'))
         if not shapes:
             return
         xy = fit(shapes, MAP_W, MAP_H)
@@ -604,7 +764,7 @@ class App:
 
     def map_motion(self, e):
         name = self.region_at(e.x, e.y)
-        titles = {r['name']: r.get('title', r['name']) for r in self.cat['regions']}
+        titles = {r['name']: row_title(r) for r in self.cat['regions']}
         self.map.itemconfigure(self.hover, text=titles.get(name, name or ''))
 
     # ----
@@ -622,7 +782,7 @@ class App:
         self.refresh()
 
     def free(self):
-        return '%.1f ГБ' % (shutil.disk_usage(self.drive.get()).free / 1e9) if os.path.isdir(self.drive.get()) else '—'
+        return T('%.1f ГБ') % (shutil.disk_usage(self.drive.get()).free / 1e9) if os.path.isdir(self.drive.get()) else '—'
 
     def choose(self):
         self.drive.set(self.tk.filedialog.askdirectory() or self.drive.get())
@@ -656,38 +816,70 @@ class App:
         """The chosen ones on the drive, and their titles."""
         have = self.have()
         there = sorted(n for n in self.chosen if n in have or n == OVERVIEW and (overview_date(drive) or trunk_date(drive)))
-        titles = {r['name']: r.get('title', r['name']) for r in self.cat['regions']}
+        titles = {r['name']: region_title(r) for r in self.cat['regions']}
         titles[OVERVIEW] = OVERVIEW_TITLE
         return there, [titles.get(n, n) for n in there]
 
-    def open_ready(self):
-        """The ready archives in the browser: the chosen ones' downloads, else the disk's folder."""
-        try:
-            links = ready_links(self.cat, self.chosen)
-        except Exception as e:   # noqa: BLE001 - the user sees it
-            inform('Готовые архивы', 'Ссылки не получены: %s' % e)
+    def switch_lang(self):
+        """The other language (the user 2026-11-12: English too) kept, the app started anew in it; not while writing."""
+        if self.go['text'] != GO:
+            self.status.set(T('Идёт запись'))
             return
-        if not links:   # (the status line alone went unseen - the user 2026-10-30)
-            inform('Готовые архивы', 'Готовых архивов пока нет или не отмечены области: архивы появятся '
-                                     'после сборки карт. Пока — запись выбранных областей этой программой.')
-            return
-        for url in links:
-            webbrowser.open(url)
-        self.status.set('Открыто в браузере: %d (готовые области — граф, поиск и плитки; распаковать в OSMapsData '
-                        'на флешке)' % len(links))
+        save_lang(LANG_FILE, 'en' if LANG == 'ru' else 'ru')
+        frozen = getattr(sys, 'frozen', False)   # (the exe: itself; the script: python and it)
+        subprocess.Popen([sys.executable] + (sys.argv[1:] if frozen else [os.path.abspath(__file__)] + sys.argv[1:]))
+        self.root.destroy()
 
     def remove_chosen(self):
         """The chosen regions that are on the drive off it, asked first; not while writing."""
         drive = self.drive.get()
         there, titles = self.chosen_there(drive)
         if not there or self.go['text'] != GO:
-            self.status.set('Нечего удалять: выбранных областей на флешке нет' if not there else 'Идёт запись')
+            self.status.set(T('Нечего удалять: выбранных областей на флешке нет') if not there else T('Идёт запись'))
             return
-        if ask('Удалить с флешки', 'Удалить с %s:\n%s?' % (drive, ', '.join(titles))):
+        if ask(T('Удалить с флешки'), T('Удалить с %s:\n%s?') % (drive, ', '.join(titles))):
             gone = remove_regions(drive, there)
             self.chosen -= set(gone)
             self.refresh()
-            self.status.set('Удалено: %d. ' % len(gone) + self.status.get())
+            self.status.set(T('Удалено: %d. ') % len(gone) + self.status.get())
+
+    def get_ready(self, name, source):
+        """A row's button (the user 2026-11-12): the region's whole zip from that source onto the drive (the overview's
+        too when needed); the bottom button cancels it as a writing; not while writing."""
+        drive = self.drive.get()
+        if self.go['text'] != GO:
+            self.status.set(T('Идёт запись'))
+            return
+        jobs = ready_job(self.cat, name, source, overview_date(drive), trunk_date(drive))
+        if name not in [n for n, _ in jobs]:
+            self.status.set(T('Готового архива %s нет') % (T('на сервере') if source == FILES else T('на Я.Диске')))
+            return
+        self.go.configure(text=BUSY, style='Busy.TButton')
+        threading.Thread(target=self.work, args=(self.fetch_ready, jobs, source, drive), daemon=True).start()
+
+    def fetch_ready(self, jobs, source, drive):
+        """The whole zips into the PC's temp folder, unpacked there, then onto the card at once (copy_to); the bar for
+        the whole job - each zip a part of it, the copy the last."""
+        stage = os.path.join(stage_dir(), 'ready')
+        shutil.rmtree(stage, ignore_errors=True)   # (a job stopped before: no going on with a half zip)
+        os.makedirs(stage)
+        total = len(jobs) + 1
+        titles = {r['name']: region_title(r) for r in self.cat['regions']}
+        titles[OVERVIEW] = OVERVIEW_TITLE
+        for k, (name, entry) in enumerate(jobs):
+            tell = lambda part, text, h=titles.get(name, name), k=k: self.tell(h, (k + part) / total, text)   # noqa: E731
+            tell(0, T('ссылка…'))
+            zpath = os.path.join(stage, name + '.zip')
+            download_any(secure_first(whole_url(self.cat, entry, source)), zpath, tell)
+            unpack_whole(zpath, os.path.join(stage, 'OSMapsData', name))
+            os.remove(zpath)
+        copy_to(stage, drive, lambda part, text: self.tell(T('На флешку'), (total - 1 + part) / total, text))
+        if OVERVIEW in [n for n, _ in jobs]:
+            drop_old_trunk(drive)
+        shutil.rmtree(stage, ignore_errors=True)
+        self.news.put(('status', T('Готово %s: %s. Флешку — в ГУ (папка OSMapsData в корне).') % (
+            T('с сервера') if source == FILES else T('с Я.Диска'), ', '.join(titles.get(n, n) for n, _ in jobs))))
+        self.news.put(('catalog', self.cat))
 
     def write_overview(self, stage, get_bytes, day, k, total, drive=None):   # the overview into stage: the bar's part k
         if overview_date(stage) == day:   # (downloaded before a break)
@@ -708,11 +900,11 @@ class App:
         total = len(entries) + (1 if trunk else 0) + (1 if overview else 0) + 1
         stage = stage_dir()
         done = self.write_stage(entries, stage, drive, trunk, total, overview)
-        copy_to(stage, drive, lambda part, text: self.tell('На флешку', (total - 1 + part) / total, text))
+        copy_to(stage, drive, lambda part, text: self.tell(T('На флешку'), (total - 1 + part) / total, text))
         if trunk_date(drive):   # the pack holds the graph now
             drop_old_trunk(drive)
         shutil.rmtree(stage, ignore_errors=True)   # (an error before: kept - the next time goes on there)
-        self.news.put(('status', done + '. Флешку — в ГУ (папка OSMapsData в корне).'))
+        self.news.put(('status', done + T('. Флешку — в ГУ (папка OSMapsData в корне).')))
         self.news.put(('catalog', self.cat))
 
     def write_stage(self, entries, stage, drive, trunk, total, overview=False):   # the regions, the overview, the
@@ -720,22 +912,22 @@ class App:
             build = pmextract.latest_build()
             get_bytes, day = pmextract.http_bytes(build), build.rsplit('/', 1)[1].split('.')[0]
         for i, e in enumerate(entries):
-            head = '%s (%d из %d)' % (e.get('title', e['name']), i + 1, len(entries))
+            head = T('%s (%d из %d)') % (region_title(e), i + 1, len(entries))
             if staged(stage, e, day):   # downloaded before a break
-                self.tell(head, (i + 1) / total, 'уже скачано')
+                self.tell(head, (i + 1) / total, T('уже скачано'))
                 continue
-            self.news.put(('status', head + ': начало…'))
+            self.news.put(('status', head + T(': начало…')))
             install(e, stage, download, get_bytes, MAXZOOM,
                     lambda part, text, h=head, k=i: self.tell(h, (k + part) / total, text), day)
-        done = 'Готово: областей %d' % len(entries)
+        done = T('Готово: областей %d') % len(entries)
         if overview:
             self.write_overview(stage, get_bytes, day, len(entries), total, drive)
-            done += ', обзорная карта записана'
+            done += T(', обзорная карта записана')
         if trunk:
             got = install_trunk(stage, download,
                                 lambda part, text: self.tell(OVERVIEW_TITLE, (total - 2 + part) / total, text), drive)
-            done += {'written': ', магистрали записаны', 'same': ', магистрали уже свежие',
-                     'none': ', магистралей в релизе нет'}[got]
+            done += {'written': T(', магистрали записаны'), 'same': T(', магистрали уже свежие'),
+                     'none': T(', магистралей в релизе нет')}[got]
         return done
 
 

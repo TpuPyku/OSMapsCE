@@ -258,8 +258,21 @@ static int FakeGet(const char* host, bool, const char* path, unsigned char** bod
         static char noDisk[1024];   // s_withDisk 3: the own server alone, no disk's link
         strcpy(noDisk, kFilesCat);
         memcpy(strstr(noDisk, "\"disk\""), "\"xxxx\"", 6);
-        return Body(s_withDisk == 3 ? noDisk : s_withDisk == 2 ? kFilesCat : s_withDisk ? kDiskCat : kCat, body, len,
-                    status);
+        // 4: the disk's copies of zz and of the overview (the scheduled run's); 5: of zz only; 6: the server's overview
+        // without its size
+        static const char* kCopies = "{\"disk\":\"https://disk.example/d/x y\",\"overview\":{\"zip\":\"overview.zip\","
+                                     "\"size\":2048,\"date\":\"2026-10-30\",\"disk\":{\"size\":2048,\"date\":\"2026-10-30\"}},"
+                                     "\"regions\":[{\"name\":\"yy\",\"title\":\"Y\",\"date\":\"2026-10-29\",\"zip\":\"yy.zip\","
+                                     "\"size\":2048},{\"name\":\"zz\",\"title\":\"Z\",\"date\":\"2026-10-30\",\"zip\":\"zz.zip\","
+                                     "\"size\":2048,\"full\":{\"zip\":\"zz.zip\",\"size\":300000},\"disk\":{\"size\":300000,"
+                                     "\"date\":\"2026-10-30\"}}]}";
+        static char zzOnly[1024], noSize[1024];
+        strcpy(zzOnly, kCopies);
+        memcpy(strstr(zzOnly, "\"disk\":{\"size\":2048"), "\"dosk\"", 6);
+        strcpy(noSize, kFilesCat);
+        memcpy(strstr(noSize, "\"size\":2048,\"date\":\"2026-10-30\",\"files\""), "\"sizz\"", 6);
+        const char* cats[] = { kCat, kDiskCat, kFilesCat, noDisk, kCopies, zzOnly, noSize };
+        return Body(cats[s_withDisk], body, len, status);
     }
     if (s_withDisk >= 2 && !strcmp(host, "files.example")) {   // the own server: its files straight, in ranges
         strncpy(s_filesAsked + strlen(s_filesAsked), path, sizeof(s_filesAsked) - strlen(s_filesAsked) - 1);
@@ -304,6 +317,11 @@ static int FakeGet(const char* host, bool, const char* path, unsigned char** bod
 
 // offdata.cpp's file: mapped (the user 2026-10-29: Moscow's 99 MB graph read into memory failed on a Shturmann) -
 // an aligned part straight from the view, an unaligned one copied, one past the end refused
+static void* NoAlloc(size_t)   // the unit's malloc refusing a big part
+{
+    return NULL;
+}
+
 static void OffFileChecks()
 {
     wchar_t path[MAX_PATH];
@@ -318,6 +336,14 @@ static void OffFileChecks()
     bool read = OffOpen(&f, path, head, 4) && !f.view && OffPart(&f, 4, 8) && f.nparts == 1;
     OffClose(&f);
     Check(read, "file: memory plenty - not mapped, its parts read", NULL);
+    g_offAlloc = NoAlloc;   // (HU 2026-11-13: 363 MB free, the 105 MB graph's part not given - no route, no frame)
+    read = OffOpen(&f, path, head, 4) && !f.view;
+    const char* m = (const char*)OffPart(&f, 4, 8);
+    Check(read && f.view && m == (const char*)f.view + 4 && !f.bad && !f.nparts,
+          "file: no memory for a part - mapped after all, the part from the view", NULL);
+    Check(!OffPart(&f, 1, 8) && f.bad, "file: no memory, mapped, an unaligned part (copied) - refused, marked", NULL);
+    OffClose(&f);
+    g_offAlloc = malloc;
     g_offFreeMem = 1;
     Check(OffOpen(&f, path, head, 4) && f.view && !memcmp(head, "PK\x03\x04", 4), "file: opened, mapped", NULL);
     const char* a = (const char*)OffPart(&f, 4, 8);
@@ -377,6 +403,30 @@ static void FilesChecks(const wchar_t* zz, const wchar_t* yy, const wchar_t* ov)
           FileIs(L"OSMapsData\\yy\\search.idx", "IDXIDXIDXIDXIDXIDXIDXIDXIDXIDX", 30),
           "files: a region not put there, no disk - its graph and search from the release", s_apiQuery);
     Remove(yy);
+    Remove(ov);
+}
+
+// The overview with a region from the disk (the user 2026-11-12: two sources) - only from where it has a copy; from the
+// server - only with its size
+static void OverviewSourceChecks(const wchar_t* zz, const wchar_t* ov)
+{
+    for (int k = 4; k <= 5; k++) {
+        s_withDisk = k;
+        s_ovAsks = 0;
+        Remove(zz);
+        Remove(ov);
+        Check(MapsList() && WaitMaps() && MapsGetRegionFrom(1, MAPS_SRC_DISK) && WaitMaps() &&
+              FileIs(L"OSMapsData\\zz\\search.idx", "IDXIDXIDXIDXIDXIDXIDXIDXIDXIDX", 30) && s_ovAsks == (k == 4 ? 1 : 0),
+              k == 4 ? "overview: a region from the disk - its overview too, from there"
+                     : "overview: no copy of it on the disk - not asked there", NULL);
+    }
+    s_withDisk = 6;
+    s_filesAsked[0] = 0;
+    Remove(zz);
+    Remove(ov);
+    Check(MapsList() && WaitMaps() && MapsGetRegion(1) && WaitMaps() && strstr(s_filesAsked, "/maps/zz.zip") &&
+          !strstr(s_filesAsked, "/maps/overview.zip"), "overview: on the server, its size not told - not asked", s_filesAsked);
+    Remove(zz);
     Remove(ov);
 }
 
@@ -454,6 +504,7 @@ static void DiskChecks()
     PathInDir(ov, L"OSMapsData\\overview");
     Remove(ov);
     FilesChecks(zz, yy, ov);
+    OverviewSourceChecks(zz, ov);
     s_withDisk = 0;
     free(s_full);
     free(s_ov);
@@ -534,6 +585,16 @@ static void DownloadChecks()
     Check(MapsJob(text, 128, &gotKb, &total) == MAPS_IDLE && total == 2 && wcsstr(text, L"Z"), "job: its result told",
           NULL);
     Check(!MapsGetRegion(5), "job: no such region", NULL);
+    // several at once (the user 2026-11-12: ticked, one button): in turn, each one's state after
+    wchar_t zzDir[MAX_PATH];
+    PathInDir(zzDir, L"OSMapsData\\zz");
+    Remove(zzDir);
+    int both[2] = { 1, 1 }, bad[2] = { 1, 5 };   // (tiny: the card's own - its download would change the next checks)
+    Check(!MapsGetRegions(bad, 2, MAPS_SRC_SERVER) && !MapsGetRegions(both, 0, MAPS_SRC_SERVER),
+          "job: a list with no such region, an empty one - not started", NULL);
+    Check(MapsGetRegions(both, 2, MAPS_SRC_SERVER) && WaitMaps() && MapsAt(1, &m) && MapState(m) == MAP_OK &&
+          MapsBusyRegion() == -1, "job: two in turn, there after",
+          NULL);
 
     // cancelled (the user 2026-10-30): stopped, nothing installed, the part kept for the next time; not sticking
     wchar_t zz[MAX_PATH], zzPart[MAX_PATH];
@@ -593,6 +654,12 @@ static void LevelChecks()
     Check(TurnCostDs(60, 80, 80, 60) == 0 && TurnCostDs(60, 80, 80, -60) == 20 && TurnCostDs(-60, 80, 80, 60) == 20,
           "turn cost: moves off the axes (16, 90, 90 degrees)", NULL);
     Check(TurnCostDs(0, 100000, 100000, 0) == 20, "turn cost: 100 km moves, no overflow", NULL);
+    // off a road that goes on (the user 2026-11-14: Щёлковское шоссе -> its дублёр and back for a light less): 6 s
+    Check(LeaveCostDs(5, 9, true) == 60, "leave: off a named road that goes on, onto another - 6 s", NULL);
+    Check(LeaveCostDs(5, 0, true) == 60, "leave: off it onto an unnamed one (a link) - 6 s", NULL);
+    Check(LeaveCostDs(5, 5, true) == 0, "leave: on along it - none", NULL);
+    Check(LeaveCostDs(5, 9, false) == 0, "leave: the road ends here (or only renames) - none", NULL);
+    Check(LeaveCostDs(0, 9, true) == 0, "leave: from an unnamed road - none", NULL);
     // by the graph's bearings (256 a circle): 21 = 29.5 degrees, 22 = 30.9, 42 = 59, 43 = 60.5, 64 = 90, 65 = 91.4,
     // 85 = 119.5, 86 = 120.9, 106 = 149, 107 = 150.5
     Check(TurnCostB(64, 64) == 0 && TurnCostB(64, 85) == 0 && TurnCostB(64, 43) == 0 && TurnCostB(250, 15) == 0,
@@ -643,6 +710,27 @@ static void MapsChecks()
           !strcmp(r[1].name, "zz") && r[1].sizeKb == 0, "maps: the catalog read", NULL);
     Check(MapsCatalog(kCat, r, 1) == 1 && MapsCatalog("{}", r, 4) == 0 && MapsCatalog("garbage", r, 4) == 0,
           "maps: the catalog bounded, nothing from a bad one", NULL);
+    Check(!r[0].diskKb && !r[0].diskDate[0] && !r[0].foreign, "maps: no disk copy, not far - as an old catalog", NULL);
+    static const char* kFar = "{\"regions\":[{\"name\":\"bayern\",\"zip\":\"bayern.zip\",\"far\":true,"
+                              "\"disk\":{\"size\":3072,\"date\":\"2026-11-05\"}}]}";
+    Check(MapsCatalog(kFar, r, 4) == 1 && r[0].foreign && r[0].diskKb == 3 && !strcmp(r[0].diskDate, "2026-11-05"),
+          "maps: a far region, its disk copy's size and date", NULL);
+    MapRegion a, b;
+    memset(&a, 0, sizeof(a));
+    memset(&b, 0, sizeof(b));
+    strcpy(a.title, "B");
+    strcpy(b.title, "A");
+    b.foreign = true;
+    Check(MapsOrder(&a, &b) < 0 && MapsOrder(&b, &a) > 0, "maps: the far ones last", NULL);
+    b.foreign = false;
+    Check(MapsOrder(&a, &b) > 0, "maps: by the title otherwise", NULL);
+    strcpy(a.date, "2026-11-11");
+    strcpy(a.diskDate, "2026-11-05");
+    Check(MapsDiskOld(a), "maps: the disk's copy older than the region's build - told old", NULL);
+    strcpy(a.diskDate, "2026-11-11");
+    Check(!MapsDiskOld(a), "maps: the same day - not old", NULL);
+    a.diskDate[0] = 0;
+    Check(!MapsDiskOld(a), "maps: no disk copy - not old", NULL);
     n = MapsCatalog(kCat, r, 4);
     MapsHave(r, n);   // tiny on the card (region.txt 2026-10-20), zz not
     Check(!strcmp(r[0].have, "2026-10-20") && !r[1].have[0], "maps: the card's dates", NULL);
@@ -1049,6 +1137,64 @@ static void ParkPriceChecks()   // Sunday 0: as GetLocalTime tells
     Check(ParkPrice(top, 1, 0) == 2550, "park price: up to the byte's whole", NULL);
 }
 
+static int KindCount(const LayerPoint* p, int n, int kind)
+{
+    int k = 0;
+    for (int i = 0; i < n; i++)
+        k += p[i].kind == kind ? 1 : 0;
+    return k;
+}
+
+// One icon for one thing (the user 2026-11-12): a bump of each direction, the lights of each approach of a crossing.
+// (At 53 degrees: 1 m - 9 units of latitude, 15 of longitude.)
+static void LayerMergeChecks()
+{
+    LayerPoint two[2] = { { 53000000, 50000000, LAY_BUMP, 0, 0 }, { 53000108, 50000000, LAY_BUMP, 0, 0 } };
+    Check(LayersMerge(two, 2) == 1 && two[0].lat == 53000054 && two[0].lon == 50000000 && two[0].kind == LAY_BUMP,
+          "merge: a bump each way (12 m) - one, between them", NULL);
+    LayerPoint apart[2] = { { 53000000, 50000000, LAY_BUMP, 0, 0 }, { 53000270, 50000000, LAY_BUMP, 0, 0 } };
+    Check(LayersMerge(apart, 2) == 2, "merge: bumps 30 m apart along a road - both", NULL);
+    LayerPoint east18[2] = { { 53000000, 50000000, LAY_BUMP, 0, 0 }, { 53000000, 50000270, LAY_BUMP, 0, 0 } };
+    Check(LayersMerge(east18, 2) == 1, "merge: east of each other, 18 m - one (longitude's metres)", NULL);
+    LayerPoint cross[5] = { { 53001180, 50001000, LAY_SIGNAL, 0, 0 }, { 53000820, 50001000, LAY_SIGNAL, 0, 0 },
+                            { 53001000, 50001300, LAY_SIGNAL, 0, 0 }, { 53001000, 50000700, LAY_SIGNAL, 0, 0 },
+                            { 53002350, 50001000, LAY_SIGNAL, 0, 0 } };   // (a crossing's four approaches; the next, 150 m on)
+    Check(LayersMerge(cross, 5) == 2, "merge: a crossing's lights - one; the next crossing's - its own", NULL);
+    Check((cross[0].lat == 53001000 && cross[0].lon == 50001000) || (cross[1].lat == 53001000 && cross[1].lon == 50001000),
+          "merge: the crossing's one in its middle", NULL);
+    LayerPoint mixed[4] = { { 53000000, 50000000, LAY_SIGNAL, 0, 0 }, { 53000000, 50000000, LAY_BUMP, 0, 0 },
+                            { 53000000, 50000000, LAY_PARKING, 0, 0 }, { 53000000, 50000000, LAY_PARKING, 0, 0 } };
+    int m = LayersMerge(mixed, 4);
+    Check(m == 4 && KindCount(mixed, m, LAY_SIGNAL) == 1 && KindCount(mixed, m, LAY_BUMP) == 1 && KindCount(mixed, m, LAY_PARKING) == 2,
+          "merge: other kinds at one place - each kept; car parks never merged", NULL);
+    LayerPoint shuffled[3] = { { 53000000, 50000000, LAY_BUMP, 0, 0 }, { 53005000, 50000000, LAY_SIGNAL, 0, 0 },
+                               { 53000100, 50000000, LAY_BUMP, 0, 0 } };
+    m = LayersMerge(shuffled, 3);
+    Check(m == 2 && KindCount(shuffled, m, LAY_BUMP) == 1 && KindCount(shuffled, m, LAY_SIGNAL) == 1,
+          "merge: in any order", NULL);
+    LayerPoint chain[3] = { { 53000000, 50000000, LAY_SIGNAL, 0, 0 }, { 53000300, 50000000, LAY_SIGNAL, 0, 0 },
+                            { 53000600, 50000000, LAY_SIGNAL, 0, 0 } };   // (33 m steps: a wide crossing's approaches)
+    Check(LayersMerge(chain, 3) == 1 && chain[0].lat == 53000300, "merge: near one another in a row - one, the middle", NULL);
+    Check(LayersMerge(two, 0) == 0, "merge: none", NULL);
+    // the edges (180 units of latitude: 20.02 m, 179: 19.90 m; 360: 40.03 m, 359: 39.92 m)
+    LayerPoint edge[2] = { { 53000000, 50000000, LAY_BUMP, 0, 0 }, { 53000180, 50000000, LAY_BUMP, 0, 0 } };
+    Check(LayersMerge(edge, 2) == 2, "merge: bumps just over 20 m - both", NULL);
+    edge[1].lat = 53000179;
+    Check(LayersMerge(edge, 2) == 1, "merge: bumps just under 20 m - one", NULL);
+    edge[0].kind = edge[1].kind = LAY_SIGNAL;
+    edge[0].lat = 53000000;
+    edge[1].lat = 53000360;
+    Check(LayersMerge(edge, 2) == 2, "merge: lights just over 40 m - both", NULL);
+    edge[0].lat = 53000000;
+    edge[1].lat = 53000359;
+    Check(LayersMerge(edge, 2) == 1, "merge: lights just under 40 m - one", NULL);
+    LayerPoint diag[2] = { { 53000000, 50000000, LAY_BUMP, 0, 0 }, { 53000135, 50000225, LAY_BUMP, 0, 0 } };
+    Check(LayersMerge(diag, 2) == 2, "merge: 15 m north and 15 m east (21 m) - both", NULL);
+    LayerPoint half[2] = { { 53000000, 50000000, LAY_BUMP, 0, 0 }, { 53000101, 50000001, LAY_BUMP, 0, 0 } };
+    Check(LayersMerge(half, 2) == 1 && half[0].lat == 53000051 && half[0].lon == 50000001,
+          "merge: the middle rounded (half up)", NULL);
+}
+
 static void LayerAheadChecks()
 {
     LayerPoint p[3] = { { 53000000, 50005000, LAY_BUMP, 0, 0 }, { 53000000, 50004000, LAY_SIGNAL, 0, 0 }, { 53000000, 50007000, LAY_BUMP, 0, 0 } };
@@ -1075,6 +1221,113 @@ static void LayerAheadChecks()
     Check(!t && !c, "overlay: car parks -> neither", NULL);
     OverlayNext(&t, &c);
     Check(t && !c, "overlay: neither -> traffic", NULL);
+}
+
+static DWORD WINAPI TryUseThread(LPVOID)   // another thread's look at the data: free?
+{
+    if (!OffTryUse())
+        return 0;
+    OffUse(false);
+    return 1;
+}
+
+static HANDLE s_holdGo, s_holdDone;
+
+static DWORD WINAPI HoldUseThread(LPVOID)   // a route's thread holding the data until told
+{
+    OffUse(true);
+    SetEvent(s_holdGo);
+    WaitForSingleObject(s_holdDone, 5000);
+    OffUse(false);
+    return 0;
+}
+
+static bool Snapped(int lat, int lon, double course, double maxM, double tol, int wantLat, int wantLon, double wantC)
+{
+    int la = lat, lo = lon;
+    double c = course;
+    return OfflineSnapFix(&la, &lo, &c, maxM, tol) == 1 && abs(la - wantLat) <= 1 && abs(lo - wantLon) <= 1 &&
+           fabs(c - wantC) < 0.5;
+}
+
+static void MagnetChecks()   // the magnet with no route, on tiny's main street (lat 53.000, west - east)
+{
+    Check(Snapped(53000090, 50001000, 90, 30, 60, 53000000, 50001000, 90), "magnet: 10 m north of the street going east - "
+          "onto it, east", NULL);
+    Check(Snapped(53000090, 50001000, 265, 30, 60, 53000000, 50001000, 270), "magnet: going west - onto it, the road's "
+          "west", NULL);
+    Check(Snapped(53000090, 50001000, 120, 30, 60, 53000000, 50001000, 90), "magnet: 30 degrees off the road - its way",
+          NULL);
+    int la = 53000090, lo = 50001000;
+    double c = 0;
+    Check(OfflineSnapFix(&la, &lo, &c, 30, 60) == 0 && la == 53000090 && lo == 50001000 && c == 0,
+          "magnet: going north across it - no road that way near, the fix as it was", NULL);
+    Check(Snapped(53000090, 50001000, 0, 30, -1, 53000000, 50001000, 0), "magnet: slow (any way) - onto the nearest, the "
+          "course kept", NULL);
+    la = 53000090;
+    Check(OfflineSnapFix(&la, &lo, &c, 30, 0) == 0 && la == 53000090, "magnet: no slack (0 degrees) going north - "
+          "only that way's roads, none", NULL);
+    la = 53000320;
+    Check(OfflineSnapFix(&la, &lo, &c, 30, 60) == 0 && la == 53000320, "magnet: 35 m off - not on the road", NULL);
+    free(Route("50.000,60.000;50.010,60.000", "&exclude=toll"));   // (a route kept off the tolls just made)
+    Check(Snapped(60000090, 50005000, 90, 30, 60, 60000000, 50005000, 90), "magnet: onto a toll road too", NULL);
+    s_holdGo = CreateEvent(NULL, FALSE, FALSE, NULL);
+    s_holdDone = CreateEvent(NULL, FALSE, FALSE, NULL);
+    HANDLE t = CreateThread(NULL, 0, HoldUseThread, NULL, 0, NULL);
+    WaitForSingleObject(s_holdGo, 5000);
+    la = 53000090;
+    c = 90;
+    Check(OfflineSnapFix(&la, &lo, &c, 30, 60) == -1 && la == 53000090, "magnet: the data busy - -1, as it was", NULL);
+    SetEvent(s_holdDone);
+    WaitForSingleObject(t, 5000);
+    CloseHandle(t);
+    CloseHandle(s_holdGo);
+    CloseHandle(s_holdDone);
+    char name[64] = "";
+    Check(OfflineRoadAt(53000000, 50001000, 400, name, sizeof(name)) && (BYTE)name[1] == 0x93,
+          "magnet: then the routes' snapping any way again", name);
+}
+
+static void LimitChecks()   // the speed limit sign: tiny's main street maxspeed=60, the side one RU:urban
+{
+    Check(OfflineLimitAt(53000000, 50001000, 90, 30) == 60, "limit: on the main street going east - 60", NULL);
+    Check(OfflineLimitAt(53000000, 50001000, 270, 30) == 60, "limit: going west, the same road - 60", NULL);
+    Check(OfflineLimitAt(53000000, 50001000, -1, 30) == 60, "limit: no course - the nearest road's", NULL);
+    Check(OfflineLimitAt(53001000, 50002000, 0, 30) == 60, "limit: the side street (RU:urban) - 60", NULL);
+    Check(OfflineLimitAt(53001000, 50004000, 0, 30) == 0, "limit: the one-way street, none posted - 0", NULL);
+    Check(OfflineLimitAt(53000000, 50001000, 0, 30) == 0, "limit: across the main street, no road that way near - 0",
+          NULL);
+    Check(OfflineLimitAt(53000050, 50004030, 90, 30) == 60,
+          "limit: at a junction going east - the main street, not the nearer one-way street", NULL);
+    Check(OfflineLimitAt(53000050, 50004030, 0, 30) == 0, "limit: there going north - the one-way street's (none)",
+          NULL);
+    Check(OfflineLimitAt(53000400, 50001000, 90, 30) == 0, "limit: 44 m off the road - not on it", NULL);
+    Check(OfflineLimitAt(53050000, 50000000, 90, 30) == 0, "limit: far from any road - 0", NULL);
+    Check(OfflineLimitAt(60000000, 50005000, 90, 30) == 90, "limit: on a toll road too (maxspeed=90)", NULL);
+    // after it: the routes' snapping any way again (not kept to the last course), the data free for another thread
+    char name[64] = "";
+    OfflineLimitAt(53001000, 50002000, 0, 30);
+    Check(OfflineRoadAt(53000000, 50001000, 400, name, sizeof(name)) && (BYTE)name[1] == 0x93,
+          "limit: then the nearest road any way (the main street, Г...), not the course's", name);
+    DWORD ok = 0;
+    HANDLE t = CreateThread(NULL, 0, TryUseThread, NULL, 0, NULL);
+    WaitForSingleObject(t, 5000);
+    GetExitCodeThread(t, &ok);
+    CloseHandle(t);
+    Check(ok == 1, "limit: the data let go after (a route's thread not kept waiting)", NULL);
+    Check(OfflineLimitAt(58000000, 50001000, 90, 30) == 0,
+          "limit: a region's graph made before the limits (twin: no OSMS) - 0, nothing read", NULL);
+    s_holdGo = CreateEvent(NULL, FALSE, FALSE, NULL);
+    s_holdDone = CreateEvent(NULL, FALSE, FALSE, NULL);
+    t = CreateThread(NULL, 0, HoldUseThread, NULL, 0, NULL);
+    WaitForSingleObject(s_holdGo, 5000);
+    Check(OfflineLimitAt(53000000, 50001000, 90, 30) == -1, "limit: the data busy (a route) - -1, not waited for", NULL);
+    SetEvent(s_holdDone);
+    WaitForSingleObject(t, 5000);
+    CloseHandle(t);
+    CloseHandle(s_holdGo);
+    CloseHandle(s_holdDone);
+    Check(OfflineLimitAt(53000000, 50001000, 90, 30) == 60, "limit: free again - read", NULL);
 }
 
 static void TrafficLookChecks()   // how the traffic is shown (trafshade.cpp)
@@ -1118,6 +1371,9 @@ int main()
     ParkLineChecks();
     ParkPriceChecks();
     LayerAheadChecks();
+    LayerMergeChecks();
+    LimitChecks();
+    MagnetChecks();
 
     // along the main street, west to east: ~400 m, no turn on the way
     char* b = Route("50.000,53.000;50.006,53.000");

@@ -6,42 +6,151 @@
 // 16.16 fixed point (offsets from the view's centre: small numbers), the first ring having the pixel gives it, none:
 // the fog's colour; the fog laid over the far rows by its fade.
 
-unsigned short Blend565(unsigned short a, unsigned short b, int alpha32)
+static inline unsigned short Blend(unsigned short a, unsigned short b, int alpha32)   // (inlined in the walks)
 {
     int ar = a >> 11, ag = (a >> 5) & 63, ab = a & 31, br = b >> 11, bg = (b >> 5) & 63, bb = b & 31;
     return (unsigned short)((ar + (br - ar) * alpha32 / 32) << 11 | (ag + (bg - ag) * alpha32 / 32) << 5 |
                             (ab + (bb - ab) * alpha32 / 32));
 }
 
+unsigned short Blend565(unsigned short a, unsigned short b, int alpha32)
+{
+    return Blend(a, b, alpha32);
+}
+
 static const double kFix = 1 << 16;   // 16.16 fixed point
 
+// A ring as the walk reads it: its loaded part's first column and row (its px) less their remainder by the ring's size
+// - a pixel's place in the ring then by subtraction, no division per pixel (HU sheet 30: the 3D frame 60-85 ms; ARMv4
+// has no divide, two "%" a pixel of ~320 thousand)
+struct RingFast { RingView v; int bx, by; };
+
+static RingFast Fast(const RingView& r)
+{
+    RingFast f = { r, (r.x0 >> r.shift) - (r.x0 >> r.shift) % r.size, (r.y0 >> r.shift) - (r.y0 >> r.shift) % r.size };
+    return f;
+}
+
+static int Wrapped(int v, int size)   // v >= 0; the loaded part is no wider than the ring: once at most there
+{
+    while (v >= size)
+        v -= size;
+    return v;
+}
+
 // The pixel of world px (x, y) of the view's zoom from the first ring loaded there; else the fog's colour
-static unsigned short RingPixel(const RingView* rings, int n, int x, int y, unsigned short fog)
+static unsigned short RingPixel(const RingFast* rings, int n, int x, int y, unsigned short fog)
 {
     for (int i = 0; i < n; i++) {
-        const RingView& r = rings[i];
+        const RingView& r = rings[i].v;
         if (x >= r.x0 && x < r.x1 && y >= r.y0 && y < r.y1)
-            return r.top[(y >> r.shift) % r.size * r.stride + (x >> r.shift) % r.size];   // (world px: >= 0)
+            return r.top[Wrapped((y >> r.shift) - rings[i].by, r.size) * r.stride +
+                         Wrapped((x >> r.shift) - rings[i].bx, r.size)];
     }
     return fog;
 }
 
 struct RowWalk { int bx, by; long ox, oy, dx, dy; };   // the view's centre (whole px), the walk in 16.16 from it
 
-static void WarpRow(const RingView* rings, int n, const RowWalk& w0, int width, unsigned short fog, int alpha,
+// Narrows [*lo, *hi] to the steps x whose (o + x * d) / 2^16 lies in [a, b]
+static void Keep(long o, long d, double a, double b, double* lo, double* hi)
+{
+    double p = o / kFix, q = d / kFix;
+    if (q == 0) {
+        if (p < a || p > b)
+            *hi = *lo - 1;
+        return;
+    }
+    double t0 = (a - p) / q, t1 = (b - p) / q;
+    if (q < 0) {   // (walking back: b reached first)
+        double t = t0;
+        t0 = t1;
+        t1 = t;
+    }
+    *lo = t0 > *lo ? t0 : *lo;
+    *hi = t1 < *hi ? t1 : *hi;
+}
+
+// The row's steps surely inside the first ring's loaded part (a pixel inside its edges): [*lo, *hi); Shturmann
+// 2026-11-12 - the 3D frame 80-158 ms: those need no ring's check a pixel
+static void Inside(const RingFast& f, const RowWalk& w, int width, int* lo, int* hi)
+{
+    const RingView& r = f.v;
+    double l = 0, h = width - 1;
+    Keep(w.ox, w.dx, r.x0 - w.bx + 1, r.x1 - w.bx - 2, &l, &h);
+    Keep(w.oy, w.dy, r.y0 - w.by + 1, r.y1 - w.by - 2, &l, &h);
+    *lo = (int)ceil(l);
+    *hi = h < l ? *lo : (int)floor(h) + 1;
+}
+
+// Steps from..to - 1 through each ring's check
+static void WalkAny(const RingFast* rings, int n, RowWalk* w, int from, int to, unsigned short fog, int alpha, unsigned short* d)
+{
+    long ox = w->ox, oy = w->oy;   // (locals: see WalkNear)
+    const long dx = w->dx, dy = w->dy;
+    const int bx = w->bx, by = w->by;
+    for (int x = from; x < to; x++, ox += dx, oy += dy) {
+        unsigned short p = RingPixel(rings, n, bx + (int)(ox >> 16), by + (int)(oy >> 16), fog);
+        d[x] = alpha ? Blend(p, fog, alpha) : p;
+    }
+    w->ox = ox;
+    w->oy = oy;
+}
+
+// ... all in the first ring
+static void WalkNear(const RingFast& f, RowWalk* w, int from, int to, unsigned short fog, int alpha, unsigned short* d)
+{
+    // (all in locals: VS2005 keeps no field of a struct in a register past a store through a pointer - each pixel
+    // read and wrote them, the emulator's 3D frame 62 ms)
+    const unsigned short* top = f.v.top;
+    const int stride = f.v.stride, size = f.v.size, shift = f.v.shift, bx = w->bx, by = w->by, fbx = f.bx, fby = f.by;
+    long ox = w->ox, oy = w->oy;
+    const long dx = w->dx, dy = w->dy;
+    if (!alpha && !shift) {   // (the rows by the car: the ring of the view's zoom, no fog - the most of the frame;
+        // the loaded part no wider than the ring: one wrap at most)
+        const int ub = bx - fbx, vb = by - fby;
+        for (int x = from; x < to; x++, ox += dx, oy += dy) {
+            int u = ub + (int)(ox >> 16), v = vb + (int)(oy >> 16);
+            if (u >= size)
+                u -= size;
+            if (v >= size)
+                v -= size;
+            d[x] = top[v * stride + u];
+        }
+        w->ox = ox;
+        w->oy = oy;
+        return;
+    }
+    for (int x = from; x < to; x++, ox += dx, oy += dy) {
+        int u = Wrapped(((bx + (int)(ox >> 16)) >> shift) - fbx, size), v = Wrapped(((by + (int)(oy >> 16)) >> shift) - fby, size);
+        unsigned short p = top[v * stride + u];
+        d[x] = alpha ? Blend(p, fog, alpha) : p;
+    }
+    w->ox = ox;
+    w->oy = oy;
+}
+
+static void WarpRow(const RingFast* rings, int n, const RowWalk& w0, int width, unsigned short fog, int alpha,
                     unsigned short* d)
 {
     RowWalk w = w0;
-    for (int x = 0; x < width; x++, w.ox += w.dx, w.oy += w.dy) {
-        unsigned short p = RingPixel(rings, n, w.bx + (int)(w.ox >> 16), w.by + (int)(w.oy >> 16), fog);
-        d[x] = alpha ? Blend565(p, fog, alpha) : p;
-    }
+    int lo, hi;
+    Inside(rings[0], w, width, &lo, &hi);
+    lo = lo < 0 ? 0 : lo > width ? width : lo;
+    hi = hi < lo ? lo : hi > width ? width : hi;
+    WalkAny(rings, n, &w, 0, lo, fog, alpha, d);
+    WalkNear(rings[0], &w, lo, hi, fog, alpha, d);
+    WalkAny(rings, n, &w, hi, width, fog, alpha, d);
 }
 
 void TiltWarp(const RingView* rings, int n, const Tilt& t, int w, int h, double vx, double vy, double angleDeg, bool night,
               unsigned short* dst, int dstride)
 {
     double a = angleDeg * M_PI / 180, ca = cos(a), sa = sin(a);
+    RingFast fast[4];
+    n = n < 4 ? n : 4;
+    for (int i = 0; i < n; i++)
+        fast[i] = Fast(rings[i]);
     RowWalk walk;
     walk.bx = (int)floor(vx);
     walk.by = (int)floor(vy);
@@ -61,7 +170,7 @@ void TiltWarp(const RingView* rings, int n, const Tilt& t, int w, int h, double 
         walk.oy = (long)floor((fx * sa + fy * ca + vy - walk.by) * kFix);
         walk.dx = (long)(k * ca * kFix);
         walk.dy = (long)(k * sa * kFix);
-        WarpRow(rings, n, walk, w, fog, (int)(fade * 32 + 0.5), d);
+        WarpRow(fast, n, walk, w, fog, (int)(fade * 32 + 0.5), d);
     }
 }
 

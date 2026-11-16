@@ -51,6 +51,24 @@ def graph(path):
     return nodes, edges
 
 
+def limits(path):
+    """Each edge's (name, speed limit) in the edges' order, from the 'OSMS' part after 'OSMB'; None: no such part."""
+    d = read(path)
+    h = struct.unpack_from(make_graph.HEADER, d, 0)
+    n_edges, off = h[3], h[-6:]
+    gw, gh, items = h[10], h[11], h[13]
+    end = off[5] + (gw * gh + 1 + items) * 4
+    assert d[end:end + 4] == b'OSMB'
+    end += 4 + (n_edges * 2 + 3) // 4 * 4   # (to a multiple of 4: read in place on the unit)
+    if d[end:end + 4] != b'OSMS':
+        return None
+    out = []
+    for e in range(n_edges):
+        nm = struct.unpack_from('<I', d, off[2] + e * 24 + 20)[0]
+        out.append((d[off[4] + nm:d.index(b'\0', off[4] + nm)].decode().split('\t')[0], d[end + 4 + e]))
+    return out
+
+
 def pack_tiles(path):
     """{(z, x, y): data} as the unit reads tiles.vtp: the header, the sorted index, the blobs."""
     d = read(path)
@@ -154,6 +172,38 @@ class Tools(unittest.TestCase):
         self.assertEqual(one, [((53000000, 50004000), (53002000, 50004000))])   # north only
         main = [dm for a, b, dm, _, n in edges if n == 'Главная улица' and a == (53000000, 50000000)]
         self.assertTrue(1300 < main[0] < 1400)        # ~134 m, in decimetres
+
+    def test_speed_limit_of_tags(self):
+        # the speed limit sign (design v3): the posted limit only - a number, mph, or a country's code for a kind of
+        # road; 0 = not known (the class's typical speed is not a limit)
+        lim = make_graph.limit_of
+        self.assertEqual(lim({'maxspeed': '60'}), 60)
+        self.assertEqual(lim({'maxspeed': '40 mph'}), 64)
+        self.assertEqual(lim({'maxspeed': 'RU:urban'}), 60)
+        self.assertEqual(lim({'maxspeed': 'RU:rural'}), 90)
+        self.assertEqual(lim({'maxspeed': 'RU:motorway'}), 110)
+        self.assertEqual(lim({'maxspeed': 'RU:living_street'}), 20)
+        self.assertEqual(lim({'maxspeed': 'BY:urban'}), 60)
+        self.assertEqual(lim({'maxspeed:type': 'RU:urban'}), 60)
+        self.assertEqual(lim({'source:maxspeed': 'RU:rural'}), 90)
+        self.assertEqual(lim({'zone:maxspeed': 'RU:20'}), 20)
+        self.assertEqual(lim({'maxspeed': '50', 'maxspeed:type': 'RU:urban'}), 50)   # the sign's number wins
+        self.assertEqual(lim({}), 0)
+        self.assertEqual(lim({'maxspeed': 'none'}), 0)
+        self.assertEqual(lim({'maxspeed': 'signals'}), 0)
+        self.assertEqual(lim({'maxspeed': '300'}), 0)                                  # not a real one
+        self.assertEqual(lim({'maxspeed': 'RU:unknown'}), 0)
+
+    def test_graph_speed_limits(self):
+        out = os.path.join(self.tmp, 'route.grf')
+        make_graph.build(TINY, out)
+        got = limits(out)
+        self.assertIsNotNone(got)
+        _, edges = graph(out)
+        self.assertEqual(len(got), len(edges))
+        self.assertEqual({v for n, v in got if n == 'Главная улица'}, {60})       # maxspeed=60
+        self.assertEqual({v for n, v in got if n == 'Боковая улица'}, {60})       # RU:urban
+        self.assertEqual({v for n, v in got if n not in ('Главная улица', 'Боковая улица')}, {0})
 
     def test_graph_nodes_by_place(self):
         # the user's Shturmann 2026-10-31: a 115 km way read most of the 96 MB graph into memory - its nodes numbered in
@@ -402,6 +452,27 @@ class Tools(unittest.TestCase):
         sides = {b for a, b, _, _, n in edges if n == 'Блочная' and a == at7}
         self.assertEqual(sides, {(53100000, 50004000), (53102000, 50004000)})   # up to it from both, no further
 
+    def test_graph_signals_one_crossing(self):
+        """A crossing's lights count once (the user 2026-11-14: Щёлковское шоссе at Хабаровская - four lights of one
+        crossing on 92 m, 32 s, the дублёр beside it two: the route took the дублёр): along a way, a light within
+        kSignalJoinM of the last one counted is the same crossing's. Here three 20 m apart, then one 300 m on: two."""
+        osm = os.path.join(self.tmp, 'signals.osm')
+        nodes = {1: (53.1, 50.000), 2: (53.1, 50.0030), 3: (53.1, 50.0033), 4: (53.1, 50.0036), 5: (53.1, 50.0080),
+                 6: (53.1, 50.0100)}
+        with open(osm, 'w', encoding='utf-8') as f:
+            f.write('<?xml version="1.0" encoding="UTF-8"?>\n<osm version="0.6">\n')
+            for i, (la, lo) in nodes.items():
+                light = '<tag k="highway" v="traffic_signals"/>' if i in (2, 3, 4, 5) else ''
+                f.write('<node id="%d" lat="%s" lon="%s" version="1">%s</node>\n' % (i, la, lo, light))
+            f.write('<way id="1" version="1">%s<tag k="highway" v="residential"/><tag k="name" v="Шоссе"/>'
+                    '</way>\n</osm>\n' % ''.join('<nd ref="%d"/>' % i for i in nodes))
+        out = os.path.join(self.tmp, 'signals.grf')
+        make_graph.build(osm, out)
+        _, edges = graph(out)
+        self.assertEqual(len(edges), 2)   # (both ways: the lights count in each)
+        for a, b, dm, ds, n in edges:
+            self.assertAlmostEqual(ds / 10 - dm / 10 / (25 / 3.6), 2 * make_graph.kSignalS, delta=0.2)
+
     def test_graph_toll(self):
         """A toll road's edges flagged (8): the unit keeps off them when asked (the user 2026-10-29)."""
         import make_test_toll
@@ -435,7 +506,9 @@ class Tools(unittest.TestCase):
         n_nodes, n_edges, off = h[2], h[3], h[-6:]
         end = off[5] + (h[10] * h[11] + 1 + h[13]) * 4
         self.assertEqual(d[end:end + 4], b'OSMB')
-        self.assertEqual(len(d), end + 4 + n_edges * 2)
+        lim = end + 4 + (n_edges * 2 + 3) // 4 * 4   # the speed limits after them (2026-11-11), 4-byte aligned
+        self.assertEqual(d[lim:lim + 4], b'OSMS')
+        self.assertEqual(len(d), lim + 4 + n_edges)
         nodes = [struct.unpack_from('<ii', d, off[0] + i * 8) for i in range(n_nodes)]
         first = struct.unpack_from('<%dI' % (n_nodes + 1), d, off[1])
         bear = {}
@@ -600,6 +673,27 @@ class Tools(unittest.TestCase):
         self.assertGreater(len(got), 300)
         self.assertEqual(pmextract.slim(layer(['wood'], [0])), b'')
         self.assertEqual(pmextract.slim(mvt({'landuse': ['wood', 'farmland']})), b'')
+
+    def test_numbers_tiles(self):
+        """The deepest zoom's tiles (z15) in a pack: only the house numbers (Protomaps' buildings of kind "address",
+        OpenMapTiles' housenumber layer) - the map drawn from z14 there (2026-11-11: z15 was 300 of the Moscow oblast's
+        530 MB, the same roads and houses again)."""
+        tile = mvt({'buildings': ['building', 'address', 'building_part', 'address'], 'roads': ['major_road'],
+                    'housenumber': ['x'], 'water': ['water'], 'places': ['locality']})
+        self.assertEqual(mvt_kinds(pmextract.numbers(tile)), {'buildings': ['address', 'address'], 'housenumber': ['x']})
+        self.assertEqual(pmextract.numbers(mvt({'roads': ['major_road'], 'buildings': ['building']})), b'')
+        only = mvt({'buildings': ['address']})
+        self.assertEqual(pmextract.numbers(only), only)                 # nothing to drop: the same bytes
+
+    def test_pmtiles_extract_deepest(self):
+        """extract's deepest: what of the tiles at the zoom asked is kept (the others: keep)."""
+        src = os.path.join(self.tmp, 'planet.pmtiles')
+        make_pmtiles(src, {(0, 0, 0): b'world', (5, 20, 10): b'samara', (4, 10, 5): b'mid'})
+        data = read(src)
+        out = os.path.join(self.tmp, 'tiles.vtp')
+        pmextract.extract(lambda o, n: data[o:o + n], (45.1, 41.1, 67.4, 55.7), 5, out, keep=lambda t: t.upper(),
+                          deepest=lambda t: b'n' + t)
+        self.assertEqual(pack_tiles(out)[2], {(0, 0, 0): b'WORLD', (4, 10, 5): b'MID', (5, 20, 10): b'nsamara'})
 
     def test_protobuf_fields(self):
         import struct
@@ -991,7 +1085,7 @@ class Tools(unittest.TestCase):
         self.assertEqual(make_region.region_links(page, 'B/'), {'samara_oblast': 'B/samara_oblast-latest.osm.pbf'})
         pages = {make_region.BASE: top, make_region.BASE + 'volga_federal_district/': page,
                  make_region.BASE + 'ural_federal_district/': ''}
-        russia = lambda got: sorted(n for n in got if n not in make_region.COUNTRIES)   # noqa: E731
+        russia = lambda got: sorted(n for n in got if n not in make_region.COUNTRIES and n not in make_region.FAR)   # noqa: E731
         self.assertEqual(russia(make_region.regions(get=pages.get)), ['crimea', 'donetsk', 'luhansk', 'samara_oblast'])
         pages[make_region.BASE + 'ural_federal_district/'] = '<a href="crimea_republic-latest.osm.pbf">c</a>'
         got = make_region.regions(get=pages.get)            # the disputed lands apart, by neutral names, whole
@@ -1022,9 +1116,39 @@ class Tools(unittest.TestCase):
         self.assertEqual(got['crimea'], make_region.APART['crimea'])
         self.assertEqual(got['belarus'], 'https://download.geofabrik.de/europe/belarus-latest.osm.pbf')
         self.assertEqual(got['kazakhstan'], 'https://download.geofabrik.de/asia/kazakhstan-latest.osm.pbf')
-        self.assertEqual(len(make_region.COUNTRIES), 10)
+        self.assertEqual(got['lithuania'], 'https://download.geofabrik.de/europe/lithuania-latest.osm.pbf')
+        for baltic in ('lithuania', 'latvia', 'estonia'):   # (the user 2026-11-12: missing; once in the USSR - not far)
+            self.assertIn(baltic, got)
+            self.assertFalse(release_regions.far(baltic), baltic)
+        self.assertEqual(len(make_region.COUNTRIES), 13)
         for name in got:
             self.assertNotEqual(release_regions.title(name), name, name)   # every one titled
+
+    def test_far_regions(self):
+        """The user 2026-11-07/12: Slovakia, Czechia, Poland, Hungary whole, Germany by its states (Berlin, Bremen,
+        Hamburg inside the states round them, as Moscow); outside the former USSR - "far": the lists' end, an icon,
+        a state titled "Страна — область"."""
+        got = make_region.regions(get={make_region.BASE: '', make_region.UKRAINE_DIR: ''}.get)
+        g = make_region.GEOFABRIK
+        self.assertEqual(got['slovakia'], g % 'europe/slovakia')
+        self.assertEqual(got['czech_republic'], g % 'europe/czech-republic')
+        self.assertEqual(got['bayern'], g % 'europe/germany/bayern')
+        self.assertEqual(got['brandenburg'], [g % 'europe/germany/brandenburg', g % 'europe/germany/berlin'])
+        self.assertEqual(got['niedersachsen'], [g % 'europe/germany/niedersachsen', g % 'europe/germany/bremen'])
+        self.assertEqual(got['schleswig_holstein'], [g % 'europe/germany/schleswig-holstein',
+                                                     g % 'europe/germany/hamburg'])
+        for gone in ('berlin', 'bremen', 'hamburg'):
+            self.assertNotIn(gone, got)
+        self.assertNotIn('poland', got)   # (the user 2026-11-12: by its voivodeships, ~1.9 GB whole)
+        self.assertEqual(got['mazowieckie'], g % 'europe/poland/mazowieckie')
+        self.assertEqual(len([n for n in got if n in make_region.FAR]), 3 + 16 + 13)
+        self.assertEqual(release_regions.title('bayern'), 'Германия — Бавария')
+        self.assertEqual(release_regions.title('mazowieckie'), 'Польша — Мазовецкое воеводство')
+        self.assertTrue(release_regions.far('bayern') and release_regions.far('hungary'))
+        self.assertFalse(release_regions.far('belarus') or release_regions.far('moscow_oblast') or
+                         release_regions.far('georgia'))
+        for name in make_region.FAR:
+            self.assertNotEqual(release_regions.title(name), name, name)
 
 
 if __name__ == '__main__':

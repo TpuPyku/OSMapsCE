@@ -11,7 +11,7 @@
 #include "startpt.h"   // where a route starts
 #include "vnav.h"      // VestaCore: the next manoeuvre as VestaHome is told it, its sign
 #include "vfont.h"     // VestaCore: the fonts
-static const wchar_t* const kRelease = L"2.0";   // raise by hand: minor - significant changes, major - big releases
+static const wchar_t* const kRelease = L"2.1";   // raise by hand: minor - significant changes, major - big releases
 
 // ---------------------------------------------------------------- UI layout
 // 800x480 in the VestaHome style (mockup VestaHome/skin/maps-skin-v2.pdf): the map over the whole screen, a
@@ -23,7 +23,7 @@ static const wchar_t* const kRelease = L"2.0";   // raise by hand: minor - signi
 // pictures with alpha blended by hand (CE GDI has no usable alpha on a 16-bit screen). Pictures: make_images.py.
 
 enum { B_SETTINGS, B_NIGHT, B_EXIT, B_TRF, B_TSRC, B_GPS, B_LEFT, B_RIGHT, B_UP, B_DOWN, B_MINUS, B_PLUS,
-       B_HOME, B_SEARCH, B_ROUTEOFF, B_TILT, B_COUNT };
+       B_HOME, B_SEARCH, B_ROUTEOFF, B_TILT, B_SOUND, B_COUNT };
 
 enum { kTile = 72, kRound = 60, kSign = 48, kStatusH = 44, kDockY = 404, kDockMs = 6000, kDockH = 76, kDockStep = 16,
        kDockAnimMs = 30 };   // the bar slides in / out by kDockStep px every kDockAnimMs
@@ -51,6 +51,7 @@ static Button s_btn[B_COUNT] = {
     { 0, 0, { L"Bsearch" } },   // search a place, a route to it (route.cpp)
     { 0, 0, { L"Broff" } },     // the route off, only while there is one
     { 724, 82, { NULL } },      // the third person's view on / off: heading-up from z15 (the user 2026-10-28)
+    { 724, 354, { L"Bsound_on", L"Bsound_off" } },   // the voice on / off, on a route (design v3)
 };
 static const int kDockOrder[] = { B_HOME, B_TRF, B_TSRC, B_SEARCH, B_ROUTEOFF, B_NIGHT, B_SETTINGS };
 static const int kDockCount = sizeof(kDockOrder) / sizeof(kDockOrder[0]);
@@ -81,7 +82,8 @@ static const COLORREF kLine    = RGB(0x2a, 0x2f, 0x37);   // separators
 static COLORREF       kOrange  = RGB(0xff, 0x6b, 0x1a);
 static const COLORREF kHair    = RGB(64, 68, 77);         // night: a card's 1 px edge over the dark map
 
-enum { TIMER_TICK = 1, TIMER_USER = 2, TIMER_DOCK = 3, TIMER_LONG = 4, TIMER_DISK = 5, TIMER_GLIDE = 6, TIMER_FLING = 7, TIMER_ZOOM = 8 };
+enum { TIMER_TICK = 1, TIMER_USER = 2, TIMER_DOCK = 3, TIMER_LONG = 4, TIMER_DISK = 5, TIMER_GLIDE = 6, TIMER_FLING = 7, TIMER_ZOOM = 8,
+       TIMER_TILT = 10, kTiltFrameMs = 60 };   // (9: say.cpp's TIMER_VOICE)
 static const UINT kUserDelayMs = 900;    // wait for the user to stop pressing buttons
 
 // GPS button modes (g_cfg.follow)
@@ -168,7 +170,8 @@ static DWORD      s_statPaintMax, s_statGpsBytes;
 // The frame's parts timed (the user 2026-11-04: smooth as Navitel - where a frame's 225-320 ms go): the background,
 // the tiles into the ring, the frame (turned / tilted / the ring's blit), the names, the route and marks, the panels,
 // the copy to the screen. Each part: the time since the last lap; the sum and the maximum go to the log each minute.
-enum { PT_BG, PT_RING, PT_FRAME, PT_LABELS, PT_MARKS, PT_UI, PT_OUT, PT_N };
+enum { PT_BG, PT_RING, PT_FRAME, PT_LABELS, PT_LAYERS, PT_ROUTE, PT_MARKS, PT_UI, PT_OUT, PT_N };   // (marks: the
+// layers and the route apart since 2026-11-12 - HU sheet 30: marks 30-45 ms, which of them)
 static DWORD      s_ptSum[PT_N], s_ptMax[PT_N], s_ptAt;
 static int        s_statGpsLines, s_statGpsBad;
 
@@ -221,8 +224,9 @@ enum { kKbY = 66, kKbRowH = 81 };
 // long press offers a stop there or a new route there; on a stop's sign - that stop out or earlier (the user
 // 2026-10-29: it set a new stop instead). The trip's card tapped: the editor with the route's points.
 // Slots: 0 from, 1..3 the stops, 4 to.
-enum { P_BACK = 1, P_ROW = 10, P_DEL = 20, P_ADDVIA = 30, P_GO, P_CH_GPS = 40, P_CH_SEARCH, P_CH_MAP, P_CH_CANCEL,
-       P_PICK_CANCEL = 50, M_VIA = 60, M_NEW, M_FAV, M_CARD, M_STOP_OUT, M_STOP_UP, M_STOP_CANCEL, P_TRIP_X = 80,
+enum { P_BACK = 1, P_ROW = 10, P_DEL = 20, P_ADDVIA = 30, P_GO, P_CH_GPS = 40, P_CH_SEARCH, P_CH_FAV, P_CH_MAP,
+       P_CH_CANCEL, P_PICK_CANCEL = 50, M_VIA = 60, M_NEW, M_FAV, M_CARD, M_STOP_OUT, M_STOP_UP, M_STOP_CANCEL, M_RESUME_GO,
+       M_RESUME_NO, M_RESUME_BOX, P_TRIP_X = 80,
        P_TRIP, F_GO = 90, F_EDIT, F_CANCEL, E_ICON = 100, E_NAME = E_ICON + VFAV_ICONS, E_DEL, E_DONE, E_BOX, W_FIELD = 120, W_FAV, W_BOX = W_FAV + 3 };
 static bool       s_plan;
 static int        s_planChoose = -1;   // the slot whose choices are open
@@ -251,6 +255,11 @@ static bool       s_favOn[VFAV_MAX];
 static double     s_toLon, s_toLat;    // a route asked for from outside (VestaHome's widget), till a fix or 15 s
 static wchar_t    s_toName[80];
 static DWORD      s_toTick;            // 0: none asked
+// The route on when OSMapsCE closed (the user 2026-11-14: or the power went; route.cpp RouteKept): asked at the start;
+// "Да" - its plan again from the car once it has a fix (or after 15 s: RouteAsked)
+static bool       s_resume;
+static RoutePlan  s_resumePlan;
+static DWORD      s_resumeTick;
 enum { kStopNearPx = 40 };             // a long press this near a stop's sign is on it
 static bool       s_longDone;          // the press became a long one: its release does nothing more
 static DWORD      s_downTick;          // when the finger went down on the map
@@ -276,11 +285,11 @@ enum { S_MAPS, S_ROUTE, S_CACHE_PREV, S_CACHE_NEXT, S_LOG_PREV, S_LOG_NEXT, S_GP
        S_INFO, S_LANG_PREV, S_LANG_NEXT, S_EXIT, S_BACK, S_PAGE_END,
        S_PORT_PREV = S_PAGE_END, S_PORT_NEXT, S_BAUD_PREV, S_BAUD_NEXT, S_SCAN, S_GPS_DONE, S_GPS_END,
        S_INFO_DONE = S_GPS_END, S_INFO_END,
-       S_JUNC_PREV = S_INFO_END, S_JUNC_NEXT, S_TOLL_PREV, S_TOLL_NEXT, S_VOICE_PREV, S_VOICE_NEXT, S_ROUTE_DONE,
+       S_JUNC_PREV = S_INFO_END, S_JUNC_NEXT, S_TOLL_PREV, S_TOLL_NEXT, S_VOICE_PREV, S_VOICE_NEXT, S_FAVS, S_ROUTE_DONE,
        S_ROUTE_END,
        S_EXIT_YES = S_ROUTE_END, S_EXIT_NO, S_COUNT };
 enum { SHEET_NONE, SHEET_GPS, SHEET_INFO, SHEET_ROUTE, SHEET_EXIT };
-enum { kSetRow0 = 76, kSetRowH = 50, kMainRowH = 46, kSheetY = 200 };
+enum { kSetRow0 = 76, kSetRowH = 50, kMainRowH = 46, kSheetY = 200, kRouteSheetY = 150 };
 static const RECT kSetCtl[S_COUNT] = {
     { 576, 78, 760, 118 },                             // the maps: their page (the kind, the detail, the regions)
     { 576, 124, 760, 164 },                            // the route: its sheet (the junction card, the tolls)
@@ -296,13 +305,29 @@ static const RECT kSetCtl[S_COUNT] = {
     { 416, 416, 592, 468 },                            // ... find GPS
     { 600, 416, 784, 468 },                            // ... done
     { 600, 416, 784, 468 },                            // the requests' sheet: done
-    { 512, 259, 560, 303 }, { 712, 259, 760, 303 },   // the route's sheet: the junction card, the tolls, the voice
+    { 512, 209, 560, 253 }, { 712, 209, 760, 253 },   // the route's sheet (kRouteSheetY): the junction card, the
+    { 512, 259, 560, 303 }, { 712, 259, 760, 303 },   // tolls, the voice, the favourites (their page)
     { 512, 309, 560, 353 }, { 712, 309, 760, 353 },
-    { 512, 359, 560, 403 }, { 712, 359, 760, 403 },
+    { 576, 359, 760, 403 },
     { 600, 416, 784, 468 },                            // ... done
     { 600, 416, 784, 468 }, { 416, 416, 592, 468 },   // the exit's sheet: exit, cancel (a tap beside it too)
 };
 static int s_setSheet;   // SHEET_*
+
+static int SheetTop()   // (the route's sheet a row taller: the favourites)
+{
+    return s_setSheet == SHEET_ROUTE ? kRouteSheetY : kSheetY;
+}
+
+// The favourites' page over the settings (the user 2026-11-14: Settings -> Маршрут -> Избранное): all of them, kFavRows
+// a page, a row each - up, down (the order is VestaHome's too: its widget shows the first ones), the name (the keyboard),
+// delete ("ТОЧНО?" first); its sign and name - the signs to choose from (the user 2026-11-14, sheet 34 p. 16)
+enum { kFavRows = 6 };
+enum { L_UP0, L_DOWN0 = L_UP0 + kFavRows, L_NAME0 = L_DOWN0 + kFavRows, L_DEL0 = L_NAME0 + kFavRows,
+       L_PREV = L_DEL0 + kFavRows, L_NEXT, L_BACK, L_SIGN0, L_ICON0 = L_SIGN0 + kFavRows, L_COUNT = L_ICON0 + VFAV_ICONS };
+static bool s_favList;
+static int  s_flPressed = -1, s_flPage, s_flSure = -1;   // the control held, the page, the favourite asked "ТОЧНО?"
+static int  s_flSign = -1;   // the favourite whose sign is being chosen (the signs instead of the rows)
 
 // The map's page (the user 2026-10-30: Settings -> the map's row "КАРТЫ"): the map's kind and detail, the regions'
 // maps - their own page (the user 2026-10-30): the regions' maps downloaded here (offmaps.cpp's job; the user
@@ -321,18 +346,30 @@ static const RECT kMapsCtl[M_COUNT] = {
     { 8, 412, 80, 480 },                               // back to the settings
 };
 enum { kMapsRows = 6 };
-enum { R_ROW0, R_PREV = R_ROW0 + kMapsRows, R_NEXT, R_LIST, R_BACK, R_COUNT };
+// a row's two buttons (the user 2026-11-12): from the maps' server (R_ROW0), from Yandex Disk (R_DISK0, its copy's date)
+// ... a row's title ticks it (R_SEL0); the bottom bar: the ticked ones' source (R_SRC) and one button for them (R_GETSEL)
+enum { R_ROW0, R_DISK0 = R_ROW0 + kMapsRows, R_SEL0 = R_DISK0 + kMapsRows, R_PREV = R_SEL0 + kMapsRows, R_NEXT, R_LIST,
+       R_BACK, R_SRC, R_GETSEL, R_COUNT };
 static const RECT kRegCtl[R_COUNT] = {
-    { 600, 81, 760, 121 }, { 600, 131, 760, 171 }, { 600, 181, 760, 221 },   // the regions' buttons
-    { 600, 231, 760, 271 }, { 600, 281, 760, 321 }, { 600, 331, 760, 371 },
+    { 452, 81, 600, 121 }, { 452, 131, 600, 171 }, { 452, 181, 600, 221 },   // the regions' buttons: the server
+    { 452, 231, 600, 271 }, { 452, 281, 600, 321 }, { 452, 331, 600, 371 },
+    { 608, 81, 760, 121 }, { 608, 131, 760, 171 }, { 608, 181, 760, 221 },   // ... the disk
+    { 608, 231, 760, 271 }, { 608, 281, 760, 321 }, { 608, 331, 760, 371 },
+    { 24, 76, 444, 126 }, { 24, 126, 444, 176 }, { 24, 176, 444, 226 },       // ... their titles: ticked
+    { 24, 226, 444, 276 }, { 24, 276, 444, 326 }, { 24, 326, 444, 376 },
     { 300, 420, 348, 468 }, { 452, 420, 500, 468 },                           // the pages
     { 716, 416, 784, 468 },                                                   // the catalog again ("refresh")
     { 8, 412, 80, 480 },                                                      // back to the map's page
+    { 88, 416, 292, 468 },                                                    // the ticked ones' source
+    { 508, 416, 708, 468 },                                                   // ... downloaded
 };
+enum { kSelMax = 256 };
+static bool s_mapsSel[kSelMax];   // the regions ticked (the catalog's order), downloaded by R_GETSEL
+static int  s_mapsSrc;            // ... from there (MAPS_SRC_*)
 static bool s_maps;            // the maps' screen over the settings
 static bool s_regions;         // ... its regions' page
 static int  s_mapsPressed = -1, s_mapsPage;
-static int  s_mapsConfirm = -1;   // the region whose button asks "ТОЧНО?"
+static int  s_mapsConfirm = -1;   // the region whose button asks "ТОЧНО?" (* 2 + its source, MAPS_SRC_*)
 
 // ---------------------------------------------------------------- view & tiles
 
@@ -349,18 +386,193 @@ static double ViewAngle()
 
 // North-up: the car is in the center. Heading-up: the car is near the bottom edge,
 // the view center is ahead of it along the course.
+// The magnet with no route (the user 2026-11-11; off the route's line too): the fix onto the road of the region's
+// graph it is on - as MagnetSnap: 30 m to catch, 40 to leave, its way within 60 degrees above 10 km/h (slower: any road)
+static void RoadMagnet(GpsState* f)
+{
+    static bool was;
+    int lat = (int)(f->lat * 1e6), lon = (int)(f->lon * 1e6);
+    double c = f->course;
+    int r = OfflineSnapFix(&lat, &lon, &c, was ? 40 : 30, f->speedKmh > 10 ? 60 : -1);
+    if (r < 0)   // (the graph busy with a route: as it came)
+        return;
+    was = r == 1;
+    if (was) {
+        f->lat = lat / 1e6;
+        f->lon = lon / 1e6;
+        f->course = c;
+    }
+}
+
+// Dead reckoning (the user 2026-11-14: "in the tunnel the mark left the route; GPS lost - lead on along the route at the
+// same speed till out of the tunnel, wait for GPS there"): on a route, the fix lost (none for kLostMs) or not trusted
+// (too far from the last trusted one for its speed - the drift before a tunnel: junction.cpp FixJumps) at more than
+// kDeadMinKmh - the car led on along the route's line from the last trusted fix's point at its speed (RouteAhead): the
+// progress, the next maneuver, the prompts go on, and the car on the line is never "off the route". kDeadMs and kDeadM
+// at most (the longest tunnels on the way are 3-4 km: past that the guess is worth less than a held mark - it waits
+// there), not into the route's last kDeadEndM (no "arrived" by a guess). The mark grey meanwhile; a trusted fix - as before.
+static const DWORD  kLostMs = 2500, kDeadMs = 180000;
+static const double kDeadM = 5000, kDeadMinKmh = 10, kDeadEndM = 100;
+enum { kJumpsMax = 3 };              // fixes not trusted in a row at most (the next one is: the car is there)
+static GpsState s_good;              // the last fix trusted
+static DWORD    s_seen;              // the last fix looked at (its tick)
+static int      s_jumps;
+static bool     s_dead;              // the car shown is led along the route's line
+static int      s_deadSerial, s_deadSeg;   // the route and the segment it is led from, its point there
+static double   s_deadAt[2], s_deadMax;
+static double   s_deadCap, s_deadTried;   // the lead's most (the route's end, kDeadM); the limit last looked past
+
+// Only for tunnels (the user 2026-11-14: "the map has tunnels - only for them"): the map's roads under the ground
+// (vtile.cpp VTileTunnelNear: OSM's tunnel=yes, the mountains' too, not the metro) within kTunnelNearM of the route's
+// line, starting within kTunnelAheadM ahead of the last trusted fix; led to the tunnel's end + kTunnelOutM.
+static const double kTunnelNearM = 20, kTunnelAheadM = 300, kTunnelOutM = 100;
+static DWORD s_deadNone;             // the trusted fix with no tunnel ahead found (not looked again for it)
+
+static bool TunnelAt(const double* p, void*)
+{
+    return VTileTunnelNear(p[0], p[1], kTunnelNearM);
+}
+
+// The route's tunnel ahead of the last trusted fix, from its point on the line (seg, at): where it ends (m along the
+// route), -1 none
+static double TunnelAhead(const double* ll, int np, const RouteInfo& ri, int* seg, double* at)
+{
+    *seg = RouteCut(ll, np, ri.seg - 10, ri.seg + 200, s_good.lon, s_good.lat, 50, at);
+    return *seg < 0 ? -1 : RouteStretch(ll, np, *seg, at, kTunnelAheadM, kDeadM, 25, 100, TunnelAt, NULL);
+}
+
+static bool TunnelClose()   // a route on, a tunnel ahead of the last trusted fix
+{
+    const double* ll;
+    int np = RoutePoints(&ll), seg;
+    RouteInfo ri;
+    RouteGet(&ri);
+    double at[2];
+    return np && s_good.valid && TunnelAhead(ll, np, ri, &seg, at) >= 0;
+}
+
+static void FixCheck(const GpsState& f)   // a new fix: the last trusted one, unless it jumped before a tunnel
+{
+    if (!f.valid || f.fixTick == s_seen)
+        return;
+    s_seen = f.fixTick;
+    bool jump = s_good.valid && FixJumps(s_good.lon, s_good.lat, s_good.speedKmh, f.fixTick - s_good.fixTick, f.lon, f.lat,
+                                         f.speedKmh) && TunnelClose();
+    s_jumps = jump ? s_jumps + 1 : 0;
+    if (jump && s_jumps <= kJumpsMax) {
+        Log("gps: a fix too far from the last one (%d in a row) - not trusted", s_jumps);
+        return;
+    }
+    s_good = f;
+    s_jumps = 0;
+}
+
+static void DeadStart(const double* ll, int np, const RouteInfo& ri)   // from the last trusted fix's point on the line
+{
+    if (s_deadNone == s_good.fixTick && s_deadSerial == ri.serial) {   // (looked already: no tunnel)
+        s_deadSeg = -1;
+        return;
+    }
+    double end = TunnelAhead(ll, np, ri, &s_deadSeg, s_deadAt);
+    s_deadSerial = ri.serial;
+    s_deadNone = end < 0 ? s_good.fixTick : 0;
+    if (end < 0)
+        s_deadSeg = -1;   // no tunnel: the mark held, as before
+    else
+        Log("gps: a tunnel on the route ahead - led through it, %d m", (int)end);
+    end += kTunnelOutM;
+    s_deadCap = ri.leftM - kDeadEndM < kDeadM ? ri.leftM - kDeadEndM : kDeadM;
+    s_deadMax = s_deadCap < end ? s_deadCap : end;
+    s_deadTried = -1;
+}
+
+// At the found tunnel's end with no fix yet: its next piece looked for ahead (the map splits a long tunnel - the
+// emulator 2026-11-14: Lefortovo's 3 km found as 949 m, the mark waited inside), the limit moved past it
+static void DeadExtend(const double* ll, int np)
+{
+    if (s_deadTried == s_deadMax || s_deadMax >= s_deadCap)
+        return;
+    s_deadTried = s_deadMax;
+    double at[3];
+    int seg = RouteAhead(ll, np, s_deadSeg, s_deadAt, s_deadMax, at);
+    double more = RouteStretch(ll, np, seg, at, kTunnelAheadM, s_deadCap - s_deadMax, 25, 100, TunnelAt, NULL);
+    if (more < 0)
+        return;
+    s_deadMax = s_deadMax + more + kTunnelOutM < s_deadCap ? s_deadMax + more + kTunnelOutM : s_deadCap;
+    s_deadTried = s_deadMax;
+    Log("gps: the tunnel goes on - led %d m more", (int)more);
+}
+
+static void DeadPlace(GpsState* f, const double* ll, int np)   // the guess now: on at the last speed, held at the limit
+{
+    DWORD ms = GetTickCount() - s_good.fixTick;
+    double m = s_good.speedKmh / 3.6 * (ms < kDeadMs ? ms : kDeadMs) / 1000, out[3];
+    if (m >= s_deadMax)
+        DeadExtend(ll, np);
+    RouteAhead(ll, np, s_deadSeg, s_deadAt, m < s_deadMax ? m : s_deadMax, out);
+    f->valid = 1;
+    f->lon = out[0];
+    f->lat = out[1];
+    f->course = out[2];
+    f->speedKmh = ms < kDeadMs && m < s_deadMax ? s_good.speedKmh : 0;   // (at the limit: it waits)
+    f->fixTick = GetTickCount();
+}
+
+static bool DeadAt(GpsState* f, bool start)   // the car's guess on the route's line; false: none (no route, slow, off it)
+{
+    const double* ll;
+    int np = RoutePoints(&ll);
+    RouteInfo ri;
+    RouteGet(&ri);
+    if (!np || !s_good.valid || s_good.speedKmh <= kDeadMinKmh)
+        return false;
+    if (start || ri.serial != s_deadSerial)
+        DeadStart(ll, np, ri);
+    if (s_deadSeg < 0)
+        return false;
+    DeadPlace(f, ll, np);
+    return true;
+}
+
+static bool FixLost(const GpsState& f)   // none, not trusted, or too old
+{
+    return !f.valid || f.fixTick != s_good.fixTick || GetTickCount() - f.fixTick > kLostMs;
+}
+
+static void DeadReckon(GpsState* f)   // the fix as it came -> as used
+{
+    FixCheck(*f);
+    bool lost = FixLost(*f), was = s_dead;
+    const double* ll;
+    s_dead = lost && DeadAt(f, !was);
+    if (s_dead != was)
+        Log(s_dead ? "gps: lost on the route - led on along it at %d km/h" : "gps: the fix again (%d km/h)",
+            (int)s_good.speedKmh);
+    if (lost && !s_dead && f->valid && f->fixTick != s_good.fixTick && RoutePoints(&ll))
+        f->valid = 0;   // not trusted, on a route: not used (no "off the route" by it)
+}
+
 // The GPS's state taken (the fix's message, the second's tick): a new fix - the turn eased from the course shown
 static void GpsTake()
 {
     GpsGet(&s_fix);
+    DeadReckon(&s_fix);
     s_raw = s_fix;
-    if (s_fix.valid)
-        RouteMagnet(&s_fix.lon, &s_fix.lat, s_fix.speedKmh, &s_fix.course);
+    if (s_fix.valid && !RouteMagnet(&s_fix.lon, &s_fix.lat, s_fix.speedKmh, &s_fix.course))
+        RoadMagnet(&s_fix);
     s_gps = s_fix;
     if (s_gps.valid) {   // (saved with the view, each 5 minutes: StartFrom)
         g_cfg.lastLon = s_gps.lon;
         g_cfg.lastLat = s_gps.lat;
     }
+}
+
+static void FixToRoute()   // a fix (or the car led on: each second): the route's progress, its prompts
+{
+    if (RouteAlts() >= 2 && s_gps.speedKmh > 15)
+        RouteAltsDone();   // driving: the route chosen is the one on
+    RouteGps(s_raw.lon, s_raw.lat, s_raw.speedKmh, s_raw.course);
+    SayTick((int)s_raw.speedKmh);
 }
 
 // The car between the fixes (the user 2026-10-31: the map jerked, a frame a second; 2026-11-02: the prediction slowed
@@ -479,14 +691,26 @@ static bool Tilted()
 }
 
 // The view's tilt while the third person's view is on (else NULL): the car keeps its place on the screen; the camera
-// 45 degrees from straight down at z15, 55 at z16, 65 closer (the user 2026-10-27)
+// 45 degrees from straight down at z15, 55 at z16, 65 closer (the user 2026-10-27), going there smoothly after a
+// zoom (TiltEase; frames by TIMER_TILT until there - the user 2026-11-11: it jumped)
+static double s_tiltShown = -1;
+static DWORD  s_tiltTick;
+
 static const Tilt* ViewTilt()
 {
     static Tilt t;
-    if (!Tilted())
+    if (!Tilted()) {
+        s_tiltShown = -1;
         return NULL;
+    }
+    DWORD now = GetTickCount();
+    double target = g_cfg.z >= 17 ? 65 : g_cfg.z == 16 ? 55 : 45;
+    s_tiltShown = TiltEase(s_tiltShown, target, now - s_tiltTick);
+    s_tiltTick = now;
+    if (s_tiltShown != target)
+        SetTimer(s_wnd, TIMER_TILT, kTiltFrameMs, NULL);
     double car = g_cfg.mapH * kCarAhead;
-    TiltMake(&t, car, car, kTiltFog, g_cfg.z >= 17 ? 65 : g_cfg.z == 16 ? 55 : 45);
+    TiltMake(&t, car, car, kTiltFog, s_tiltShown);
     return &t;
 }
 
@@ -1008,7 +1232,13 @@ static void OnSettingsCtl(int id)
     case S_TOLL_PREV:
     case S_TOLL_NEXT:  g_cfg.noToll = !g_cfg.noToll; ConfigSave(); break;
     case S_VOICE_PREV:
-    case S_VOICE_NEXT: g_cfg.voice = !g_cfg.voice; ConfigSave(); break;
+    case S_VOICE_NEXT: {   // off - quiet - medium - loud, round (the voice button: on / off at its level)
+        int st = (g_cfg.voice ? g_cfg.voiceVol : 0) + (id == S_VOICE_NEXT ? 1 : 3);
+        g_cfg.voice = st % 4 != 0;
+        g_cfg.voiceVol = g_cfg.voice ? st % 4 : g_cfg.voiceVol;
+        ConfigSave();
+        break;
+    }
     case S_ROUTE:      s_setSheet = SHEET_ROUTE; break;
     case S_LOG_PREV:
     case S_LOG_NEXT:   g_cfg.log = !g_cfg.log; LogEnable(g_cfg.log != 0); ConfigSave(); break;
@@ -1024,6 +1254,11 @@ static void OnSettingsCtl(int id)
     case S_GPS_DONE:
     case S_INFO_DONE:
     case S_ROUTE_DONE: s_setSheet = SHEET_NONE; break;
+    case S_FAVS:
+        s_favList = true;
+        s_flPage = 0;
+        s_flSure = s_flSign = -1;
+        break;
     case S_PORT_PREV:  s_setPort = s_setPort > 1 ? s_setPort - 1 : 9; ApplySettings(); break;
     case S_PORT_NEXT:  s_setPort = s_setPort < 9 ? s_setPort + 1 : 1; ApplySettings(); break;
     case S_BAUD_PREV:  s_setBaud = (s_setBaud + kSetBaudCount - 1) % kSetBaudCount; ApplySettings(); break;
@@ -1050,16 +1285,21 @@ static void OnSettingsCtl(int id)
     InvalidateRect(s_wnd, NULL, FALSE);
 }
 
-// A region's button: its download stopped; "ЗАГРУЗИТЬ" / "ОК" first asked "ТОЧНО?" (confirm: the one asking before)
-static void MapsTap(int i, int confirm)
+// A region's button (src: the server's, the disk's): its download stopped; a new or up-to-date one first asked
+// "ТОЧНО?" (confirm: the one asking before, region * 2 + source); the disk without a copy - nothing
+static void MapsTap(int i, int src, int confirm)
 {
     MapRegion m;
+    if (!MapsAt(i, &m))
+        return;
     if (MapsBusyRegion() == i)
         MapsCancel();
-    else if (MapsAt(i, &m) && MapState(m) != MAP_UPDATE && confirm != i)
-        s_mapsConfirm = i;
+    else if (src == MAPS_SRC_DISK && !m.diskKb)
+        return;
+    else if (MapState(m) != MAP_UPDATE && confirm != i * 2 + src)
+        s_mapsConfirm = i * 2 + src;
     else
-        MapsGetRegion(i);
+        MapsGetRegionFrom(i, src);
 }
 
 static void OnRegionsCtl(int id)
@@ -1071,7 +1311,32 @@ static void OnRegionsCtl(int id)
     case R_NEXT: if (s_mapsPage + 1 < pages) s_mapsPage++; break;
     case R_LIST: MapsList(); break;
     case R_BACK: s_regions = false; break;
-    default:     MapsTap(s_mapsPage * kMapsRows + id - R_ROW0, confirm); break;
+    case R_SRC:  s_mapsSrc = s_mapsSrc == MAPS_SRC_DISK ? MAPS_SRC_SERVER : MAPS_SRC_DISK; break;
+    case R_GETSEL: {   // the ticked ones in turn (those with a copy there); while it goes - stopped
+        if (MapsBusyRegion() >= 0) {
+            MapsCancel();
+            break;
+        }
+        int list[kSelMax], n = 0;
+        MapRegion m;
+        for (int i = 0; i < MapsCount() && i < kSelMax; i++)
+            if (s_mapsSel[i] && MapsAt(i, &m) && (s_mapsSrc != MAPS_SRC_DISK || m.diskKb))
+                list[n++] = i;
+        if (n && MapsGetRegions(list, n, s_mapsSrc))
+            memset(s_mapsSel, 0, sizeof(s_mapsSel));
+        break;
+    }
+    default:
+        if (id >= R_SEL0) {
+            int i = s_mapsPage * kMapsRows + id - R_SEL0;
+            MapRegion m;
+            if (i < kSelMax && MapsAt(i, &m))
+                s_mapsSel[i] = !s_mapsSel[i];
+        } else if (id >= R_DISK0)
+            MapsTap(s_mapsPage * kMapsRows + id - R_DISK0, MAPS_SRC_DISK, confirm);
+        else
+            MapsTap(s_mapsPage * kMapsRows + id - R_ROW0, MAPS_SRC_SERVER, confirm);
+        break;
     }
 }
 
@@ -1140,7 +1405,7 @@ static int HitSettings(int x, int y)
     int hit = HitRects(kSetCtl + kFrom[s_setSheet], kTo[s_setSheet] - kFrom[s_setSheet], x, y);
     if (hit >= 0)
         return kFrom[s_setSheet] + hit;
-    return s_setSheet && y < kSheetY ? kTo[s_setSheet] - 1 : -1;
+    return s_setSheet && y < SheetTop() ? kTo[s_setSheet] - 1 : -1;
 }
 
 // ---------------------------------------------------------------- actions
@@ -1346,6 +1611,10 @@ static void OnButton(int b)
     case B_MINUS:  Zoom(-1); break;
     case B_PLUS:   Zoom(1); break;
     case B_TILT:   g_cfg.tilt = !g_cfg.tilt; break;
+    case B_SOUND:
+        g_cfg.voice = !g_cfg.voice;
+        Log("voice: %s by its button", g_cfg.voice ? "on" : "off");
+        break;
     }
     UserChanged();
 }
@@ -1356,18 +1625,27 @@ static int ButtonState(int b)
     if (b == B_NIGHT) return g_cfg.night ? 0 : 1;
     if (b == B_TSRC) return g_cfg.trafficSrc;
     if (b == B_GPS)  return g_cfg.follow == FOLLOW_HEADING ? 0 : (g_cfg.follow == FOLLOW_NORTH ? 1 : 2);
+    if (b == B_SOUND) return g_cfg.voice ? 0 : 1;
     return 0;
 }
 
 // Where a button is now; false when it isn't on the screen (the settings screen hides them all, the bottom
 // bar's ones are there only while it is up, the traffic provider only while traffic is on).
+static bool DockUp();
+
 static bool ButtonRect(int b, RECT* r)
 {
     if (s_settings || s_search || s_plan)
         return false;
     if (b == B_TILT && (g_cfg.follow != FOLLOW_HEADING || g_cfg.z < kTiltMinZ))
         return false;
-    if (b == B_GPS || b == B_MINUS || b == B_PLUS || b == B_TILT) {   // round, on the right (design v3)
+    if (b == B_SOUND) {   // the voice speaks on a route only; under the bar while it is up
+        RouteInfo ri;
+        RouteGet(&ri);
+        if (ri.state == ROUTE_NONE || DockUp())
+            return false;
+    }
+    if (b == B_GPS || b == B_MINUS || b == B_PLUS || b == B_TILT || b == B_SOUND) {   // round, on the right (design v3)
         SetRect(r, s_btn[b].x, s_btn[b].y, s_btn[b].x + kRound, s_btn[b].y + kRound);
         return true;
     }
@@ -1772,7 +2050,7 @@ static void DrawGpsMarker(HDC dc, double cx, double cy, double vx, double vy, do
         return;
     int px = (int)floor(sx + 0.5), py = (int)floor(sy + 0.5);
 
-    bool fresh = s_gps.valid && GetTickCount() - s_gps.fixTick < 5000;
+    bool fresh = s_gps.valid && GetTickCount() - s_gps.fixTick < 5000 && !s_dead;   // (led on: a guess)
     if (fresh)
         Glow(px, py);
     HBRUSH brush = CreateSolidBrush(fresh ? kOrange : RGB(140, 140, 140));   // VestaHome accent
@@ -2151,6 +2429,7 @@ static void RotateRing(double vx, double vy, double angle)
     if (cx < 0) cx += R;
     if (cy < 0) cy += R;
     long dx = (long)(ca * 65536), dy = (long)(sa * 65536);
+    const unsigned short* bits = s_near.bits;   // (a local: VS2005 read the global again after each pixel's store)
     for (int y = 0; y < H; y++) {
         // screen offset s -> world offset w = Rot(angle) s, then the ring's pixel
         double sx = -W / 2.0, sy = y - H / 2.0;
@@ -2161,7 +2440,7 @@ static void RotateRing(double vx, double vy, double angle)
             int px = (int)(wx >> 16), py = (int)(wy >> 16);
             if (px < 0) px += R; else if (px >= R) px -= R;
             if (py < 0) py += R; else if (py >= R) py -= R;
-            d[x] = s_near.bits[(R - 1 - py) * R + px];
+            d[x] = bits[(R - 1 - py) * R + px];
         }
     }
 }
@@ -3132,6 +3411,19 @@ static void ParkEnd(const ParkView& v, int lat, int lon, double* x, double* y)
     *y = -dx * v.rs + dy * v.rc;
 }
 
+// A point of the box on the screen (the map's points: lights, bumps, car parks - Shturmann 2026-11-12: GeoToWorld and
+// ScreenOf for each of up to 3000 points took 125-309 ms a frame without an FPU); false - not to be seen
+static bool ViewPoint(const ParkView& v, int lat, int lon, double* x, double* y)
+{
+    ParkEnd(v, lat, lon, x, y);
+    if (!v.tilt && (fabs(*x) > kParkCullPx || fabs(*y) > kParkCullPx))
+        return false;
+    bool seen = Lift(v.tilt, x, y);
+    *x += v.cx;
+    *y += v.cy;
+    return seen;
+}
+
 // One piece on the screen: false - not to be seen
 static bool ParkPiece(const ParkView& v, const ParkLine& l, POINT* seg)
 {
@@ -3180,6 +3472,20 @@ static void DrawParkLines(HDC dc, const int* box, double cx, double cy, double v
     DeleteObject(none);
 }
 
+static const int kMarkR = 20;   // a layer's sign: the most it reaches from its point (the parking's 12)
+
+static void MarkPaint(HDC dc, int x, int y, void* arg)
+{
+    LayerMark(dc, *(const LayerPoint*)arg, x, y);
+}
+
+// A layer's sign as ready pixels (stamp.cpp): GDI's brushes, pens and shapes once a kind, not each sign each frame
+static void LayerStamp(HDC dc, const LayerPoint& p, int x, int y)
+{
+    StampKey key = { L"#layer", 6, p.kind, p.kind == LAY_PARKING ? p.fee : 0, kMarkR, 0 };
+    StampDraw(dc, key, x - kMarkR, y - kMarkR, 2 * kMarkR + 1, 2 * kMarkR + 1, MarkPaint, (void*)&p, kMarkR, kMarkR);
+}
+
 static void DrawLayers(HDC dc, double cx, double cy, double vx, double vy, double angle)
 {
     int box[4];
@@ -3189,15 +3495,15 @@ static void DrawLayers(HDC dc, double cx, double cy, double vx, double vy, doubl
     if (g_cfg.parking && !g_cfg.traffic && g_cfg.z >= kLayerZ)
         DrawParkLines(dc, box, cx, cy, vx, vy, angle);
     s_layer = LayersIn(box, &s_layerN);
+    ParkView v;
+    ParkViewOf(&v, box, cx, cy, vx, vy, angle);
     for (int i = 0; i < s_layerN; i++) {
         const LayerPoint& p = s_layer[i];
         s_layerParks += p.kind == LAY_PARKING;
-        double gx, gy, sx, sy;
-        if (!LayerShown(p))
-            continue;
-        GeoToWorld(p.lon * 1e-6, p.lat * 1e-6, g_cfg.z, &gx, &gy);
-        if (ScreenOf(gx, gy, vx, vy, cx, cy, angle, &sx, &sy) && (!s_dockShown || sy + 16 <= kDockY + s_dockOff))
-            LayerMark(dc, p, Round(sx), Round(sy));
+        double sx, sy;
+        if (LayerShown(p) && ViewPoint(v, p.lat, p.lon, &sx, &sy) && MarkSeen(sx, sy, s_cw, s_ch, kMarkR) &&
+            (!s_dockShown || sy + 16 <= kDockY + s_dockOff))
+            LayerStamp(dc, p, Round(sx), Round(sy));
     }
 }
 
@@ -3220,15 +3526,7 @@ static void DrawBumpWarning(HDC dc)
 
 static int FavAt(int x, int y)   // the mark under the finger (the nearest within 26 px), -1: none
 {
-    int best = -1, bd = 26 * 26;
-    for (int i = 0; i < s_favs.n; i++) {
-        int dx = s_favPt[i].x - x, dy = s_favPt[i].y - y;
-        if (s_favOn[i] && dx * dx + dy * dy < bd) {
-            bd = dx * dx + dy * dy;
-            best = i;
-        }
-    }
-    return best;
+    return MarkAt(s_favPt, s_favOn, s_favs.n, x, y, 26);
 }
 
 static void PartLap(int part)
@@ -3354,7 +3652,12 @@ static void DrawMap(HDC dc)
              mr.bottom, DT_CENTER, !s_lastErr ? L"Загрузка карты..." : g_cfg.vector ? L"Нет карты этой области"
                                                                                  : NetErrorText(s_lastErr));
 
-    if (g_cfg.vector && drawn) {   // the names over the turned frame, upright (vtile.cpp); under the car too (the
+    DrawLayers(dc, cx, cy, vx, vy, angle);
+    PartLap(PT_LAYERS);
+    DrawRoute(dc, cx, cy, vx, vy, angle);
+    PartLap(PT_ROUTE);
+    if (g_cfg.vector && drawn) {   // the names over the turned frame, upright (vtile.cpp); over the route and the layers'
+        // signs (the user 2026-11-14: the street's name hidden under the route, the car parks); under the car (the
         // user 2026-11-05: kept away from it, they blinked as it went by - the car is drawn over them, neither hides
         // the other; the controls are dark enough over them, 2026-10-27)
         g_tilt = tilt;   // (the names tilted with the frame)
@@ -3363,8 +3666,6 @@ static void DrawMap(HDC dc)
     }
     PartLap(PT_LABELS);
     DrawAttribution(dc, mr);
-    DrawLayers(dc, cx, cy, vx, vy, angle);
-    DrawRoute(dc, cx, cy, vx, vy, angle);
     DrawFavMarks(dc, cx, cy, vx, vy, angle);
     ZoomKeep(dc, mr);
     DrawGpsMarker(dc, cx, cy, vx, vy, angle);
@@ -3470,21 +3771,27 @@ static void GpsLine(wchar_t* s, int cap)
 
 // Over the whole screen (the map's bars and buttons are off meanwhile), as VestaHome's settings: the title at the
 // top left, the clock at the right; the panel of rows; "back" at the bottom left; a sheet over it when open.
-static void DrawSettings(HDC dc)
+static void PageTop(HDC dc, const wchar_t* title, bool backDown, int panelBottom)
 {
     RECT all = { 0, 0, s_cw, s_ch };
     HBRUSH ink = CreateSolidBrush(kInk);
     FillRect(dc, &all, ink);
     DeleteObject(ink);
-    wchar_t s[160];
-    Text(dc, s_fontBig, kText, 20, 0, 500, 56, DT_LEFT, L"Настройки карты");
+    wchar_t s[32];
+    Text(dc, s_fontBig, kText, 20, 0, 500, 56, DT_LEFT, title);
     SYSTEMTIME t;
     GetLocalTime(&t);
-    _snwprintf(s, 160, L"%02d:%02d", t.wHour, t.wMinute);
+    _snwprintf(s, 32, L"%02d:%02d", t.wHour, t.wMinute);
     Text(dc, s_fontClock, kText, s_cw - 160, 0, s_cw - 16, 56, DT_RIGHT, s);
-    BackDisc(dc, s_setPressed == S_BACK);
-    RECT panel = { 16, 64, s_cw - 16, 400 };
+    BackDisc(dc, backDown);
+    RECT panel = { 16, 64, s_cw - 16, panelBottom };
     Tile(dc, panel, kPanel, kPanel, 32);
+}
+
+static void DrawSettings(HDC dc)
+{
+    wchar_t s[160];
+    PageTop(dc, L"Настройки карты", s_setPressed == S_BACK, 400);
 
     if (!g_cfg.vector)
         wcscpy(s, L"растровая, тайлы OSM");
@@ -3537,9 +3844,9 @@ static void DrawSettings(HDC dc)
 
 static void Sheet(HDC dc, const wchar_t* title)   // a sheet over the bottom: full width, its title
 {
-    RECT r = { 0, kSheetY, s_cw, s_ch + 40 };   // (the bottom corners off the screen)
+    RECT r = { 0, SheetTop(), s_cw, s_ch + 40 };   // (the bottom corners off the screen)
     Tile(dc, r, kPanel, kLine, 32);
-    Text(dc, s_fontBig, kText, 24, kSheetY + 4, s_cw - 24, kSheetY + 52, DT_LEFT, title);
+    Text(dc, s_fontBig, kText, 24, r.top + 4, s_cw - 24, r.top + 52, DT_LEFT, title);
 }
 
 // The GPS port: its number and speed, the lines as they come, the search over COM1..COM9
@@ -3601,8 +3908,13 @@ static void DrawRouteSheet(HDC dc)
     // (the server's routes keep the tolls: said in the row - the voice took the note's place)
     SetRow(dc, kSetCtl[S_TOLL_PREV].top - 3, L"Платные дороги", L"объезд — только по картам на флешке", true);
     Stepper(dc, S_TOLL_PREV, S_TOLL_NEXT, g_cfg.noToll ? L"Объезжать" : L"Можно");
-    SetRow(dc, kSetCtl[S_VOICE_PREV].top - 3, L"Голосовые подсказки", L"на языке программы", false);
-    Stepper(dc, S_VOICE_PREV, S_VOICE_NEXT, g_cfg.voice ? L"Вкл" : L"Выкл");
+    SetRow(dc, kSetCtl[S_VOICE_PREV].top - 3, L"Голосовые подсказки", L"на языке программы", true);
+    static const wchar_t* const kVol[4] = { L"Выкл", L"Тихо", L"Средне", L"Громко" };
+    Stepper(dc, S_VOICE_PREV, S_VOICE_NEXT, kVol[g_cfg.voice ? g_cfg.voiceVol : 0]   /* (1..3: the ini's clamped) */);
+    wchar_t s[64];
+    _snwprintf(s, 64, Tr(L"мест: %d из %d · порядок, имена, значки"), s_favs.n, VFAV_MAX);
+    SetRow(dc, kSetCtl[S_FAVS].top - 3, L"Избранное", s, false);
+    DrawCtl(dc, kSetCtl[S_FAVS], s_setPressed == S_FAVS, s_fontLabel, L"ИЗМЕНИТЬ");
     DoneButton(dc, S_ROUTE_DONE);
 }
 
@@ -3633,11 +3945,39 @@ static void DrawInfoSheet(HDC dc)
 }
 
 // A region: its title, size and state, its button ("ОТМЕНА" while it downloads, "ТОЧНО?" in the accent when asked)
+// A globe (a region outside the former USSR: the user 2026-11-12) - a circle, its meridian and equator - at (x, y), r
+static void GlobeSign(HDC dc, int x, int y, int r, COLORREF c)
+{
+    HPEN pen = CreatePen(PS_SOLID, 2, c);
+    HGDIOBJ op = SelectObject(dc, pen), ob = SelectObject(dc, GetStockObject(NULL_BRUSH));
+    Ellipse(dc, x - r, y - r, x + r + 1, y + r + 1);
+    Ellipse(dc, x - r / 2, y - r, x + r / 2 + 1, y + r + 1);
+    POINT eq[2] = { { x - r, y }, { x + r, y } };
+    Polyline(dc, eq, 2);
+    SelectObject(dc, ob);
+    SelectObject(dc, op);
+    DeleteObject(pen);
+}
+
+// A clock (the disk's copy older than the region's build: the user 2026-11-12) at (x, y), r
+static void OldSign(HDC dc, int x, int y, int r, COLORREF c)
+{
+    HPEN pen = CreatePen(PS_SOLID, 2, c);
+    HGDIOBJ op = SelectObject(dc, pen), ob = SelectObject(dc, GetStockObject(NULL_BRUSH));
+    Ellipse(dc, x - r, y - r, x + r + 1, y + r + 1);
+    POINT hands[3] = { { x, y - r + 3 }, { x, y }, { x + r - 3, y } };
+    Polyline(dc, hands, 3);
+    SelectObject(dc, ob);
+    SelectObject(dc, op);
+    DeleteObject(pen);
+}
+
+// A region's row: its title (a globe before it when outside the former USSR), its size and state, two buttons -
+// from the maps' server and from the disk (its copy's date, a clock when older; none there - dimmed)
 static void MapsRow(HDC dc, int r, int i, const MapRegion& m)
 {
     static const wchar_t* kState[3] = { L"не найдена", L"есть новее", L"последняя версия" };
-    static const wchar_t* kBtn[3] = { L"ЗАГРУЗИТЬ", L"ОБНОВИТЬ", L"ОК" };
-    wchar_t t[96], sub[64];
+    wchar_t t[96], sub[64], dl[32];
     if (!MultiByteToWideChar(CP_UTF8, 0, m.title[0] ? m.title : m.name, -1, t, 96))
         t[0] = 0;
     t[95] = 0;
@@ -3645,13 +3985,48 @@ static void MapsRow(HDC dc, int r, int i, const MapRegion& m)
     int kb = m.fullKb ? m.fullKb : m.sizeKb;   // (whole from the disk: with its tiles)
     _snwprintf(sub, 64, Tr(L"%d,%d МБ · %s"), kb / 1024, kb % 1024 * 10 / 1024, kState[st]);
     sub[63] = 0;
-    SetRow(dc, kSetRow0 + r * kSetRowH, t, sub, r < kMapsRows - 1);
-    const RECT& b = kRegCtl[R_ROW0 + r];
-    if (s_mapsConfirm == i) {
-        Tile(dc, b, kOrange, kOrange, 20);
-        Text(dc, s_fontLabel, kInk, b.left, b.top, b.right, b.bottom, DT_CENTER, L"ТОЧНО?");
-    } else
-        DrawCtl(dc, b, s_mapsPressed == R_ROW0 + r, s_fontLabel, MapsBusyRegion() == i ? L"ОТМЕНА" : kBtn[st]);
+    int y = kSetRow0 + r * kSetRowH, tx = m.foreign ? 92 : 64;
+    RECT box = { 36, y + 5, 56, y + 25 };   // ticked: downloaded by the bottom bar's button
+    bool sel = i < kSelMax && s_mapsSel[i];
+    Tile(dc, box, sel ? kOrange : kInk, sel ? kOrange : kTextDim, 6);
+    if (sel) {
+        HPEN pen = CreatePen(PS_SOLID, 3, kInk);
+        HGDIOBJ op = SelectObject(dc, pen);
+        POINT tick[3] = { { 40, y + 15 }, { 45, y + 20 }, { 52, y + 9 } };
+        Polyline(dc, tick, 3);
+        SelectObject(dc, op);
+        DeleteObject(pen);
+    }
+    if (m.foreign)
+        GlobeSign(dc, 76, y + 15, 10, kTextDim);
+    Text(dc, s_fontLabel, kText, tx, y + 3, 444, y + 28, DT_LEFT, t);
+    Text(dc, s_fontSmall, kTextDim, 64, y + 27, 444, y + 48, DT_LEFT, sub);
+    if (r < kMapsRows - 1) {
+        RECT l = { 24, y + kSetRowH - 2, s_cw - 24, y + kSetRowH };
+        HBRUSH lb = CreateSolidBrush(kLine);
+        FillRect(dc, &l, lb);
+        DeleteObject(lb);
+    }
+    for (int src = 0; src < 2; src++) {
+        const RECT& b = kRegCtl[(src ? R_DISK0 : R_ROW0) + r];
+        bool busy = MapsBusyRegion() == i && MapsBusySource() == src;
+        if (s_mapsConfirm == i * 2 + src) {
+            Tile(dc, b, kOrange, kOrange, 20);
+            Text(dc, s_fontLabel, kInk, b.left, b.top, b.right, b.bottom, DT_CENTER, L"ТОЧНО?");
+            continue;
+        }
+        if (src == MAPS_SRC_DISK && !m.diskKb && !busy) {   // (no copy on the disk)
+            Tile(dc, b, kInk, kInk, 20);
+            Text(dc, s_fontSmall, kTextDim, b.left, b.top, b.right, b.bottom, DT_CENTER, L"Я.ДИСК —");
+            continue;
+        }
+        if (src == MAPS_SRC_DISK)   // "Я.ДИСК 05.11"
+            _snwprintf(dl, 32, Tr(L"Я.ДИСК %.2S.%.2S"), m.diskDate + 8, m.diskDate + 5);
+        DrawCtl(dc, b, s_mapsPressed == (src ? R_DISK0 : R_ROW0) + r, src == MAPS_SRC_DISK ? s_fontSmall : s_fontLabel,
+                busy ? L"ОТМЕНА" : src == MAPS_SRC_DISK ? dl : L"СЕРВЕР");
+        if (src == MAPS_SRC_DISK && MapsDiskOld(m) && !busy)
+            OldSign(dc, b.left + 14, (b.top + b.bottom) / 2, 8, kOrange);
+    }
 }
 
 // A circle's arc round the button's middle, radius 11, clockwise from a0 degrees by step - 13 points (CE's GDI has no
@@ -3763,24 +4138,22 @@ static void DrawRegions(HDC dc)
     Text(dc, s_fontLabel, kText, 348, 420, 452, 468, DT_CENTER, s);
     DrawCtl(dc, kRegCtl[R_LIST], s_mapsPressed == R_LIST, s_fontLabel, L"");
     RefreshSign(dc, kRegCtl[R_LIST], s_mapsPressed == R_LIST ? kInk : kText);
+    int ticked = 0;
+    for (int i = 0; i < n && i < kSelMax; i++)
+        ticked += s_mapsSel[i] ? 1 : 0;
+    DrawCtl(dc, kRegCtl[R_SRC], s_mapsPressed == R_SRC, s_fontLabel, s_mapsSrc == MAPS_SRC_DISK ? L"ИЗ: Я.ДИСК" : L"ИЗ: СЕРВЕР");
+    if (MapsBusyRegion() >= 0)
+        wcscpy(s, L"ОТМЕНА");
+    else
+        _snwprintf(s, 32, ticked ? Tr(L"СКАЧАТЬ (%d)") : Tr(L"СКАЧАТЬ"), ticked);
+    DrawCtl(dc, kRegCtl[R_GETSEL], s_mapsPressed == R_GETSEL, s_fontLabel, s);
 }
 
 // Over the settings, as they look: the title, the clock, a panel with the rows; the map's page or the regions'
 static void DrawMaps(HDC dc)
 {
-    RECT all = { 0, 0, s_cw, s_ch };
-    HBRUSH ink = CreateSolidBrush(kInk);
-    FillRect(dc, &all, ink);
-    DeleteObject(ink);
-    wchar_t s[32];
-    Text(dc, s_fontBig, kText, 20, 0, 500, 56, DT_LEFT, s_regions ? L"Карты областей" : L"Карта");
-    SYSTEMTIME t;
-    GetLocalTime(&t);
-    _snwprintf(s, 32, L"%02d:%02d", t.wHour, t.wMinute);
-    Text(dc, s_fontClock, kText, s_cw - 160, 0, s_cw - 16, 56, DT_RIGHT, s);
-    BackDisc(dc, s_mapsPressed == (s_regions ? R_BACK : M_BACK));
-    RECT panel = { 16, 64, s_cw - 16, s_regions ? 412 : 376 };
-    Tile(dc, panel, kPanel, kPanel, 32);
+    PageTop(dc, s_regions ? L"Карты областей" : L"Карта", s_mapsPressed == (s_regions ? R_BACK : M_BACK),
+            s_regions ? 412 : 376);
     if (s_regions)
         DrawRegions(dc);
     else
@@ -4106,6 +4479,44 @@ static void DrawTripColumns(HDC dc, const RouteInfo& ri, int cx0, int step, int 
     }
 }
 
+// The speed limit sign (design v3): the posted limit of the road the car is on, from the region's graph (route.grf
+// made with the limits; OfflineLimitAt), looked at every 2 s; 0 = none shown
+enum { kLimitMs = 2000, kLimitNearM = 25 };
+static int   s_limit;
+static DWORD s_limitTick;
+
+static void LimitTick()
+{
+    if (!s_raw.valid) {
+        s_limit = 0;
+        return;
+    }
+    if (GetTickCount() - s_limitTick < kLimitMs)
+        return;
+    s_limitTick = GetTickCount();
+    int v = OfflineLimitAt((int)(s_raw.lat * 1e6), (int)(s_raw.lon * 1e6), s_raw.speedKmh > 5 ? s_raw.course : -1,
+                           kLimitNearM);
+    if (v >= 0)   // (-1: the graph busy with a route - the sign as it was)
+        s_limit = v;
+}
+
+// A white disc with a red ring and the number, its centre at cx, cy (the speed card's top right)
+static void DrawLimit(HDC dc, int cx, int cy, int v)
+{
+    HBRUSH red = CreateSolidBrush(RGB(214, 30, 30)), white = CreateSolidBrush(RGB(255, 255, 255));
+    HGDIOBJ ob = SelectObject(dc, red), op = SelectObject(dc, GetStockObject(NULL_PEN));
+    Ellipse(dc, cx - 21, cy - 21, cx + 22, cy + 22);
+    SelectObject(dc, white);
+    Ellipse(dc, cx - 15, cy - 15, cx + 16, cy + 16);
+    SelectObject(dc, op);
+    SelectObject(dc, ob);
+    DeleteObject(red);
+    DeleteObject(white);
+    wchar_t t[8];
+    _snwprintf(t, 8, L"%d", v);
+    Text(dc, v >= 100 ? s_fontCap : s_fontLabel, RGB(10, 10, 10), cx - 16, cy - 11, cx + 16, cy + 12, DT_CENTER, t);
+}
+
 static void DrawTrip(HDC dc)
 {
     RouteInfo ri;
@@ -4117,6 +4528,8 @@ static void DrawTrip(HDC dc)
         _snwprintf(v, 8, L"%d", (int)(s_gps.speedKmh + 0.5));
         Text(dc, s_fontSpeed, kText, c.left, c.top + 8, c.right, c.top + 46, DT_CENTER, v);
         Text(dc, s_fontCap, kTextDim, c.left, c.top + 44, c.right, c.top + 62, DT_CENTER, L"км/ч");
+        if (s_limit > 0)
+            DrawLimit(dc, c.right, c.top + 6, s_limit);
     }
     if (!TripShown())
         return;
@@ -4217,7 +4630,7 @@ static bool SearchRect(int id, RECT* r)
     }
     int row, col;
     if (id >= K_SHIFT && id <= K_FIND) {   // the bottom row: Shift, language, space, backspace, find
-        static const int x[6] = { 8, 128, 248, 548, 668, 792 };
+        static const int x[6] = { 8, 128, 248, 518, 638, 792 };   // (the find key wider: СОХРАНИТЬ with room)
         int k = id - K_SHIFT;
         SetRect(r, x[k], kKbY + 4 * kKbRowH, x[k + 1] - 6, kKbY + 5 * kKbRowH - 6);
         return true;
@@ -4321,14 +4734,20 @@ static void RouteToHit(const SearchHit* h)
     }
 }
 
+static void FavRenameDone(int i)   // the keyboard closed: the favourite's card again (i) - or the page it came from
+{
+    s_favEdit = s_favList ? -1 : i;
+    s_settings = s_settings || s_favList;
+    s_favRename = -1;
+}
+
 static void FavNamed()   // the keyboard's name for the new favourite (or the card's one): kept
 {
     char u[VFAV_NAME * 3];
     WideCharToMultiByte(CP_UTF8, 0, s_kb.text, -1, u, sizeof(u), NULL, NULL);
     if (s_favRename >= 0) {
         int i = VFavsRename(&s_favs, s_favRename, s_kb.text);
-        s_favEdit = i >= 0 ? i : s_favRename;   // (its card again)
-        s_favRename = -1;
+        FavRenameDone(i >= 0 ? i : s_favRename);
         if (i >= 0) {
             FavsSave();
             Log("favs: renamed \"%s\"", u);
@@ -4348,8 +4767,7 @@ static void OnSearchKey(int id)
     if (id != K_FAVDEL + s_favDel)
         s_favDel = -1;
     if (id == K_BACK && s_favName) {   // no name: no favourite (renaming: the name kept, its card again)
-        s_favEdit = s_favRename;
-        s_favRename = -1;
+        FavRenameDone(s_favRename);
         s_favName = false;
         s_search = false;
         VKeysOpen(&s_kb, L"", kQueryCap);
@@ -4609,7 +5027,7 @@ static void DrawSearch(HDC dc)
             continue;
         bool lit = s_kbPressed == id || (id == K_FIND && (s_kb.text[0] || (!s_favName && s_favs.n))) ||
                    (id == K_SHIFT && s_kb.shift);
-        wchar_t cap[8] = { 0 };
+        wchar_t cap[16] = { 0 };   // (СОХРАНИТЬ, ИЗБРАННОЕ: 9 letters - 8 overran it)
         if (id < K_SHIFT)
             cap[0] = VKeysChar(&s_kb, id / 16, id % 16);
         else
@@ -4641,7 +5059,7 @@ static int SlotRow(int slot)
 
 static int ChoiceCount()
 {
-    return s_planChoose == 0 ? 4 : 3;
+    return s_planChoose == 0 ? 5 : 4;
 }
 
 static int ChoiceId(int i)   // "my place" only for "from"
@@ -4702,7 +5120,7 @@ static bool PlanRect(int id, RECT* r)
 static int HitPlan(int x, int y)   // beside the choices or the panel: P_BACK
 {
     static const int ids[] = { P_ROW, P_ROW + 1, P_ROW + 2, P_ROW + 3, P_ROW + 4, P_DEL + 1, P_DEL + 2, P_DEL + 3,
-                               P_ADDVIA, P_GO, P_CH_GPS, P_CH_SEARCH, P_CH_MAP, P_CH_CANCEL };
+                               P_ADDVIA, P_GO, P_CH_GPS, P_CH_SEARCH, P_CH_FAV, P_CH_MAP, P_CH_CANCEL };
     RECT r;
     POINT pt = { x, y };
     for (int i = 0; i < (int)(sizeof(ids) / sizeof(ids[0])); i++)
@@ -4869,12 +5287,13 @@ static void OnPlanCtl(int id)
     } else if (id == P_CH_GPS) {
         p->from.kind = PL_GPS;
         s_planChoose = -1;
-    } else if (id == P_CH_SEARCH) {
+    } else if (id == P_CH_SEARCH || id == P_CH_FAV) {   // the search, or its favourites at once (the user 2026-11-14)
         s_searchSlot = s_planChoose;
         s_planChoose = -1;
         s_plan = false;
         s_search = true;
-        s_showHits = false;
+        s_showHits = s_showFavs = id == P_CH_FAV;
+        s_fitDone = false;
     } else if (id == P_CH_MAP) {
         s_pickSlot = s_planChoose;
         s_planChoose = -1;
@@ -4941,7 +5360,8 @@ static void DrawChoices(HDC dc)   // a field's choices beside the panel
 {
     RECT r, box = { 344, 104, 696, 120 + ChoiceCount() * 62 + 6 };
     Card(dc, box, 20);
-    static const wchar_t* kChoice[4] = { L"Моё местоположение", L"Найти адрес", L"Точка на карте", L"Отмена" };
+    static const wchar_t* kChoice[5] = { L"Моё местоположение", L"Найти адрес", L"Избранное", L"Точка на карте",
+                                         L"Отмена" };
     for (int i = 0; i < ChoiceCount(); i++) {
         int id = ChoiceId(i);
         ChoiceRect(id, &r);
@@ -5029,10 +5449,22 @@ static bool StopRect(int id, RECT* r)   // a stop's menu: out, earlier (not the 
     return true;
 }
 
+// "Продолжить маршрут?" as the long press's card: "Да" in the accent, "Нет" (M_RESUME_BOX: the card itself)
+static bool ResumeRect(int id, RECT* r)
+{
+    if (id == M_RESUME_BOX)
+        SetRect(r, 160, 300, 640, 466);
+    else
+        SetRect(r, id == M_RESUME_GO ? 180 : 412, 384, id == M_RESUME_GO ? 400 : 620, 446);
+    return s_resume;
+}
+
 static bool MenuRect(int id, RECT* r)
 {
     if (id >= M_VIA && id <= M_CARD)
         return s_lpMenu && LpRect(id, r);
+    if (id >= M_RESUME_GO)
+        return ResumeRect(id, r);
     return id >= M_STOP_OUT && id <= M_STOP_CANCEL && StopRect(id, r);
 }
 
@@ -5079,6 +5511,181 @@ static int HitIn(int lo, int hi, bool (*rect)(int, RECT*), int x, int y)   // th
     return -1;
 }
 
+static int FavListPages()
+{
+    return s_favs.n ? (s_favs.n + kFavRows - 1) / kFavRows : 1;
+}
+
+static bool FavCtlShown(int id, int i)   // that favourite there; no "up" for the first, no "down" for the last
+{
+    return i < s_favs.n && !(id < L_DOWN0 && i == 0) && !(id >= L_DOWN0 && id < L_NAME0 && i == s_favs.n - 1);
+}
+
+static bool FavListRect(int id, RECT* r)   // a row's control, or the page's; false: not shown
+{
+    if (id == L_BACK) {
+        *r = kBackRect;
+        return true;
+    }
+    if (id >= L_ICON0) {   // the signs: 2 rows of 6
+        int k = id - L_ICON0;
+        SetRect(r, 36 + k % 6 * 124, 150 + k / 6 * 108, 136 + k % 6 * 124, 246 + k / 6 * 108);
+        return s_flSign >= 0;
+    }
+    if (s_flSign >= 0)
+        return false;
+    if (id >= L_SIGN0) {   // the sign and the name
+        int row = id - L_SIGN0, y = kSetRow0 + row * kSetRowH + 5;
+        SetRect(r, 24, y, 384, y + 40);
+        return s_flPage * kFavRows + row < s_favs.n;
+    }
+    if (id == L_PREV || id == L_NEXT)
+        SetRect(r, id == L_PREV ? 300 : 452, 420, id == L_PREV ? 348 : 500, 468);
+    else {
+        int row = id % kFavRows, i = s_flPage * kFavRows + row, y = kSetRow0 + row * kSetRowH + 5;
+        static const short kX[4][2] = { { 392, 440 }, { 448, 496 }, { 504, 620 }, { 628, 760 } };
+        SetRect(r, kX[id / kFavRows][0], y, kX[id / kFavRows][1], y + 40);
+        return FavCtlShown(id, i);
+    }
+    return id == L_BACK || FavListPages() > 1;
+}
+
+static void FavRenameStart(int i)   // the keyboard, its name in it (FavRenameDone: back where it came from)
+{
+    s_favRename = i;
+    s_favName = true;
+    s_showHits = s_showFavs = false;
+    VKeysOpen(&s_kb, s_favs.f[i].name, VFAV_NAME - 1);
+    s_search = true;
+}
+
+static void FavListDel(int i, int sure)   // "УДАЛИТЬ": the first press asks ("ТОЧНО?"), the second deletes
+{
+    if (sure != i) {
+        s_flSure = i;
+        return;
+    }
+    VFavsDel(&s_favs, i);
+    FavsSave();
+}
+
+static void FavListMove(int i, int dir)
+{
+    int j = VFavsMove(&s_favs, i, dir);
+    if (j >= 0) {
+        FavsSave();
+        s_flPage = j / kFavRows;   // (kept in sight)
+    }
+}
+
+static void OnFavListCtl(int id)
+{
+    int i = s_flPage * kFavRows + id % kFavRows, sure = s_flSure;
+    s_flSure = -1;   // (any other tap: not asked any more)
+    if (id == L_BACK && s_flSign >= 0)
+        s_flSign = -1;
+    else if (id == L_BACK)
+        s_favList = false;
+    else if (id >= L_ICON0) {
+        s_favs.f[s_flSign].icon = id - L_ICON0;
+        FavsSave();
+        s_flSign = -1;
+    } else if (id >= L_SIGN0)
+        s_flSign = s_flPage * kFavRows + id - L_SIGN0;
+    else if (id == L_PREV)
+        s_flPage = s_flPage > 0 ? s_flPage - 1 : 0;
+    else if (id == L_NEXT)
+        s_flPage++;
+    else if (id >= L_DEL0)
+        FavListDel(i, sure);
+    else if (id >= L_NAME0) {   // the keyboard instead of the settings (back here after)
+        FavRenameStart(i);
+        s_settings = false;
+    } else
+        FavListMove(i, id >= L_DOWN0 ? 1 : -1);
+    if (s_flPage >= FavListPages())
+        s_flPage = FavListPages() - 1;
+    InvalidateRect(s_wnd, NULL, FALSE);
+}
+
+static void UpDownSign(HDC dc, const RECT& r, bool up, COLORREF c)
+{
+    static const signed char kUp[3][2] = { { -8, 5 }, { 8, 5 }, { 0, -5 } }, kDown[3][2] = { { -8, -5 }, { 8, -5 }, { 0, 5 } };
+    FavPoly(dc, up ? kUp : kDown, 3, (r.left + r.right) / 2, (r.top + r.bottom) / 2, 10, c);
+}
+
+static void FavListCtl(HDC dc, int id, int i)   // a row's control: up, down, "ИМЯ", "УДАЛИТЬ" (asked: "ТОЧНО?")
+{
+    RECT r;
+    bool down = s_flPressed == id;
+    if (!FavListRect(id, &r))
+        return;
+    if (id >= L_DEL0 && s_flSure == i) {
+        Tile(dc, r, kTextErr, kTextErr, 20);
+        Text(dc, s_fontLabel, kInk, r.left, r.top, r.right, r.bottom, DT_CENTER, L"ТОЧНО?");
+    } else {
+        DrawCtl(dc, r, down, s_fontLabel, id >= L_DEL0 ? L"УДАЛИТЬ" : id >= L_NAME0 ? L"ИМЯ" : L"");
+    }
+    if (id < L_NAME0)
+        UpDownSign(dc, r, id < L_DOWN0, down ? kInk : kText);
+}
+
+static void FavListRow(HDC dc, int row)
+{
+    int i = s_flPage * kFavRows + row, y = kSetRow0 + row * kSetRowH;
+    const VFav& f = s_favs.f[i];
+    wchar_t s[48];
+    _snwprintf(s, 48, L"%.5f, %.5f", f.lat, f.lon);
+    RECT r;
+    bool down = s_flPressed == L_SIGN0 + row;
+    if (down && FavListRect(L_SIGN0 + row, &r))   // the sign and the name: the signs to choose from
+        Tile(dc, r, kPanel2, kOrange, 12);
+    SetRow(dc, y - 3, L"", s, row + 1 < kFavRows && i + 1 < s_favs.n);
+    FavSign(dc, f.icon, 48, y + 16, 9, kOrange, kPanel);
+    Text(dc, s_fontLabel, kText, 64, y, 384, y + 25, DT_LEFT, f.name);
+    for (int k = 0; k < 4; k++)
+        FavListCtl(dc, k * kFavRows + row, i);
+}
+
+static void DrawFavSignPick(HDC dc)   // the signs for s_flSign: its own in the accent's frame
+{
+    wchar_t t[64];
+    _snwprintf(t, 64, Tr(L"Значок: %s"), s_favs.f[s_flSign].name);
+    t[63] = 0;
+    PageTop(dc, t, s_flPressed == L_BACK, 412);
+    RECT r;
+    for (int k = 0; k < VFAV_ICONS; k++) {
+        FavListRect(L_ICON0 + k, &r);
+        bool on = s_favs.f[s_flSign].icon == k, down = s_flPressed == L_ICON0 + k;
+        Tile(dc, r, down ? kOrange : kPanel2, on || down ? kOrange : kPanel2, 16);
+        FavSign(dc, k, (r.left + r.right) / 2, (r.top + r.bottom) / 2, 22, down ? kInk : on ? kOrange : kText,
+                down ? kOrange : kPanel2);
+    }
+}
+
+static void DrawFavList(HDC dc)
+{
+    if (s_flSign >= 0) {
+        DrawFavSignPick(dc);
+        return;
+    }
+    PageTop(dc, L"Избранное", s_flPressed == L_BACK, 412);
+    if (!s_favs.n)
+        Text(dc, s_fontLabel, kTextDim, 36, 76, s_cw - 36, 376, DT_CENTER,
+             L"Избранного нет: долгое нажатие на карте → В ИЗБРАННОЕ");
+    for (int row = 0; row < kFavRows && s_flPage * kFavRows + row < s_favs.n; row++)
+        FavListRow(dc, row);
+    RECT r;
+    if (!FavListRect(L_PREV, &r))
+        return;
+    DrawCtl(dc, r, s_flPressed == L_PREV, s_fontBig, L"\x2039");
+    FavListRect(L_NEXT, &r);
+    DrawCtl(dc, r, s_flPressed == L_NEXT, s_fontBig, L"\x203A");
+    wchar_t s[16];
+    _snwprintf(s, 16, L"%d/%d", s_flPage + 1, FavListPages());
+    Text(dc, s_fontLabel, kText, 348, 420, 452, 468, DT_CENTER, s);
+}
+
 // "Куда едем?" (design v3, the map with the bottom bar up and no route): the search's field, the first three
 // favourites under it (a tap - the route there).
 static bool WhereShown()
@@ -5115,7 +5722,7 @@ static int HitOverMap(int x, int y)
             return 70 + k;
     if (PickRect(&r) && x >= r.left && x < r.right && y >= r.top && y < r.bottom)
         return P_PICK_CANCEL;
-    int id = HitIn(M_VIA, M_STOP_CANCEL, MenuRect, x, y);
+    int id = HitIn(M_VIA, M_RESUME_BOX, MenuRect, x, y);
     if (id < 0)
         id = HitIn(F_GO, E_BOX, FavRect, x, y);
     if (id < 0)
@@ -5145,12 +5752,8 @@ static void OnFavCtl(int id)   // the mark's menu, the favourite's card
         s_favs.f[s_favEdit].icon = id - E_ICON;
         FavsSave();
     } else if (id == E_NAME) {   // the keyboard, its name in it
-        s_favRename = s_favEdit;
+        FavRenameStart(s_favEdit);
         s_favEdit = -1;
-        s_favName = true;
-        s_showHits = s_showFavs = false;
-        VKeysOpen(&s_kb, s_favs.f[s_favRename].name, VFAV_NAME - 1);
-        s_search = true;
     } else if (id == E_DEL && s_favSure) {
         VFavsDel(&s_favs, s_favEdit);
         FavsSave();
@@ -5213,6 +5816,15 @@ static void OnOverMap(int id)
         PlanGo();
     } else if (id == M_STOP_CANCEL) {
         s_lpStop = -1;
+    } else if (id == M_RESUME_GO) {
+        *RoutePlanGet() = s_resumePlan;
+        s_resume = false;
+        s_resumeTick = GetTickCount() | 1;
+        Log("ui: the route kept - on again");
+    } else if (id == M_RESUME_NO) {
+        s_resume = false;
+        RouteKeep(false);
+        Log("ui: the route kept - not wanted");
     } else if (id == P_TRIP) {
         s_plan = true;
         s_planChoose = -1;
@@ -5371,6 +5983,31 @@ static void DrawLpCard(HDC dc)
     }
 }
 
+static void DrawResume(HDC dc)
+{
+    RECT box, r;
+    if (!ResumeRect(M_RESUME_BOX, &box))
+        return;
+    Card(dc, box, 20);
+    Text(dc, s_fontBig, kText, box.left + 20, box.top + 14, box.right - 20, box.top + 46, DT_LEFT, L"Продолжить маршрут?");
+    const RoutePlace& to = s_resumePlan.to;
+    wchar_t name[80], sub[140];
+    if (to.name[0])
+        wcscpy(name, to.name);
+    else
+        _snwprintf(name, 80, L"%.5f, %.5f", to.lat, to.lon);
+    if (s_resumePlan.nvia)
+        _snwprintf(sub, 140, Tr(L"Куда: %s · заездов: %d"), name, s_resumePlan.nvia);
+    else
+        _snwprintf(sub, 140, Tr(L"Куда: %s"), name);
+    sub[139] = 0;
+    Text(dc, s_fontSmall, kTextDim, box.left + 20, box.top + 48, box.right - 20, box.top + 72, DT_LEFT, sub);
+    ResumeRect(M_RESUME_GO, &r);
+    DrawMainCtl(dc, r, s_planPressed == M_RESUME_GO, L"Да");
+    ResumeRect(M_RESUME_NO, &r);
+    DrawCtl(dc, r, s_planPressed == M_RESUME_NO, s_fontLabel, L"Нет");
+}
+
 static void DrawOverMap(HDC dc)
 {
     RECT r;
@@ -5402,6 +6039,7 @@ static void DrawOverMap(HDC dc)
     if (s_lpMenu)
         DrawLpCard(dc);
     DrawWhere(dc);
+    DrawResume(dc);
 }
 
 // The top (design v3): no bar - the map darkens softly towards the edge; on it the chips (GPS; the traffic or the
@@ -5562,7 +6200,7 @@ static void DrawButtons(HDC dc)
         if (!ButtonRect(i, &r))
             continue;
         int pressed = s_pressed == i && s_pressedInside ? 1 : 0;
-        if (i == B_GPS || i == B_MINUS || i == B_PLUS || i == B_TILT) {   // a dark round button over the map, no border
+        if (i == B_GPS || i == B_MINUS || i == B_PLUS || i == B_TILT || i == B_SOUND) {   // dark, round, over the map
             if (pressed)
                 Tile(dc, r, kOrange, kOrange, kRound);
             else
@@ -5631,7 +6269,9 @@ static void Paint(HDC hdc)
     }
     PartLap(PT_BG);
     DrawMap(dc);
-    if (s_settings && s_maps) {
+    if (s_settings && s_favList) {
+        DrawFavList(dc);
+    } else if (s_settings && s_maps) {
         DrawMaps(dc);
     } else if (s_settings) {
         DrawSettings(dc);
@@ -5710,9 +6350,10 @@ static void LogStat()
     Log("stamps: %d KB; ready %d, new %d, by GDI %d", StampWords() * 2 / 1024, stHit, stMiss, stDirect);
     if (s_statPaints) {   // the frame's parts: the average and the longest, ms
         DWORD n = (DWORD)s_statPaints;
-        Log("paint: avg/max ms - bg %lu/%lu, tiles %lu/%lu, frame %lu/%lu, names %lu/%lu, marks %lu/%lu, "
-            "panels %lu/%lu, out %lu/%lu", s_ptSum[PT_BG] / n, s_ptMax[PT_BG], s_ptSum[PT_RING] / n,
-            s_ptMax[PT_RING], s_ptSum[PT_FRAME] / n, s_ptMax[PT_FRAME], s_ptSum[PT_LABELS] / n, s_ptMax[PT_LABELS],
+        Log("paint: avg/max ms - bg %lu/%lu, tiles %lu/%lu, frame %lu/%lu, names %lu/%lu, layers %lu/%lu, "
+            "route %lu/%lu, marks %lu/%lu, panels %lu/%lu, out %lu/%lu", s_ptSum[PT_BG] / n, s_ptMax[PT_BG],
+            s_ptSum[PT_RING] / n, s_ptMax[PT_RING], s_ptSum[PT_FRAME] / n, s_ptMax[PT_FRAME], s_ptSum[PT_LABELS] / n,
+            s_ptMax[PT_LABELS], s_ptSum[PT_LAYERS] / n, s_ptMax[PT_LAYERS], s_ptSum[PT_ROUTE] / n, s_ptMax[PT_ROUTE],
             s_ptSum[PT_MARKS] / n, s_ptMax[PT_MARKS], s_ptSum[PT_UI] / n, s_ptMax[PT_UI], s_ptSum[PT_OUT] / n,
             s_ptMax[PT_OUT]);
     }
@@ -5730,6 +6371,15 @@ static void LogStat()
 // A route asked for from outside: once the car has a fix (or after 15 s - then from the map's centre)
 static void RouteAsked()
 {
+    RouteInfo ri;
+    RouteGet(&ri);
+    if (ri.state != ROUTE_NONE)
+        s_resume = false;   // (a route on meanwhile: not asked any more)
+    if (s_resumeTick && (s_gps.valid || GetTickCount() - s_resumeTick >= 15000)) {
+        s_resumeTick = 0;
+        PlanGo();
+        InvalidateRect(s_wnd, NULL, FALSE);
+    }
     if (!s_toTick || (!s_gps.valid && GetTickCount() - s_toTick < 15000))
         return;
     SearchHit h;
@@ -5750,6 +6400,8 @@ static void OnCreate(HWND hwnd)
         PathInDir(path, L"favorites.txt");
         VFavsLoad(&s_favs, path);
     }
+    if ((s_resume = RouteKept(&s_resumePlan)) != false)
+        Log("route: one on when closed - asked to go on");
     s_wnd = hwnd;
     SayInit(hwnd);
     RECT rc;
@@ -6100,6 +6752,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             }
             return 0;
         }
+        if (wp == TIMER_TILT) {   // the pitch on its way to the zoom's: a frame (ViewTilt sets it again till there)
+            KillTimer(hwnd, TIMER_TILT);
+            InvalidateRect(hwnd, NULL, FALSE);
+            return 0;
+        }
         if (wp == TIMER_ZOOM) {   // the zoom's change: a frame (the last one draws the new zoom's own)
             if (!s_zoom.on)
                 KillTimer(hwnd, TIMER_ZOOM);
@@ -6150,6 +6807,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             Ensure(REQ_USER);
         } else {
             GpsTake();
+            if (s_dead)   // (no fix messages may come meanwhile)
+                FixToRoute();
             GlideApply();
             g_today = Today();
             if (s_settings && s_maps)
@@ -6188,12 +6847,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         HttpSetGpsDate(s_gps.date);   // a reliable date for HTTPS certificate checks
         if (wp == 1)
             OnGpsScanDone();
-        if (s_gps.valid) {
-            if (RouteAlts() >= 2 && s_gps.speedKmh > 15)
-                RouteAltsDone();   // driving: the route chosen is the one on
-            RouteGps(s_raw.lon, s_raw.lat, s_raw.speedKmh, s_raw.course);
-            SayTick((int)s_raw.speedKmh);
-        }
+        if (s_gps.valid)
+            FixToRoute();
+        LimitTick();
         if (!MapHeld()) {
             GlideApply();
             AutoZoom();
@@ -6238,6 +6894,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         s_pressed = HitButton(x, y);
         if (s_pressed >= 0) {
             s_pressedInside = true;
+        } else if (s_settings && s_favList) {
+            s_flPressed = HitIn(0, L_COUNT - 1, FavListRect, x, y);
         } else if (s_settings && s_maps) {
             s_mapsPressed = HitMaps(x, y);
         } else if (s_settings) {
@@ -6252,8 +6910,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             s_planPressed = HitPlan(x, y);
         } else if ((s_planPressed = HitOverMap(x, y)) >= 0) {
             // the picker's "cancel", the long press menu
-        } else if (s_lpMenu || s_lpStop >= 0 || s_favMenu >= 0 || s_favEdit >= 0) {
-            s_lpMenu = false;   // a tap beside the menu closes it
+        } else if (s_lpMenu || s_lpStop >= 0 || s_favMenu >= 0 || s_favEdit >= 0 || s_resume) {
+            s_lpMenu = s_resume = false;   // a tap beside the menu closes it (the route kept: asked again next time)
             s_lpStop = -1;
             s_favMenu = s_favEdit = -1;
             s_favSure = false;
@@ -6316,6 +6974,12 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             s_pressed = -1;
             if (inside)
                 OnButton(b);
+        } else if (s_flPressed >= 0) {
+            int c = s_flPressed;
+            s_flPressed = -1;
+            if (HitIn(0, L_COUNT - 1, FavListRect, x, y) == c)
+                OnFavListCtl(c);
+            InvalidateRect(hwnd, NULL, FALSE);
         } else if (s_mapsPressed >= 0) {
             int c = s_mapsPressed;
             s_mapsPressed = -1;

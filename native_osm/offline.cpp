@@ -36,6 +36,7 @@ struct Graph {
     GEdge*  edges;
     char*   names;
     BYTE*   bear;      // each edge's bearings out of its start and into its end (NULL: a graph made before them)
+    BYTE*   limit;     // each edge's posted speed limit, km/h, 0 none (NULL: a graph made before them)
     DWORD*  cstart;    // gw * gh + 1
     DWORD*  items;
     OffFile d;         // the parts above; the geometry is read from its file
@@ -78,8 +79,12 @@ static bool Load(const wchar_t* path)
     s_g.items = (DWORD*)OffPart(f, h.off[5] + (h.gw * h.gh + 1) * 4, h.items * 4);
     DWORD end = h.off[5] + (h.gw * h.gh + 1 + h.items) * 4;   // the bearings after the grid, if made with them
     char tag[4];
-    if (OffRead(f->file, end, tag, 4) && !memcmp(tag, "OSMB", 4))
+    if (OffRead(f->file, end, tag, 4) && !memcmp(tag, "OSMB", 4)) {
         s_g.bear = (BYTE*)OffPart(f, end + 4, h.edges * 2);
+        DWORD lim = end + 4 + ((h.edges * 2 + 3) & ~3);   // the limits after them, 4-byte aligned
+        if (OffRead(f->file, lim, tag, 4) && !memcmp(tag, "OSMS", 4))
+            s_g.limit = (BYTE*)OffPart(f, lim + 4, h.edges);
+    }
     if (f->bad) {
         Log("offline: cannot load %S (memory?)", path);
         Unload();
@@ -230,6 +235,23 @@ static double SegM(const int* p)   // a segment's metres (p: its two points' lat
 
 static bool s_noToll;   // the request's "exclude=toll" (the user 2026-10-29): the toll roads' edges not taken
 static bool s_snapToll;   // SnapTo's pass: the toll roads too (none free near, or tolls allowed)
+static double s_snapCourse = -1;   // SnapEdge: only the segments going this way (degrees, either direction; < 0 any)
+static double s_snapTol;           // ... within this many degrees
+enum { kLimitTolDeg = 35 };        // the speed limit's road: close to the course (not the crossing one at a junction)
+
+static double SegBearing(const int* p)   // a segment's way, degrees from north clockwise (-180..180)
+{
+    return atan2((p[3] - p[1]) * s_kx, (p[2] - p[0]) * 0.111195) * 180 / M_PI;
+}
+
+// A segment (p: its two points) goes the course's way, either direction, within s_snapTol
+static bool AlongCourse(const int* p, double course)
+{
+    if (p[0] == p[2] && p[1] == p[3])
+        return false;
+    double d = fmod(fabs(SegBearing(p) - course), 180.0);
+    return (d < 90 ? d : 180 - d) <= s_snapTol;
+}
 
 // The point's projection onto a segment (p: its two points): u = its share of the segment; returns the distance, m.
 static double Project(int lat, int lon, const int* p, double* u)
@@ -258,7 +280,7 @@ static void SnapEdge(int lat, int lon, DWORD e, Snap* best)
     for (int k = 0; k + 1 < n; k++) {
         const int* p = s_pts + k * 2;
         double u, d = Project(lat, lon, p, &u), sl = SegM(p);
-        if (d < best->distM) {
+        if (d < best->distM && (s_snapCourse < 0 || AlongCourse(p, s_snapCourse))) {
             best->distM = d;
             best->e = e;
             best->from = from;
@@ -380,6 +402,17 @@ int TurnCostDs(int x1, int y1, int x2, int y2)
         return 20;
     dot = -dot;   // from the way back: over 60 degrees off it - under 120 turned
     return cr * 1000 > dot * 1732 ? 45 : cr * 1000 > dot * 577 ? 65 : 200;
+}
+
+// Off a road that goes on, onto another (the user 2026-11-14: Щёлковское шоссе -> "Щёлковское шоссе (дублёр)" and back
+// past Хабаровская - both "primary" in OSM, the дублёр a light the fewer; "the way often leaves a main road for a
+// lesser one a few metres shorter"): 6 s - off and back on costs 12, more than a light. The road ending or only
+// renamed (none of its name goes on), or an unnamed one left (a link): nothing. Names: the graph's offsets, 0 none.
+enum { kLeaveDs = 60 };
+
+int LeaveCostDs(DWORD inName, DWORD outName, bool goesOn)
+{
+    return inName && outName != inName && goesOn ? kLeaveDs : 0;
 }
 
 // By the roads' own bearings (0..255): their difference's angle class, the same costs.
@@ -539,25 +572,52 @@ static void ReachEnds(Fastest& f, DWORD n, DWORD d, Way* w)   // node n settled 
     }
 }
 
+static bool RoadGoesOn(DWORD n, DWORD inE, DWORD from)   // a road of the way in's name leaves n, not back to from
+{
+    DWORD nm = s_g.edges[inE].name;
+    for (DWORD e = s_g.first[n]; nm && e < s_g.first[n + 1]; e++)
+        if (s_g.edges[e].name == nm && s_g.edges[e].to != from)
+            return true;
+    return false;
+}
+
+// The way into a node, for the turns out of it: its edge (a start's: its seed's), the node it came from, its end's
+// bearing or (no bearings in the graph) its move in metres, its name, whether a road of that name goes on
+struct WayIn { DWORD e, from; int bear, ix, iy; DWORD name; bool goesOn; };
+
+static void WayInto(DWORD n, WayIn* w)
+{
+    DWORD in = s_prevE[n];
+    bool seed = (in & 0x80000000) != 0;
+    w->e = seed ? s_seedE[in & 1] : in;
+    w->from = seed ? s_seedFrom[in & 1] : FromNode(in);
+    w->ix = w->iy = 0;
+    if (!s_g.bear)
+        MoveM(w->from, n, &w->ix, &w->iy);
+    w->bear = s_g.bear ? s_g.bear[w->e * 2 + 1] : 0;
+    w->name = s_g.edges[w->e].name;
+    w->goesOn = RoadGoesOn(n, w->e, w->from);
+}
+
+static int TurnOnto(const WayIn& w, DWORD n, DWORD e)   // the turn from the way in onto edge e, 0.1 s
+{
+    if (s_g.bear)
+        return TurnCostB(w.bear, s_g.bear[e * 2]);
+    int ox, oy;
+    MoveM(n, s_g.edges[e].to, &ox, &oy);
+    return TurnCostDs(w.ix, w.iy, ox, oy);
+}
+
 static bool Relax(DWORD n, DWORD d)   // node n's edges, each with the turn onto it; false = no memory
 {
-    int nearM = s_hier ? NearM(n) : 0, ix = 0, iy = 0, ox, oy;
-    DWORD in = s_prevE[n];   // the way in (a start's: its edge); no bearings in the graph - node to node
-    if (!s_g.bear)
-        MoveM(in & 0x80000000 ? s_seedFrom[in & 1] : FromNode(in), n, &ix, &iy);
-    int inB = s_g.bear ? s_g.bear[(in & 0x80000000 ? s_seedE[in & 1] : in) * 2 + 1] : 0;
+    int nearM = s_hier ? NearM(n) : 0;
+    WayIn w;
+    WayInto(n, &w);
     for (DWORD e = s_g.first[n]; e < s_g.first[n + 1]; e++) {
         const GEdge& g = s_g.edges[e];
         if ((s_noToll && (g.flags & 8)) || !HierAllows(RoadTier(g.cls), nearM, s_hier))
             continue;
-        int turn;
-        if (s_g.bear) {
-            turn = TurnCostB(inB, s_g.bear[e * 2]);
-        } else {
-            MoveM(n, g.to, &ox, &oy);
-            turn = TurnCostDs(ix, iy, ox, oy);
-        }
-        DWORD c = d + g.timeDs + turn;
+        DWORD c = d + g.timeDs + TurnOnto(w, n, e) + LeaveCostDs(w.name, g.name, w.goesOn);
         if (c < s_dist[g.to]) {
             s_dist[g.to] = c;
             s_prevE[g.to] = e;
@@ -996,6 +1056,52 @@ bool OfflineRoadAt(int lat, int lon, double maxM, char* name, int cap)
     memcpy(name, n, len);
     name[len] = 0;
     return true;
+}
+
+int OfflineSnapFix(int* lat, int* lon, double* course, double maxM, double tolDeg)
+{
+    if (!OffTryUse())
+        return -1;
+    int pt[2] = { *lat, *lon }, moved = 0;
+    if (Region(pt, 1)) {
+        s_kx = 0.111195 * cos(*lat / 1e6 * M_PI / 180);
+        s_snapCourse = tolDeg < 0 ? -1 : *course;
+        s_snapTol = tolDeg;
+        s_snapToll = true;
+        Snap s;
+        if (SnapNear(*lat, *lon, &s) && s.distM <= maxM) {
+            *lat = s.lat;
+            *lon = s.lon;
+            if (tolDeg >= 0 && EdgePts(s.from, s.e, s_pts, kPtsCap) > s.seg + 1) {   // the road's way, the car's side
+                double b = SegBearing(s_pts + s.seg * 2), d = fmod(*course - b + 540, 360) - 180;
+                b = d > 90 || d < -90 ? b + 180 : b;
+                *course = b < 0 ? b + 360 : b >= 360 ? b - 360 : b;
+            }
+            moved = 1;
+        }
+        s_snapCourse = -1;
+    }
+    OffUse(false);
+    return moved;
+}
+
+int OfflineLimitAt(int lat, int lon, double course, double maxM)
+{
+    if (!OffTryUse())
+        return -1;
+    int pt[2] = { lat, lon }, v = 0;
+    if (Region(pt, 1) && s_g.limit) {
+        s_kx = 0.111195 * cos(lat / 1e6 * M_PI / 180);
+        s_snapCourse = course;
+        s_snapTol = kLimitTolDeg;
+        s_snapToll = true;
+        Snap s;
+        if (SnapNear(lat, lon, &s) && s.distM <= maxM)
+            v = s_g.limit[s.e];
+        s_snapCourse = -1;
+    }
+    OffUse(false);
+    return v;
 }
 
 // ---------------------------------------------------------------- the request

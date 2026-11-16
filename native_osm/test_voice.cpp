@@ -232,6 +232,26 @@ static void TestEvent()
     Check(Event(busy, on2, "route_ready"), "event: a route after none on - ready");
 }
 
+static void TestGain()
+{
+    short s[4] = { 10000, -10000, 32767, -32768 };
+    VoiceGain((char*)s, sizeof(s), 16, kVoiceLoud);
+    Check(s[0] == 10000 && s[1] == -10000 && s[2] == 32767 && s[3] == -32768, "gain: loud - as recorded");
+    VoiceGain((char*)s, sizeof(s), 16, kVoiceMedium);
+    Check(s[0] == 5500 && s[1] == -5500 && s[2] == 18021 && s[3] == -18022, "gain: medium - 55 %");
+    short q[2] = { 10000, -10000 };
+    VoiceGain((char*)q, 3, 16, kVoiceQuiet);   // (an odd byte at the end: left)
+    Check(q[0] == 3000 && q[1] == -10000, "gain: quiet - 30 %, whole samples only");
+    unsigned char b[4] = { 228, 128, 28, 228 };
+    VoiceGain((char*)b, 3, 8, kVoiceQuiet);
+    Check(b[0] == 158 && b[1] == 128 && b[2] == 98 && b[3] == 228, "gain: 8-bit - round its middle (128), its length");
+    short z[1] = { 10000 };
+    VoiceGain((char*)z, 2, 16, 0);
+    Check(z[0] == 10000, "gain: no level (an old setting) - as recorded");
+    VoiceGain((char*)z, 2, 16, 4);
+    Check(z[0] == 10000, "gain: past loud - as recorded");
+}
+
 static void TestDevice()
 {
     Check(VoiceDevice(2, 4) == 1, "device: VestaHome turned the radio down (no shell) - Audio Output 1");
@@ -250,6 +270,7 @@ int main()
     TestSay();
     TestWav();
     TestDevice();
+    TestGain();
     printf("%d checks, %d failed\n", s_checks, s_failed);
     return s_failed;
 }

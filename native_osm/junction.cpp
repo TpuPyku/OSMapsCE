@@ -159,6 +159,69 @@ int RouteCut(const double* ll, int np, int from, int to, double lon, double lat,
     return best;
 }
 
+// The car led on along the route's line with no fix (the user 2026-11-14: in a tunnel the mark left the route)
+static double Toward(double* p, const double* b, double m)   // p moved up to m metres to b: the metres left past b
+{                                                            // (<= 0: it stopped short)
+    double d = Dist(p, b), t = m <= 0 ? 0 : d > m ? m / d : 1;
+    p[0] += (b[0] - p[0]) * t;
+    p[1] += (b[1] - p[1]) * t;
+    return m - d;
+}
+
+static double CourseOf(const double* a, const double* b, double was)   // a -> b, degrees; no length: the one it was
+{
+    double e, n;
+    Metres(a, b, &e, &n);
+    return e || n ? fmod(atan2(e, n) * 180 / M_PI + 360, 360) : was;
+}
+
+int RouteAhead(const double* ll, int np, int seg, const double* at, double m, double* out)
+{
+    if (np < 2)
+        return -1;
+    seg = seg < 0 ? 0 : seg > np - 2 ? np - 2 : seg;
+    out[0] = at[0];
+    out[1] = at[1];
+    out[2] = 0;
+    for (;; seg++) {
+        const double* b = ll + seg * 2 + 2;
+        out[2] = CourseOf(b - 2, b, out[2]);
+        m = Toward(out, b, m);
+        if (m <= 0 || seg == np - 2)
+            return seg;
+    }
+}
+
+static bool StretchOver(double d, double last, double startM, double maxM, double gapM)   // looked far enough
+{
+    return (last < 0 && d >= startM) || (last >= 0 && d - last >= gapM) || d >= maxM;
+}
+
+double RouteStretch(const double* ll, int np, int seg, const double* at, double startM, double maxM, double stepM,
+                    double gapM, bool (*inside)(const double* p, void* ctx), void* ctx)
+{
+    double p[3] = { at[0], at[1], 0 }, d = 0, last = -1;
+    for (;;) {
+        if (inside(p, ctx))
+            last = d;
+        if (StretchOver(d, last, startM, maxM, gapM))
+            return last;
+        double was[2] = { p[0], p[1] };
+        seg = RouteAhead(ll, np, seg, was, stepM, p);
+        if (seg < 0 || (p[0] == was[0] && p[1] == was[1]))   // (the route's end)
+            return last;
+        d += Dist(was, p);   // (short at the end; a bend: its chord - a few cm)
+    }
+}
+
+// A fix farther from the last trusted one than its speed allows (the drift before a tunnel): 1.5 times the way at the
+// faster of the two speeds, and 30 m of noise
+bool FixJumps(double lon0, double lat0, double kmh0, DWORD ms, double lon, double lat, double kmh)
+{
+    double a[2] = { lon0, lat0 }, b[2] = { lon, lat }, v = kmh0 > kmh ? kmh0 : kmh;
+    return Dist(a, b) > v / 3.6 * ms / 1000 * 1.5 + 30;
+}
+
 static void Put(double* out, int& n, int cap, double lon, double lat)
 {
     if (n < cap) {

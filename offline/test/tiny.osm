@@ -41,11 +41,13 @@
   <way id="11" version="1">
     <nd ref="1"/><nd ref="2"/><nd ref="3"/><nd ref="4"/>
     <tag k="highway" v="primary"/>
+    <tag k="maxspeed" v="60"/>
     <tag k="name" v="Главная улица"/>
   </way>
   <way id="12" version="1">
     <nd ref="2"/><nd ref="5"/>
     <tag k="highway" v="residential"/>
+    <tag k="maxspeed" v="RU:urban"/>
     <tag k="name" v="Боковая улица"/>
   </way>
   <way id="13" version="1">

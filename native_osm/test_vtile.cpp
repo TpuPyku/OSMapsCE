@@ -650,6 +650,10 @@ static void Deep()
     for (int i = 0; i < (int)(sizeof(kNums14) / sizeof(kNums14[0])); i++)
         Add(l, NULL, kNums14[i].nm, 1, g, Point(g, kNums14[i].x, kNums14[i].y));
     End(t14, l);
+    // a street in the bottom right quarter, whose z15 tile has the house number only (a pack's z15 since 2026-11-11)
+    Begin(l, "transportation_name", "name");
+    Add(l, "primary", "Wide St", 2, g, HLine(g, 136, 250, 236));
+    End(t14, l);
     static unsigned char tl[2048], br[2048];
     int ntl = MakeDeep15(tl, true), nbr = MakeDeep15(br, false);
 
@@ -693,6 +697,9 @@ static void Deep()
         hidden = hidden && Lit(f, 380, 230, 420, 250) == 0;
     }
     Check(hidden, "z17: the z14 tile's numbers in the z15 tiles' quarters, at their borders too, not drawn");
+    Labels(f, 9500, 5000, 193, 236, 16, 0, mr, NULL, 0);
+    Check(Count(f, 300, 225, 500, 255, white) > 20,
+          "z16: the z14 tile's street name where the z15 tile has house numbers only (names yield to names)");
     Close(f);
 }
 
@@ -744,6 +751,24 @@ static void Levels()
     int no = MakeLevels(omt, false), np = MakeLevels(pmt, true);
     const unsigned short casing = RGB565(224, 182, 120);
     MapRequest a = { SRC_OSM, 14, 9600, 5000 }, b = { SRC_OSM, 14, 9700, 5000 }, n = { SRC_OSM, 14, 9800, 5000 };
+    MapRequest ka = { SRC_OSM, VEC_ZBASE + 14, 9650, 5000 }, kb = { SRC_OSM, VEC_ZBASE + 14, 9750, 5000 };
+    // a road in a tunnel near a place (the dead reckoning's gate, the user 2026-11-14: only in tunnels): the tunnel at
+    // x 1024 units (64 px), the bridge at 2048, the ground road along y 2048
+    Check(VTileTunnelIn(ka, omt, no, 1100, 3000, 100), "tunnel near: 76 units off the tunnel, within 100");
+    Check(VTileTunnelIn(ka, NULL, 0, 1024, 100, 1), "tunnel near: on it (the tile parsed already)");
+    Check(!VTileTunnelIn(ka, NULL, 0, 1300, 3000, 100), "tunnel near: 276 units off - not");
+    Check(!VTileTunnelIn(ka, NULL, 0, 2048, 3000, 100), "tunnel near: on the bridge - not a tunnel");
+    Check(!VTileTunnelIn(ka, NULL, 0, 1100, 4200, 100), "tunnel near: past its end aside, 129 units from the end - not");
+    Check(VTileTunnelIn(ka, NULL, 0, 1050, 4150, 100), "tunnel near: past its end, 60 units from the end");
+    Check(!VTileTunnelIn(ka, NULL, 0, 3000, 2048, 100), "tunnel near: on the ground road - not");
+    Check(VTileTunnelIn(kb, pmt, np, 1000, 500, 100), "tunnel near: Protomaps' is_tunnel too");
+    MapRequest kp;
+    int pu, pv, pr;
+    VTileTunnelPlace(0.0001, -0.0001, 100, &kp, &pu, &pv, &pr);
+    Check(kp.z == VEC_ZBASE + 14 && kp.x == 8192 && kp.y == 8192 && pu == 18 && pv == 18 && pr == 167,
+          "tunnel near: the place's z14 data tile, its units, 100 m at the equator 167 units");
+    VTileTunnelPlace(37.6173, 55.7558, 20, &kp, &pu, &pv, &pr);
+    Check(kp.x == 9904 && kp.y == 5121 && pr == 60, "tunnel near: Moscow's tile, 20 m - 60 units (cos 55.8)");
     Image ia = { 0 }, ib = { 0 };
     g_cfg.night = 0;
     Check(VTileRender(a, omt, no, &ia) && Row(ia, 128, 118, 138, casing) == 2,
@@ -832,6 +857,39 @@ static bool Near(double a, double b)
 
 static void TiltChecks()
 {
+    Check(TiltEase(-1, 55, 0) == 55, "tilt ease: the first - the zoom's pitch at once");
+    POINT pts[3] = { { -30934, 36666 }, { 500, 260 }, { 495, 252 } };
+    bool on[3] = { true, true, false };
+    Check(MarkAt(pts, on, 1, 493, 249, 26) == -1, "mark at: one far off the screen (its square past int) - none");
+    Check(MarkAt(pts, on, 2, 493, 249, 26) == 1, "mark at: the near one");
+    Check(MarkAt(pts, on, 3, 493, 249, 26) == 1, "mark at: the nearer one not drawn - not it");
+    on[2] = true;
+    Check(MarkAt(pts, on, 3, 493, 249, 26) == 2, "mark at: the nearest of two");
+    Check(MarkAt(pts, on, 2, 493, 249 - 26, 26) == -1 && MarkAt(pts, on, 2, 500, 260 + 25, 26) == 1,
+          "mark at: 26 px off - not, 25 - it");
+    POINT two[2] = { { 10, 20 }, { 20, 0 } };
+    bool both[2] = { true, true };
+    Check(MarkAt(two, both, 2, 0, 0, 26) == 1, "mark at: by the distance (20 px off) - not the one 10 across, 20 down");
+    Check(MarkAt(two + 1, both, 1, 0, 0, 26) == 0, "mark at: the first one");
+    POINT corner = { 20, 20 };
+    Check(MarkAt(&corner, both, 1, 0, 0, 26) == -1, "mark at: 20 across, 20 down (28 px) - not, a circle not a box");
+    POINT tie[2] = { { 10, 0 }, { -10, 0 } };
+    Check(MarkAt(tie, both, 2, 0, 0, 26) == 0, "mark at: two as near - the first");
+    Check(MarkSeen(400, 240, 800, 480, 20) && MarkSeen(-19, -19, 800, 480, 20) && MarkSeen(819, 499, 800, 480, 20),
+          "mark seen: on the screen, or its sign reaching in from 19 px past the edge");
+    Check(!MarkSeen(-21, 240, 800, 480, 20) && !MarkSeen(821, 240, 800, 480, 20) && !MarkSeen(400, -21, 800, 480, 20) &&
+          !MarkSeen(400, 501, 800, 480, 20), "mark seen: 21 px past an edge - not drawn");
+    Check(!MarkSeen(-30934, 36666, 800, 480, 20) && !MarkSeen(1e9, -1e9, 800, 480, 20),
+          "mark seen: far off (the 3D view's far points) - not drawn (the emulator: 40 ms each in GDI)");
+    Check(!MarkSeen(-20, 240, 800, 480, 20) && !MarkSeen(820, 240, 800, 480, 20) && !MarkSeen(400, -20, 800, 480, 20) &&
+          !MarkSeen(400, 500, 800, 480, 20), "mark seen: r px past an edge - the sign ends at the screen's edge, not in");
+    Check(fabs(TiltEase(0, 55, 200) - 5) < 1e-9, "tilt ease: from 0 (a shown pitch, not the first) - eased");
+    Check(fabs(TiltEase(55, 65, 200) - 60) < 1e-9, "tilt ease: 200 ms - 5 degrees on (25 a second)");
+    Check(fabs(TiltEase(65, 55, 200) - 60) < 1e-9, "tilt ease: down the same");
+    Check(TiltEase(55, 65, 400) == 65 && TiltEase(55, 65, 5000) == 65, "tilt ease: there at 400 ms, never past");
+    Check(TiltEase(65, 45, 5000) == 45, "tilt ease: down, never past");
+    Check(TiltEase(60, 60, 100) == 60, "tilt ease: there - stays");
+    Check(fabs(TiltEase(55, 65, 0) - 55) < 1e-9, "tilt ease: no time - no step");
     Tilt t, t70;
     TiltMake(&t, 120, 150, 300, 60);    // the car 120 px below the flat map's centre, on the screen 150; the fog at
     TiltMake(&t70, 120, 150, 300, 70);  // 300 px ahead; the camera 60 degrees from straight down (70: lower)
@@ -1182,6 +1240,105 @@ static void RouteCutChecks()
           "route cut: to past the end - the last segment still looked at");
 }
 
+// The car led on along the route with no fix (the user 2026-11-14: in a tunnel the mark left the route)
+static bool InBand(const double* p, void* band)   // (RouteStretch's test: "a tunnel" - a band of latitudes)
+{
+    const double* b = (const double*)band;
+    return p[1] >= b[0] && p[1] <= b[1];
+}
+
+static void RouteAheadChecks()
+{
+    double ll[6] = { 37.0, 55.0, 37.0, 55.001, 37.001, 55.001 }, at[2] = { 37.0, 55.0005 }, out[3];   // north 110.5 m, east 63.9 m
+    Check(RouteAhead(ll, 3, 0, at, 20, out) == 0 && Deg(out[0], 37.0) && fabs((out[1] - 55.0005) * 110540 - 20) < 0.01 &&
+          fabs(out[2]) < 1e-6, "route ahead: 20 m on the same segment - north of where it was, its course");
+    Check(RouteAhead(ll, 3, 0, at, 55.27 + 30, out) == 1 && Deg(out[1], 55.001) &&
+          fabs((out[0] - 37.0) * 111320 * cos(55.001 * M_PI / 180) - 30) < 0.05 && fabs(out[2] - 90) < 1e-6,
+          "route ahead: past the turn - on the next segment, 30 m east of it, heading east");
+    Check(RouteAhead(ll, 3, 0, at, 5000, out) == 1 && Deg(out[0], 37.001) && Deg(out[1], 55.001),
+          "route ahead: past the end - at the end");
+    Check(RouteAhead(ll, 3, 0, at, 0, out) == 0 && Deg(out[0], 37.0) && Deg(out[1], 55.0005) &&
+          RouteAhead(ll, 3, 0, at, -10, out) == 0 && Deg(out[1], 55.0005), "route ahead: none (or back) - where it was");
+    Check(RouteAhead(ll, 1, 0, at, 10, out) == -1, "route ahead: one point - no line");
+    Check(RouteAhead(ll, 3, 7, ll + 4, 10, out) == 1 && Deg(out[0], 37.001), "route ahead: a segment past the end - the last");
+    double two[4] = { 37.0, 55.0, 37.001, 55.0 }, ea[6] = { 37.0, 55.0, 37.001, 55.0, 37.001, 55.001 };   // east first
+    Check(RouteAhead(two, 2, 0, two, 30, out) == 0 && fabs(out[2] - 90) < 1e-6 &&
+          fabs((out[0] - 37.0) * 111320 * cos(55.0 * M_PI / 180) - 30) < 0.05, "route ahead: a line of two points - on it, east");
+    Check(RouteAhead(ea, 3, -5, ea, 10, out) == 0 && fabs(out[2] - 90) < 1e-6 && Deg(out[1], 55.0),
+          "route ahead: a segment before the start - the first");
+    Check(RouteAhead(ea, 3, 1, ea + 2, 10, out) == 1 && fabs(out[2]) < 1e-6 && Deg(out[0], 37.001) &&
+          fabs((out[1] - 55.0) * 110540 - 10) < 0.01 && RouteAhead(ea, 3, 2, ea + 2, 10, out) == 1 && Deg(out[0], 37.001),
+          "route ahead: from the last segment - north on it; one past it - the last one still");
+    double sq[8] ={ 37.0, 55.0, 37.0, 55.0, 37.0, 55.001, 37.0, 55.002 }, p0[2] = { 37.0, 55.0 };   // a point twice
+    Check(RouteAhead(sq, 4, 0, p0, 150, out) == 2 && fabs((out[1] - 55.0) * 110540 - 150) < 0.05,
+          "route ahead: a segment of no length - passed");
+    // a fix too far from the last one for the speed (the drift before a tunnel): not trusted
+    Check(!FixJumps(37.0, 55.0, 60, 1000, 37.0, 55.0 + 50 / 110540.0, 60) &&
+          FixJumps(37.0, 55.0, 60, 1000, 37.0, 55.0 + 56 / 110540.0, 60),
+          "fix jumps: at 60 km/h in a second - 55 m allowed (1.5 times the way + 30 m), not more");
+    Check(!FixJumps(37.0, 55.0, 0, 1000, 37.0, 55.0 + 29 / 110540.0, 0) && FixJumps(37.0, 55.0, 0, 1000, 37.0, 55.0 + 31 / 110540.0, 0),
+          "fix jumps: standing - 30 m of noise");
+    Check(!FixJumps(37.0, 55.0, 0, 10000, 37.0, 55.0 + 440 / 110540.0, 100), "fix jumps: the faster of the two speeds, the time between");
+    Check(!FixJumps(37.0, 55.0, 100, 10000, 37.0, 55.0 + 446.5 / 110540.0, 100) &&
+          FixJumps(37.0, 55.0, 100, 10000, 37.0, 55.0 + 446.8 / 110540.0, 100), "fix jumps: 10 s at 100 km/h - 446.7 m allowed");
+    // the tunnel on the route ahead (the user 2026-11-14: the dead reckoning only in tunnels): a straight road north
+    // 995 m, "the tunnel" between 55.002 and 55.004 (221..442 m), sampled every 25 m
+    double north[4] = { 37.0, 55.0, 37.0, 55.009 }, start[2] = { 37.0, 55.0 };
+    double band[2] = { 55.002, 55.004 };
+    double s = RouteStretch(north, 2, 0, start, 300, 5000, 25, 100, InBand, band);
+    Check(fabs(s - 425) < 0.01, "stretch: the tunnel from 225 m, its last sample at 425 m (a gap of 100 m ends it)");
+    double here[2] = { 54.9, 55.0005 };
+    Check(fabs(RouteStretch(north, 2, 0, start, 300, 5000, 25, 100, InBand, here) - 50) < 0.01,
+          "stretch: in the tunnel already at the start - to its last sample, 50 m");
+    Check(RouteStretch(north, 2, 0, start, 200, 5000, 25, 100, InBand, band) == -1,
+          "stretch: none within the first 200 m - none");
+    double end[2] = { 55.008, 56 }, all[2] = { 54, 56 };
+    s = RouteStretch(north, 2, 0, start, 1000, 5000, 25, 100, InBand, end);
+    Check(s > 970 && s < 996, "stretch: a tunnel to the route's end - to its last point");
+    Check(fabs(RouteStretch(north, 2, 0, start, 300, 500, 25, 100, InBand, all) - 500) < 0.01, "stretch: at most maxM");
+}
+
+// The route kept for the next start (the user 2026-11-14: closed with a route on - "Продолжить маршрут?")
+static void ResumeChecks()
+{
+    const wchar_t* path = L"obj\\vtest\\route.txt";
+    RoutePlan p, q;
+    memset(&p, 0, sizeof(p));
+    p.from.kind = PL_PLACE;   // (a planned start: the next start goes from the car)
+    p.to.kind = PL_PLACE;
+    wcscpy(p.to.name, L"Дом, Ленина 5");
+    p.to.lon = 37.123456;
+    p.to.lat = 55.654321;
+    p.nvia = 2;
+    p.via[0].kind = p.via[1].kind = PL_PLACE;
+    wcscpy(p.via[0].name, L"Заправка");
+    p.via[0].lon = 37.2;
+    p.via[0].lat = 55.7;
+    p.via[1].lon = 37.3;
+    p.via[1].lat = 55.8;
+    SetFileAttributesW(path, FILE_ATTRIBUTE_NORMAL);   // (a mutant's run may have left it read-only)
+    DeleteFileW(path);
+    Check(!ResumeLoad(&q, path), "resume: no file - none");
+    Check(ResumeSave(&p, path) && ResumeSave(&p, path) && ResumeLoad(&q, path) && q.to.kind == PL_PLACE &&
+          !wcscmp(q.to.name, L"Дом, Ленина 5") && fabs(q.to.lon - 37.123456) < 1e-7 && fabs(q.to.lat - 55.654321) < 1e-7 &&
+          q.nvia == 2 && !wcscmp(q.via[0].name, L"Заправка") && q.via[0].kind == PL_PLACE && fabs(q.via[1].lat - 55.8) < 1e-7 &&
+          !q.via[1].name[0] && q.from.kind == PL_GPS, "resume: saved, read back - the stops in order, from the car");
+    p.via[0].kind = PL_NONE;   // (an empty stop: left out)
+    Check(ResumeSave(&p, path) && ResumeLoad(&q, path) && q.nvia == 1 && fabs(q.via[0].lat - 55.8) < 1e-7 &&
+          !wcscmp(q.to.name, L"Дом, Ленина 5"), "resume: a stop not a place - left out, the rest as they were");
+    p.nvia = 0;
+    Check(ResumeSave(&p, path) && ResumeLoad(&q, path) && q.nvia == 0, "resume: no stops");
+    p.to.kind = PL_NONE;
+    Check(!ResumeSave(&p, path) && !ResumeLoad(&q, path), "resume: no destination - nothing kept");
+    FILE* t = _wfopen(path, L"wb");
+    fputs("via\t1\t2\tA\nvia\t1\t2\tB\nvia\t1\t2\tC\nvia\t1\t2\tD\nbad\t1\t2\tX\nto\t1\nto\t55.5\t37.5\t\xD0\x94\r\n", t);
+    fclose(t);
+    Check(ResumeLoad(&q, path) && q.nvia == kMaxVia && !wcscmp(q.via[2].name, L"C") && !wcscmp(q.to.name, L"Д") &&
+          fabs(q.to.lon - 37.5) < 1e-9, "resume: three stops at most, the bad lines left out");
+    ResumeDrop(path);
+    Check(GetFileAttributesW(path) == INVALID_FILE_ATTRIBUTES && !ResumeLoad(&q, path), "resume: dropped - none");
+}
+
 // The images' cap by the device's memory (the user 2026-11-03: black squares in 3D at night - the near and the far
 // ring's 61 tiles never fit 6 MB, the tiles pushed each other out; the unit has 275 MB free, Shturmann little)
 static void CacheCapChecks()
@@ -1222,6 +1379,87 @@ static void CacheVictimChecks()
     Check(CacheVictim(e, 3, -1, 6000) == 0 && CacheVictim(e, 3, 0, 6000) == 2,
           "cache: only the traffic used lately - the least recently used of it");
     Check(CacheVictim(e, 1, 0, 6000) == -1 && CacheVictim(e, 0, -1, 6000) == -1, "cache: nothing but the kept - none");
+}
+
+// The frame as TiltWarp made it before 2026-11-12 (a pixel each, every pixel through every ring's check): the pin of
+// its faster walk (Shturmann 2026-11-12: the 3D frame 80-158 ms)
+static unsigned short RefPixel(const RingView* rings, int n, int x, int y, unsigned short fog)
+{
+    for (int i = 0; i < n; i++) {
+        const RingView& r = rings[i];
+        if (x >= r.x0 && x < r.x1 && y >= r.y0 && y < r.y1)
+            return r.top[((y >> r.shift) % r.size) * r.stride + (x >> r.shift) % r.size];
+    }
+    return fog;
+}
+
+static void RefWarp(const RingView* rings, int n, const Tilt& t, int w, int h, double vx, double vy, double angleDeg,
+                    bool night, unsigned short* dst, int dstride)
+{
+    double a = angleDeg * M_PI / 180, ca = cos(a), sa = sin(a);
+    int bx = (int)floor(vx), by = (int)floor(vy);
+    for (int y = 0; y < h; y++) {
+        double sy = y - h / 2.0, fy, k, fade;
+        unsigned char c[3];
+        TiltFog(t, sy, night, c);
+        unsigned short fog = RGB565(c[0], c[1], c[2]);
+        unsigned short* d = dst + y * dstride;
+        if (!TiltRow(t, sy, &fy, &k, &fade)) {
+            for (int x = 0; x < w; x++)
+                d[x] = fog;
+            continue;
+        }
+        double fx = -w / 2.0 * k;
+        long ox = (long)floor((fx * ca - fy * sa + vx - bx) * 65536.0), oy = (long)floor((fx * sa + fy * ca + vy - by) * 65536.0);
+        long dx = (long)(k * ca * 65536.0), dy = (long)(k * sa * 65536.0);
+        int alpha = (int)(fade * 32 + 0.5);
+        for (int x = 0; x < w; x++, ox += dx, oy += dy) {
+            unsigned short p = RefPixel(rings, n, bx + (int)(ox >> 16), by + (int)(oy >> 16), fog);
+            d[x] = alpha ? Blend565(p, fog, alpha) : p;
+        }
+    }
+}
+
+// Many views as the app's (the fog 900+ px ahead, 45-65 degrees): the faster walk gives the very same frame
+static void TiltWarpSameChecks()
+{
+    static unsigned short nearBits[64 * 64], farBits[64 * 64], bigBits[256 * 256], got[120 * 240], ref[120 * 240];
+    for (int i = 0; i < 64 * 64; i++) {
+        nearBits[i] = (unsigned short)((i * 2654435761u) >> 17);
+        farBits[i] = (unsigned short)(0x8000 | (i * 40503u));
+    }
+    for (int i = 0; i < 256 * 256; i++)
+        bigBits[i] = (unsigned short)(0x4000 | ((i * 97u) & 0x3FFF));
+    int bad = 0;
+    for (int v = 0; v < 48; v++) {
+        double vx = 1000.5 + v * 3.3, vy = 2000.25 - v * 1.7, angle = v * 37.5;
+        RingView rings[2] = { { nearBits, 64, 64, 0, (int)vx - 20 - v % 5, (int)vy - 21, (int)vx + 22, (int)vy + 19 + v % 3 },
+                              { farBits, 64, 64, 2, (int)vx - 120, (int)vy - 130, (int)vx + 125, (int)vy + 110 } };
+        if (v % 4 == 3) {   // a near ring over a part of the rows - one side, the other past it
+            RingView big = { bigBits, 256, 256, 0, (int)vx - 200, (int)vy - 150 + v, (int)vx + 10 - v % 7, (int)vy + 90 };
+            rings[0] = big;
+        }
+        if (v % 4 == 1) {   // the first ring a coarser one over the rows, the fog's too (its loaded part wraps), to
+            // one side of the car's column
+            RingView coarse = { farBits, 64, 64, 2, (int)vx - 900 + v, (int)vy - 1900, (int)vx + 10 - v % 5, (int)vy + 1900 - v };
+            rings[0] = coarse;
+        }
+        Tilt t;
+        TiltMake(&t, 60 + v % 7, 60, 900 + v * 10, 45 + v % 3 * 10);
+        if (v % 8 == 2) {   // a near fog: the ring of the view's zoom (no wrap twice) over the rows fading in it
+            RingView fogged = { bigBits, 256, 256, 0, (int)vx - 127, (int)vy - 127, (int)vx + 128, (int)vy + 128 };
+            rings[0] = fogged;
+            TiltMake(&t, 30, 60, 100, 45 + v % 3 * 10);
+        }
+        int n = 1 + v % 2, w = 120 - v % 4, h = 240;
+        TiltWarp(rings, n, t, w, h, vx, vy, angle, v % 3 == 0, got, w);
+        RefWarp(rings, n, t, w, h, vx, vy, angle, v % 3 == 0, ref, w);
+        for (int i = 0; i < w * h; i++)
+            bad += got[i] != ref[i];
+    }
+    if (bad)
+        printf("  tilt frame vs before: %d pixels differ\n", bad);
+    Check(!bad, "tilt frame: the same frame as each pixel's own walk");
 }
 
 static void TiltWarpChecks()
@@ -1343,10 +1581,10 @@ static void OverviewChecks(const unsigned char* tile, int tileLen, const unsigne
     s_reads = 0;
 }
 
-// VTileLocal: a shown tile from the data at hand - the parsed tile without reading, the pack's z15 before its z14,
-// the cache's file; none: false (to download). z14 data tile (40, 20): MakeTile (water in its top left
-// quarter); its top left z15 child: the quarter's houses (no water) - a z16 tile drawn from it is land, from the z14 one
-// water.
+// VTileLocal: a shown tile from the data at hand - the parsed tile without reading, the z14 one (the pack's, the cache's
+// file), a pack's z15 read for its labels only (2026-11-11: its house numbers - no map there any more); none: false (to
+// download). z14 data tile (40, 20): MakeTile (water in its top left quarter); its top left z15 child: the quarter's
+// houses (no water) - a z16 tile drawn from the z14 one is water.
 static void LocalChecks(const unsigned char* tile, int tileLen, const unsigned char* houses, int housesLen)
 {
     const unsigned short water = RGB565(168, 204, 226), land = RGB565(243, 240, 235);
@@ -1366,10 +1604,11 @@ static void LocalChecks(const unsigned char* tile, int tileLen, const unsigned c
     s_packData[0] = houses;
     s_packLen[0] = housesLen;
     s_nPack = 1;
-    Check(VTileLocal(r16, &im) && s_reads == 2 && Px(im, 128, 128) == land, "local: the pack's z15 tile first");
+    Check(VTileLocal(r16, &im) && s_reads == 2 && Px(im, 128, 128) == water,
+          "local: z16 drawn from the z14 tile, the pack's z15 read (for its labels)");
     ImageFree(&im);
-    Check(VTileLocal(r16b, &im) && s_reads == 2 && Px(im, 128, 128) == land,
-          "local: the parsed z15 tile, nothing read again");
+    Check(VTileLocal(r16b, &im) && s_reads == 2 && Px(im, 128, 128) == water && land != water,
+          "local: the z15 tile parsed once, nothing read again");
     ImageFree(&im);
     s_file[0] = 0;
     s_packKey[1] = d;
@@ -1747,12 +1986,15 @@ int main()
     GlideChecks();
     YoChecks();
     TiltWarpChecks();
+    TiltWarpSameChecks();
     FarRingChecks();
     CacheVictimChecks();
     CacheCapChecks();
     FitZoomChecks();
     LabelPassChecks();
     RouteCutChecks();
+    RouteAheadChecks();
+    ResumeChecks();
     RECT whole = { 0, 0, 800, 480 };
     // the Russian name when the tile has one (name:ru), else the local one: a frame named so equals one whose tile
     // holds that text as its plain name

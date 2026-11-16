@@ -1,4 +1,4 @@
-// OSMapsCE - OpenStreetMap viewer with traffic overlays (Yandex, 2GIS)
+﻿// OSMapsCE - OpenStreetMap viewer with traffic overlays (Yandex, 2GIS)
 // for Windows CE 6.0 (Lada Vesta MMC). Also builds as a desktop Win32 app for testing on a PC.
 #pragma once
 
@@ -45,6 +45,7 @@ struct Config {
     int     junction;       // the junction card before complex maneuvers (junction.cpp; the user 2026-10-28: off by default)
     int     noToll;         // routes keep off toll roads (the user 2026-10-29; the unit's graphs only - OSRM cannot)
     int     voice;          // the voice prompts on the route (voice.cpp, say.cpp; users 2026-11-07)
+    int     voiceVol;       // ... their volume: 1 quiet, 2 medium, 3 loud (voice.h VoiceGain; the user 2026-11-12)
     int     detail;         // the vector map's detail: 0 auto, 1 full, 2 medium, 3 fast (VTileSetDetail(detail - 1))
     int     log;            // OSMapsCE.log kept (the user 2026-10-29: off by default)
     int     tilt;           // the third person's view (its button: heading-up from z15; tilt.cpp, ring.cpp)
@@ -179,7 +180,12 @@ struct MapRegion {
     int  sizeKb;
     int  fullKb;   // the region whole (its tiles too) on the catalog's Yandex Disk; 0 none
     bool files;    // ... on the catalog's own server instead ("files" in its entry, 2026-11-09)
+    int  diskKb;   // its copy on the catalog's Yandex Disk (2026-11-12: two sources - "disk" {size, date}); 0 none
+    char diskDate[12];   // ... uploaded that day (the disk: only the schedule's runs - older than date maybe)
+    bool foreign;  // outside the former USSR: the list's end, a globe by its title
 };
+int  MapsOrder(const void* a, const void* b);   // the list's order: the foreign ones (far in the catalog) last, by the title
+bool MapsDiskOld(const MapRegion& r);           // its disk copy older than the region's build
 int  MapsCatalog(const char* json, MapRegion* out, int cap);
 void MapsHave(MapRegion* r, int n);
 int  MapState(const MapRegion& r);
@@ -194,6 +200,11 @@ bool MapsInstall(const char* url, const wchar_t* data, const char* name, int kin
 enum { MAPS_IDLE, MAPS_BUSY };
 bool MapsList();                 // the release's catalog, on a thread (false: busy)
 bool MapsGetRegion(int i);       // the catalog's region i (and the trunk roads when none), on a thread
+enum { MAPS_SRC_SERVER, MAPS_SRC_DISK };   // where from: the maps' own server (else GitHub), Yandex Disk
+bool MapsGetRegionFrom(int i, int src);   // ... from there (its overview's pack too)
+int  MapsBusySource();            // ... the one being downloaded's
+bool MapsGetRegions(const int* list, int n, int src);   // several (ticked: the user 2026-11-12), in turn; false - busy,
+                                                         // none or one not in the catalog
 int  MapsCount();
 bool MapsAt(int i, MapRegion* out);
 int  MapsJob(wchar_t* text, int cap, int* gotKb, int* totalKb);   // MAPS_BUSY / MAPS_IDLE, its line, progress
@@ -204,12 +215,21 @@ void MapsCancel();                // the download stopped (its part kept: goes o
 int   RoadTier(int cls);   // a road class's level: 0 main (motorway..primary, links), 1 secondary / tertiary, 2 minor
 bool  HierAllows(int tier, int nearM, int hier);   // its edge searched nearM from the nearer end (hier: 2, 1, 0 none)
 int   TurnCostDs(int x1, int y1, int x2, int y2);   // a turn from move 1 to move 2 (metres): its time, 0.1 s
+int   LeaveCostDs(DWORD inName, DWORD outName, bool goesOn);   // off a road that goes on (names: 0 none), 0.1 s
 int   TurnCostB(int in, int out);   // the same by bearings (256 = a full circle: the graph's own, make_graph.py)
 bool  OfflineRoute(const char* osrmPath, char** body, int* len);   // false: no region / no way - ask OSRM
 bool  OfflineTrunkRoute(const char* osrmPath, char** body, int* len);   // over the trunk roads (4b): after OSRM failed
 bool  OfflineHasTrunk();   // the trunk roads' graph is on a card
 bool  OfflineDir(const int* latLon, int n, wchar_t* dir);          // the region's folder holding the points
 bool  OfflineRoadAt(int lat, int lon, double maxM, char* name, int cap);   // the nearest road's name (1e-6 degrees)
+// The posted speed limit (km/h) of the road the car is on: the nearest within maxM going the course's way (either
+// direction; course < 0: any road); 0 = not known (no road, a graph made before the limits, none posted); -1 = the
+// data busy (a route being made): try again later
+int   OfflineLimitAt(int lat, int lon, double course, double maxM);
+// The magnet with no route (2026-11-11): the fix (1e-6 degrees) onto the nearest road within maxM going the course's way
+// within tolDeg (either direction; tolDeg < 0: any road), its course then the road's way nearest the car's (tolDeg < 0:
+// kept). 1 - moved, 0 - no road there (left as it was), -1 - the data busy (a route being made)
+int   OfflineSnapFix(int* lat, int* lon, double* course, double maxM, double tolDeg);
 void  OfflineDrop();   // the graph and the search's index let go (a region written over them); loaded again when asked
 // offsearch.cpp - the search and the address of a point from a region's index (search.idx), answered as Photon's
 bool  OfflineSearch(const char* photonPath, char** body, int* len);   // false: no region / nothing - ask Photon
@@ -227,7 +247,9 @@ struct OffFile {
     void*       part[kOffParts];    // the parts read into memory (not mapped)
     int         nparts;
     bool        bad;                // a part not there
+    wchar_t     path[MAX_PATH];     // (mapped later when a part gets no memory)
 };
+extern void* (*g_offAlloc)(size_t);   // (tests) the parts' malloc
 bool  OffOpen(OffFile* f, const wchar_t* path, void* head, DWORD bytes);   // the file and its header; false: closed
 bool  OffMapWanted(DWORD fileBytes, DWORD freeBytes);   // mapped: unless three times its size is free
 extern DWORD g_offFreeMem;   // (tests) the free memory as if, 0 - the system's
@@ -235,6 +257,7 @@ void* OffPart(OffFile* f, DWORD off, DWORD bytes);   // a part read into memory,
 bool  OffRead(HANDLE f, DWORD off, void* to, DWORD bytes);
 void  OffClose(OffFile* f);                          // the parts freed, the file closed, all zero
 void  OffUse(bool on);   // the data in use (a route, a search) / written over (offmaps.cpp): one at a time
+bool  OffTryUse();       // OffUse(true) if free now (the window's quick looks: never wait for a route); false - busy
 struct OffUseScope { OffUseScope() { OffUse(true); } ~OffUseScope() { OffUse(false); } };
 // The region (a folder of OSMapsData on the SD card / USB disk / beside the program) whose file passes the test:
 // dir = its folder; false = none. holds: reads the file's header, says whether it serves the caller (ctx).
@@ -293,12 +316,19 @@ bool RouteAltGet(int k, const double** lonLat, int* np, double* timeS, double* d
 void RouteAltChoose(int k);
 void RouteAltsDone();                    // chosen: the others and the kept answer go
 void RouteClear();
-void RouteMagnet(double* lon, double* lat, double kmh, double* course);   // the fix shown: on the line when near it
+bool RouteMagnet(double* lon, double* lat, double kmh, double* course);   // the fix shown: on the line when near it
 void RouteGps(double lon, double lat, double kmh, double course);   // each fix: progress, off -> a new route
 void RouteGet(RouteInfo* out);
 int  RoutePoints(const double** lonLat);   // the line: lon, lat pairs
 bool RouteDest(double* lon, double* lat);
 DWORD RouteSig();                   // changes when what is drawn of the route changes
+// resume.cpp - the route kept for the next start (the user 2026-11-14: closed or the power gone with a route on - asked
+// "Продолжить маршрут?"): its stops and its end, UTF-8 lines "via|to<TAB>lat<TAB>lon<TAB>name"
+bool ResumeSave(const RoutePlan* p, const wchar_t* path);   // no destination: none kept (false)
+bool ResumeLoad(RoutePlan* p, const wchar_t* path);         // from the car; false: none
+void ResumeDrop(const wchar_t* path);
+void RouteKeep(bool on);              // route.cpp: the plan kept beside the exe (route.txt) / gone
+bool RouteKept(RoutePlan* p);         // ... read back; false: none
 
 // say.cpp - the voice prompts spoken (voice.h decides what and when)
 enum { TIMER_VOICE = 9 };            // (main.cpp's timers: 1..8)
@@ -327,6 +357,12 @@ int        VTileDetail();           // the detail drawn now (auto: medium till k
 int        VTileDetailFor(DWORD avgMs);   // auto's choice by a tile's average time
 void       VTileNoteMs(DWORD ms, int z);   // a tile's time (auto: z10 and up, timed once a run)
 void       VTileAutoReset();        // (tests) auto timed anew
+// A road in a tunnel (any floor under the ground - OSM's tunnel=yes, the mountains' too) within r units of (u, v) in
+// the data tile key (its bytes; NULL: parsed already; 4096 units a side): the dead reckoning's gate (main.cpp)
+bool       VTileTunnelIn(const MapRequest& key, const unsigned char* data, int len, int u, int v, int r);
+// The same at a place, m metres round it, from the data at hand (the region's pack, else the cache; z14)
+bool       VTileTunnelNear(double lon, double lat, double m);
+void       VTileTunnelPlace(double lon, double lat, double m, MapRequest* key, int* u, int* v, int* r);   // its z14 tile
 void       VLabelsDraw(HDC dc, const RECT& mr, double cx, double cy, double vx, double vy, double angle, int z,
                        const RECT* avoid, int navoid);   // avoid: the controls over the map, no names under them
 int        VLabelPasses();          // the names' passes: places, signs, streets; the last one the house numbers
@@ -340,6 +376,14 @@ void NoYo(wchar_t* s);   // main.cpp: the text's face (Golos Text, else Tahoma)
 struct Tilt { double cf, cs, rc, f, fog, fr; };   // fr: the fog's row (the ground's top) on the screen
 extern const Tilt* g_tilt;   // the view's tilt while it is on (VLabelsDraw), else NULL
 void TiltMake(Tilt* t, double carFlat, double carScreen, double fogPx, double pitchDeg);   // pitch: from straight down
+// The pitch shown going to the zoom's (target) at kTiltDegPerS, ms after the last step (the user 2026-11-11: the zoom
+// smooth, the pitch jumped 10 degrees at its end); the first (shown < 0): the target at once
+enum { kTiltDegPerS = 25 };
+double TiltEase(double shown, double target, DWORD ms);
+// The mark under the finger (x, y): the nearest of those on (pts[i] where drawn) within r px, -1: none. (A Shturmann
+// 2026-11-11: a mark 48000 px off in the tilted view - its squared distance past int, any tap opened it.)
+int MarkAt(const POINT* pts, const bool* on, int n, int x, int y, int r);
+bool MarkSeen(double x, double y, int w, int h, int r);   // a sign r px round (x, y) on a w x h screen
 bool TiltPoint(const Tilt& t, double fx, double fy, double* sx, double* sy);   // false: in the fog
 void TiltProject(const Tilt& t, double fx, double fy, double* sx, double* sy);   // the same, no fog
 bool TiltRow(const Tilt& t, double sy, double* fy, double* k, double* fade);   // a screen row: the flat row fy, its
@@ -386,6 +430,14 @@ bool MagnetSnap(const double* pts, int np, int seg, double* lon, double* lat, do
 // The route (lon, lat pairs) behind the car cut off: of its segments from..to (clamped) the nearest to (lon, lat) within
 // maxM; cut: the car's point on it. -1: none that near
 int  RouteCut(const double* ll, int np, int from, int to, double lon, double lat, double maxM, double* cut);
+// From the point "at" (lon, lat) on segment seg, m metres on along the line: out - lon, lat and the line's course there
+// (degrees); its segment (past the end: the end), -1: no line
+int  RouteAhead(const double* ll, int np, int seg, const double* at, double m, double* out);
+bool FixJumps(double lon0, double lat0, double kmh0, DWORD ms, double lon, double lat, double kmh);   // too far for the speed
+// How far the route ahead of at runs by places inside() says yes to (a tunnel): sampled every stepM; none within
+// startM: -1; else the last such sample (past it gapM with none ends it; maxM at most; the route's end)
+double RouteStretch(const double* ll, int np, int seg, const double* at, double startM, double maxM, double stepM,
+                    double gapM, bool (*inside)(const double* p, void* ctx), void* ctx);
 void GlideMove(double* lon, double* lat, double ve, double vn, DWORD ms);
 int  JunctionSlice(const double* ll, int np, int at, double beforeM, double afterM, double* out, int cap, int* outAt,
                    double* course);   // lon, lat pairs; outAt: the maneuver's point in out; course: the way in's, degrees

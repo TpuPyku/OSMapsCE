@@ -106,9 +106,6 @@ GPS не найден на COM1…COM9	No GPS found on COM1…COM9
 не найдена	not found
 есть новее	update available
 последняя версия	up to date
-ЗАГРУЗИТЬ	DOWNLOAD
-ОБНОВИТЬ	UPDATE
-ОК	OK
 %d,%d МБ · %s	%d.%d MB · %s
 ТОЧНО?	SURE?
 %s %d,%d из %d,%d МБ	%s %d.%d of %d.%d MB
@@ -126,6 +123,12 @@ GPS не найден на COM1…COM9	No GPS found on COM1…COM9
 Карты областей	Region maps
 маршрут и поиск без интернета	routes and search without internet
 СКАЧАТЬ	DOWNLOAD MAPS
+СКАЧАТЬ (%d)	DOWNLOAD (%d)
+СЕРВЕР	SERVER
+Я.ДИСК —	YA.DISK —
+Я.ДИСК %.2S.%.2S	YA.DISK %.2S.%.2S
+ИЗ: СЕРВЕР	FROM: SERVER
+ИЗ: Я.ДИСК	FROM: YA.DISK
 %d м	%d m
 %d,%d км	%d.%d km
 %d км	%d km
@@ -138,6 +141,7 @@ GPS не найден на COM1…COM9	No GPS found on COM1…COM9
 Избранное	Favorites
 Короткое имя: Дом, Работа…	Short name: Home, Work…
 Адрес или место	Address or place
+Значок: %s	Sign: %s
 Избранного нет	No favorites
 Поиск…	Searching…
 Нет связи с сервером поиска	Cannot reach the search server
@@ -263,3 +267,15 @@ GPS: поиск · %d	GPS: searching · %d
 Парковки · приблизьте карту	Car parks · zoom in
 Парковки · нет в этом месте	Car parks · none here
 ПАРКОВКИ	PARKING
+Тихо	Quiet
+Средне	Medium
+Громко	Loud
+мест: %d из %d · порядок, имена, значки	places: %d of %d · order, names, signs
+ИЗМЕНИТЬ	EDIT
+УДАЛИТЬ	DELETE
+ИМЯ	NAME
+Продолжить маршрут?	Continue the route?
+Куда: %s	To: %s
+Куда: %s · заездов: %d	To: %s · stops: %d
+Да	Yes
+Нет	No

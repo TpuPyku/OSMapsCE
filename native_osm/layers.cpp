@@ -97,6 +97,84 @@ int ParkLinesRead(const wchar_t* path, const int* box, ParkLine* out, int cap)
     return FileRead(path, kMagicLines, sizeof(ParkLine), box, out, cap);
 }
 
+// ---------------------------------------------------------------- one point for one thing
+
+static const double kDegM = 0.111195;   // (metres in 1e-6 degree of latitude)
+
+static int ByKindLat(const void* a, const void* b)
+{
+    const LayerPoint* x = (const LayerPoint*)a;
+    const LayerPoint* y = (const LayerPoint*)b;
+    if (x->kind != y->kind)
+        return x->kind - y->kind;
+    return x->lat < y->lat ? -1 : x->lat > y->lat ? 1 : 0;
+}
+
+static int MergeM(int kind)   // how near one thing's points are; 0 - never merged
+{
+    return kind == LAY_SIGNAL ? 40 : kind == LAY_BUMP ? 20 : 0;
+}
+
+static int Root(int* up, int i)
+{
+    while (up[i] != i)
+        i = up[i] = up[up[i]];
+    return i;
+}
+
+static bool Near(const LayerPoint& a, const LayerPoint& b, int m)
+{
+    double e = (b.lon - a.lon) * kDegM * cos(a.lat * 1e-6 * 3.14159265358979 / 180), nn = (b.lat - a.lat) * kDegM;
+    return e * e + nn * nn <= (double)m * m;
+}
+
+// Each pair near enough joined (sorted by kind and latitude: only the next ones up to m north looked at)
+static void Join(const LayerPoint* p, int n, int* up)
+{
+    for (int i = 0; i < n; i++) {
+        int m = MergeM(p[i].kind);
+        for (int j = i + 1; m && j < n && p[j].kind == p[i].kind && (p[j].lat - p[i].lat) * kDegM <= m; j++)
+            if (Near(p[i], p[j], m))
+                up[Root(up, j)] = Root(up, i);
+    }
+}
+
+static int Mean(int sum, int count)   // rounded
+{
+    return (sum + (sum >= 0 ? count / 2 : -count / 2)) / count;
+}
+
+int LayersMerge(LayerPoint* p, int n)
+{
+    int* up = (int*)malloc(n * 4 * sizeof(int) + sizeof(int));   // a group's root; its sums from it, its points
+    if (!up)
+        return n;
+    int *dLat = up + n, *dLon = dLat + n, *count = dLon + n;
+    qsort(p, n, sizeof(LayerPoint), ByKindLat);
+    for (int i = 0; i < n; i++) {
+        up[i] = i;
+        dLat[i] = dLon[i] = count[i] = 0;
+    }
+    Join(p, n, up);
+    for (int i = 0; i < n; i++) {
+        int r = Root(up, i);
+        dLat[r] += p[i].lat - p[r].lat;
+        dLon[r] += p[i].lon - p[r].lon;
+        count[r]++;
+    }
+    int k = 0;
+    for (int i = 0; i < n; i++) {
+        if (up[i] != i)
+            continue;
+        LayerPoint q = p[i];
+        q.lat += Mean(dLat[i], count[i]);
+        q.lon += Mean(dLon[i], count[i]);
+        p[k++] = q;
+    }
+    free(up);
+    return k;
+}
+
 // ---------------------------------------------------------------- the points in hand
 
 struct Held {
@@ -104,14 +182,20 @@ struct Held {
     DWORD magic;
     int size, cap;
     void* items;
+    int (*tidy)(void* items, int n);   // after a read: the points merged
     int n;
     int cells[4];        // the cells they were read for; 0 0 0 0: none yet
     volatile LONG stale;
 };
 static LayerPoint   s_pts[kMaxPoints];
 static ParkLine     s_lines[kMaxLines];
-static Held         s_points = { L"layers.lay", kMagicPoints, sizeof(LayerPoint), kMaxPoints, s_pts },
-                    s_parks = { L"parking.lay", kMagicLines, sizeof(ParkLine), kMaxLines, s_lines };
+static int MergeItems(void* p, int n)
+{
+    return LayersMerge((LayerPoint*)p, n);
+}
+
+static Held         s_points = { L"layers.lay", kMagicPoints, sizeof(LayerPoint), kMaxPoints, s_pts, MergeItems },
+                    s_parks = { L"parking.lay", kMagicLines, sizeof(ParkLine), kMaxLines, s_lines, NULL };
 static volatile LONG s_paused;
 
 static int ReadRegion(const Held& h, const int* box)
@@ -132,6 +216,8 @@ static void* HeldIn(Held& h, const int* box, int* n)
     bool stale = InterlockedExchange((LONG*)&h.stale, 0) != 0;
     if (!s_paused && (stale || memcmp(cells, h.cells, sizeof(cells)))) {
         h.n = ReadRegion(h, box);
+        if (h.tidy)
+            h.n = h.tidy(h.items, h.n);
         memcpy(h.cells, cells, sizeof(cells));
     }
     *n = h.n;
@@ -180,7 +266,7 @@ int ParkPrice(const ParkLine& l, int weekday, int hour)
 
 bool LayerAhead(const LayerPoint* p, int n, int kind, int lat, int lon, double course, int maxM, int* dist)
 {
-    const double kDegM = 0.111195, rad = course * 3.14159265358979 / 180;   // (metres in 1e-6 degree)
+    const double rad = course * 3.14159265358979 / 180;
     const double kx = cos(lat * 1e-6 * 3.14159265358979 / 180), dirE = sin(rad), dirN = cos(rad);
     double best = maxM + 1.0;
     for (int i = 0; i < n; i++) {
