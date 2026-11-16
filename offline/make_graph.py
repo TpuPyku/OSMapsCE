@@ -354,12 +354,13 @@ def ending_at(p, v):
     return p._replace(a=p.b, b=p.a, inner=p.inner[::-1], oneway=-p.oneway, wid=end_wid(p, p.b), wid2=p.wid)
 
 
-def contract(nodes, pieces):
+def contract(nodes, pieces, tol_m=0):
     """The pieces that only go on joined (the trunk graph, 2026-11-16: a road is split into OSM ways at each bridge,
     lane change, name of a part - 66 % of Estonia's trunk nodes were such joints): a node with two pieces of one road
     (class, name, speed, limit, ring, toll, one way or not alike; one way - one in, one out) is dropped and its two
-    pieces become one - the length, the lights and the gates summed, the shape through the node. A ring of such nodes
-    alone stays. The nodes left renumbered."""
+    pieces become one - the length, the lights and the gates summed, the shape through the node (simplified again
+    within tol_m: 745 k points of the first joined graph were mostly the joints'). A ring of such nodes alone stays. The
+    nodes left renumbered."""
     at = [[] for _ in nodes]
     for i, p in enumerate(pieces):
         at[p.a].append(i)
@@ -378,7 +379,8 @@ def contract(nodes, pieces):
             continue
         used[i] = True
         cur = ending_at(p, p.a if goes_on(p.a) else p.b)   # from its end that is a junction
-        out.append(walk(cur, at, pieces, used, goes_on, nodes))
+        p = walk(cur, at, pieces, used, goes_on, nodes)
+        out.append(p._replace(inner=simplify([nodes[p.a]] + p.inner + [nodes[p.b]], tol_m)[1:-1]))
     out += [p for i, p in enumerate(pieces) if not used[i]]
     return renumbered(nodes, out)
 
@@ -651,7 +653,7 @@ def build(src, out, classes=None, simplify_m=0, cell=kCell, west=None, max_cells
                                        Barriers(locs.gates, locs.blocks, locs.locked))
     nodes, pieces = main_network(nodes, pieces)
     if chains:   # (the trunk graph: a region's keeps each way's nodes)
-        nodes, pieces = contract(nodes, pieces)
+        nodes, pieces = contract(nodes, pieces, simplify_m)
     edges, geom = directed(pieces, len(nodes))
     turn_rules(nodes, edges, pieces, w.rules, locs.loc)
     first, flat, piece_edge = flatten(edges)
