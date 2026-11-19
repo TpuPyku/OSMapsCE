@@ -1,11 +1,12 @@
 """The maps' own server (the user 2026-11-09: Yandex Disk's upload limit - per 30 days - ran out): the regions whole
-put there by SFTP, served by its nginx over plain HTTP (the unit has no HTTPS of its own; the server has no name).
+put there by SFTP, served by its nginx over plain HTTP (and HTTPS on 9443) by its name (MAPS_WEB) when it has one.
 
     Store(host, port, key, hosts).upload('app:/maps/a.zip', 'a.zip')   as <its files>/a.zip
-    Store(...).publish('app:/maps')                                    -> 'http://<host>/maps/' (the catalog's "files")
+    Store(...).publish('app:/maps')                                    -> 'http://<web>/maps/' (the catalog's "files")
 
 The server's user "maps": SFTP only, locked in its folder (the uploads land in it), by the key alone. The workflow's
-secrets: MAPS_SSH_KEY (the key), MAPS_HOST, MAPS_PORT (22 if none), MAPS_KNOWN_HOSTS (ssh-keyscan's lines).
+secrets: MAPS_SSH_KEY (the key), MAPS_HOST, MAPS_PORT (22 if none), MAPS_KNOWN_HOSTS (ssh-keyscan's lines); its env
+MAPS_WEB: the server's name for the catalog's links (the user 2026-11-19: the domain where it can be; MAPS_HOST if none).
 """
 import os
 import subprocess
@@ -27,8 +28,9 @@ def sftp_run(cmd, batch):
 class Store:
     KEY = 'files'   # (the catalog's: Yandex Disk's is "disk")
 
-    def __init__(self, host, port, key, hosts, run=sftp_run, sleep=time.sleep):
+    def __init__(self, host, port, key, hosts, run=sftp_run, sleep=time.sleep, web=None):
         self.host, self.port, self.key, self.hosts, self.run, self.sleep = host, port, key, hosts, run, sleep
+        self.web = web or host
 
     def command(self):
         return ['sftp', '-b', '-', '-i', self.key, '-P', self.port, '-o', 'BatchMode=yes',
@@ -49,7 +51,7 @@ class Store:
 
     def publish(self, path):
         """The files' folder on the web (nginx's /maps/; path: the disk's, not used)."""
-        return 'http://%s/maps/' % self.host
+        return 'http://%s/maps/' % self.web
 
 
 def from_env(env, folder):
@@ -63,4 +65,4 @@ def from_env(env, folder):
             f.write(text.rstrip('\n') + '\n')
         os.chmod(p, 0o600)   # (ssh refuses a key others can read)
         files.append(p)
-    return Store(env['MAPS_HOST'], env.get('MAPS_PORT') or '22', files[0], files[1])
+    return Store(env['MAPS_HOST'], env.get('MAPS_PORT') or '22', files[0], files[1], web=env.get('MAPS_WEB'))

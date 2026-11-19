@@ -72,6 +72,15 @@ class SftpStore(unittest.TestCase):
         with open(s.hosts) as f:
             self.assertEqual(f.read(), 'HOSTS\n')
 
+    def test_web_name(self):
+        """The catalog's links by the server's name (the user 2026-11-19: the domain where it can be - an address
+        change is then the name's only), sftp still by MAPS_HOST (its known hosts' lines are the address's)."""
+        import tempfile
+        env = {'MAPS_SSH_KEY': 'KEY', 'MAPS_HOST': '203.0.113.5', 'MAPS_WEB': 'maps.example.org'}
+        s = sftpstore.from_env(env, tempfile.mkdtemp())
+        self.assertEqual(s.publish('app:/maps'), 'http://maps.example.org/maps/')
+        self.assertTrue(s.command()[-1].endswith('@203.0.113.5'))
+
 
 if __name__ == '__main__':
     unittest.main()

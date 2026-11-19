@@ -71,6 +71,7 @@ jobs:
           YANDEX_DISK_TOKEN: ${{ secrets.YANDEX_DISK_TOKEN }}
           MAPS_SSH_KEY: ${{ secrets.MAPS_SSH_KEY }}
           MAPS_HOST: ${{ secrets.MAPS_HOST }}
+          MAPS_WEB: osmapsce.duckdns.org   # (the catalog's links by name - the user 2026-11-19)
           MAPS_PORT: ${{ secrets.MAPS_PORT }}
           MAPS_KNOWN_HOSTS: ${{ secrets.MAPS_KNOWN_HOSTS }}
       - uses: actions/upload-artifact@v6
@@ -104,6 +105,7 @@ jobs:
       YANDEX_DISK_TOKEN: ${{ secrets.YANDEX_DISK_TOKEN }}
       MAPS_SSH_KEY: ${{ secrets.MAPS_SSH_KEY }}
       MAPS_HOST: ${{ secrets.MAPS_HOST }}
+      MAPS_WEB: osmapsce.duckdns.org   # (the catalog's links by name - the user 2026-11-19)
       MAPS_PORT: ${{ secrets.MAPS_PORT }}
       MAPS_KNOWN_HOSTS: ${{ secrets.MAPS_KNOWN_HOSTS }}
     steps:
