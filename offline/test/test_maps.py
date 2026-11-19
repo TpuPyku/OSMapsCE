@@ -152,6 +152,19 @@ class Maps(unittest.TestCase):
         self.assertEqual(release_regions.store({'YANDEX_DISK_TOKEN': 'T'}, tmp).KEY, 'disk')
         self.assertIsNone(release_regions.store({}, tmp))
 
+    def test_bundled_roots(self):
+        """HTTPS with its own roots besides Windows' (the user 2026-11-19, a Windows 7 PC: CERTIFICATE_VERIFY_FAILED,
+        unable to get local issuer certificate - its store lacks the roots of GitHub's and Let's Encrypt's chains)."""
+        import ssl
+        import certifi
+        bundled = ssl.create_default_context(cafile=certifi.where()).get_ca_certs()
+        ctx = maps_app.use_bundled_roots()
+        self.assertGreaterEqual(len(ctx.get_ca_certs()), len(bundled))
+        self.assertEqual(ctx.verify_mode, ssl.CERT_REQUIRED)   # (still checked: only more roots)
+        self.assertTrue(ctx.check_hostname)
+        https = [h for h in urllib.request._opener.handlers if isinstance(h, urllib.request.HTTPSHandler)]
+        self.assertEqual([h._context for h in https], [ctx])   # every urlopen of the app (pmextract, yadisk) uses it
+
     def test_secure_first(self):
         """The own server's archives over HTTPS first (the user 2026-11-12: its certificate for its address; Windows 7
         may lack Let's Encrypt's root), plain HTTP if that fails before anything came; other links as they are."""

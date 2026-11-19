@@ -132,6 +132,21 @@ def download_to(url, path, tell, open_url=urllib.request.urlopen, piece=1 << 20)
 HTTPS_PORT = 9443   # the own server's HTTPS (2026-11-12: its 443 is another service's)
 
 
+def use_bundled_roots():
+    """HTTPS for every urlopen of the app with certifi's roots besides Windows' (the user 2026-11-19, Windows 7:
+    CERTIFICATE_VERIFY_FAILED - unable to get local issuer certificate: its store lacks the roots of GitHub's and
+    Let's Encrypt's chains; Python 3.8 there takes only what the store holds). Checked as before, only more roots."""
+    import ssl
+    ctx = ssl.create_default_context()
+    try:
+        import certifi
+        ctx.load_verify_locations(cafile=certifi.where())
+    except (ImportError, OSError):   # (no certifi: Windows' roots alone, as before)
+        pass
+    urllib.request.install_opener(urllib.request.build_opener(urllib.request.HTTPSHandler(context=ctx)))
+    return ctx
+
+
 def secure_first(url):
     """The links to try for an archive: the own server's (plain http://) over HTTPS first - its certificate for its
     address on HTTPS_PORT (the user 2026-11-12: the browser warned); others as they are."""
@@ -932,6 +947,7 @@ class App:
 
 
 if __name__ == '__main__':
+    use_bundled_roots()
     import tkinter
     import tkinter.filedialog   # noqa: F401 (App.choose)
     import tkinter.ttk
