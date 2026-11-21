@@ -1,4 +1,4 @@
-// The voice prompts: what to say for a maneuver and when (voice.h).
+﻿// The voice prompts: what to say for a maneuver and when (voice.h).
 #include "voice.h"
 #include <string.h>
 
@@ -170,26 +170,49 @@ int VoiceSay(int stage, int act, int nextM, int then, const char** out, int cap)
     return n;
 }
 
+// "Громко" (the users 2026-11-21: the prompts quieter than the music, on any unit - the clips' RMS -17 dB, music's
+// -9..-12): x 2.5 (+8 dB), and above half the scale a soft limit towards the top - y = K + R * e / (e + R), e the
+// excess over the knee K, R the room above it: as loud as the music, nothing clipped. Integers (ARM without an FPU).
+static int Loud(int x)
+{
+    enum { kKnee = 16384, kRoom = 32767 - kKnee };
+    int v = x * 5 / 2, a = v < 0 ? -v : v;
+    if (a > kKnee) {
+        int e = a - kKnee;
+        a = kKnee + kRoom * e / (e + kRoom);
+    }
+    return v < 0 ? -a : a;
+}
+
+static int Scaled(int x, int level)   // a sample (-32768..32767) at the level, kVoiceQuiet..kVoiceLoud
+{
+    static const int kPct[] = { 30, 55 };   // quiet, medium
+    if (level == kVoiceLoud)
+        return Loud(x);
+    return x * kPct[level - kVoiceQuiet] / 100;   // (VoiceGain: the level in range)
+}
+
 void VoiceGain(char* pcm, int len, int bits, int level)
 {
-    static const int kPct[] = { 30, 55, 100 };   // (by level from quiet; none: as recorded)
-    int pct = level >= kVoiceQuiet && level <= kVoiceLoud ? kPct[level - kVoiceQuiet] : 100;
-    if (pct == 100)
+    if (level < kVoiceQuiet || level > kVoiceLoud)   // (none, or past loud: as recorded)
         return;
     if (bits == 16) {
         short* s = (short*)pcm;
         for (int i = 0; i < len / 2; i++)
-            s[i] = (short)(s[i] * pct / 100);
+            s[i] = (short)Scaled(s[i], level);
     } else {
         unsigned char* b = (unsigned char*)pcm;
         for (int i = 0; i < len; i++)
-            b[i] = (unsigned char)(128 + (b[i] - 128) * pct / 100);
+            b[i] = (unsigned char)(128 + Scaled((b[i] - 128) * 256, level) / 256);
     }
 }
 
 int VoiceDevice(int via, int devs)
 {
-    if (via == 3)
-        return 0;
     return (via == 1 || via == 2) && devs > 1 ? 1 : -1;
+}
+
+int VoiceLevelFor(int level, int via)
+{
+    return level == kVoiceLoud && via == 2 ? 0 : level;
 }

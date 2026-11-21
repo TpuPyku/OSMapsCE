@@ -1,4 +1,4 @@
-// The voice prompts spoken (what and when: voice.cpp). A prompt's clips Voice\<lang>\<id>.wav (beside the exe; made by
+﻿// The voice prompts spoken (what and when: voice.cpp). A prompt's clips Voice\<lang>\<id>.wav (beside the exe; made by
 // voice/make_voice.py) are glued into one sound and played as an external navigator's prompt on the unit (Ghidra,
 // PROJECT.md; VestaHome's beep does the same): the radio asked down (VoiceChannel), the sound kLeadMs later, the radio
 // given back kTailMs after it. No one to ask (the PC): played at once. A prompt due while another is spoken waits (the
@@ -80,6 +80,8 @@ static void Play()
     memset(&s_hdr, 0, sizeof(s_hdr));
     s_hdr.lpData = s_pcm;
     s_hdr.dwBufferLength = s_pcmLen;
+    // its level now: who turned the radio down is known (VoiceLevelFor - "Громко" boosted without VestaHome)
+    VoiceGain(s_pcm, s_pcmLen, s_fmt.wBitsPerSample, VoiceLevelFor(g_cfg.voiceVol, s_via));
     int dev = VoiceDevice(s_via, (int)waveOutGetNumDevs());
     MMRESULT r = waveOutOpen(&s_out, dev < 0 ? WAVE_MAPPER : (UINT)dev, &s_fmt, (DWORD)(UINT_PTR)s_wnd, 0, CALLBACK_WINDOW);
     if (r != MMSYSERR_NOERROR && dev >= 0)   // (that device busy or gone: the default one)
@@ -111,7 +113,6 @@ static void Say(const char* const* ids, int n)
     char* pcm = Glue(ids, n, &len);
     if (!pcm)
         return;
-    VoiceGain(pcm, len, s_fmt.wBitsPerSample, g_cfg.voiceVol);
     Log("voice: %s%s%s%s%s", ids[0], n > 1 ? " " : "", n > 1 ? ids[1] : "", n > 2 ? " " : "", n > 2 ? ids[2] : "");
     if (s_phase == SAY_IDLE || s_phase == SAY_LEAD) {   // (still to come: the newer one instead)
         free(s_pcm);

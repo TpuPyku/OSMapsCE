@@ -6679,10 +6679,7 @@ int VoiceChannel(bool on)
     }
     if (!s_vh || !IsWindow(s_vh))
         return 0;
-    // VestaHome's answer: 1 - the radio turned down (Audio Output 1), 2 - its own music plays, turned down by it
-    // (our sound on device 0, mixed: the users 2026-11-21 - quiet prompts over the card's music)
-    LRESULT r = VhapSend(s_vh, s_wnd, L"voice\ton=%d", on ? 1 : 0);
-    return r == 1 ? 2 : r == 2 ? 3 : 0;
+    return VhapSend(s_vh, s_wnd, L"voice\ton=%d", on ? 1 : 0) == 1 ? 2 : 0;
 }
 
 // The route's next manoeuvre to VestaHome (its top bar's chip), when it changes

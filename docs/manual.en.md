@@ -632,7 +632,8 @@ A prompt that comes too late is skipped. Off the route there are no prompts.
 
 **Volume and turning off.** "Настройки → Маршрут → Голосовые подсказки" (Settings → Route → Voice prompts): "Выкл"
 (Off), "Тихо" (Quiet), "Средне" (Medium), "Громко" (Loud). The sound button on the right of the map during a route
-turns the voice off and on at the chosen volume.
+turns the voice off and on at the chosen volume. Without VestaHome (the stock shell, other devices) "Громко" (Loud) also
+compresses the speech to the music's loudness, so that the prompt is heard over it too.
 
 **On the Lada Vesta** a prompt plays over the radio and the music, as with the stock navigators. The sound is turned
 down a second before the phrase and comes back after it. With the stock shell the shell does this, without it

@@ -35,12 +35,15 @@ struct VoiceWav { int at, len, rate, channels, bits; };
 bool VoiceWavParse(const unsigned char* b, int n, VoiceWav* w);
 
 // The sound device for a prompt (sheet 29 p. 27: not heard over the radio without the shell): via - who turned the
-// radio down (0 no one, 1 the stock shell, 2 VestaHome, 3 VestaHome said its own music plays - the media source,
-// nothing turned down), devs - waveOutGetNumDevs(). With the radio down the MCU lets through "Audio Output" 1 only
-// (VestaHome's beep, HU 2026-10-18; the stock shell the same - the users 2026-11-21: no prompts over the radio there):
-// 1; on VestaHome's media: 0, mixed with its music (which it turns down); no one asked: -1 (WAVE_MAPPER).
+// radio down (0 no one, 1 the stock shell, 2 VestaHome), devs - waveOutGetNumDevs(). With the radio down the MCU lets
+// through "Audio Output" 1 only (VestaHome's beep, HU 2026-10-18; the stock shell the same - the users 2026-11-21:
+// no prompts over the radio there): 1; no one asked: -1 (WAVE_MAPPER).
 int VoiceDevice(int via, int devs);
 // The voice's volume (the user 2026-11-12: three levels, set in the program): the phrase's PCM scaled in place -
 // level 1 quiet, 2 medium, 3 loud (as recorded); 16-bit signed or 8-bit unsigned samples
 enum { kVoiceQuiet = 1, kVoiceMedium, kVoiceLoud };
 void VoiceGain(char* pcm, int len, int bits, int level);
+// The level a prompt is played at, by who turned the radio down (VoiceDevice's via): "Громко" boosted only without
+// VestaHome (the user 2026-11-21: with it loud enough over the music; the stock shell's and other units' quiet) -
+// with VestaHome 0, as recorded.
+int  VoiceLevelFor(int level, int via);

@@ -234,9 +234,23 @@ static void TestEvent()
 
 static void TestGain()
 {
+    // loud (the users 2026-11-21: quieter than the music on any unit - the clips' RMS -17 dB, music's -9..-12): x 2.5
+    // (+8 dB), above half the scale a soft limit towards the top - no clipping
+    short l[6] = { 1000, 6000, 10000, -10000, 32767, -32768 };
+    VoiceGain((char*)l, sizeof(l), 16, kVoiceLoud);
+    Check(l[0] == 2500 && l[1] == 15000, "gain: loud - x 2.5 below the knee");
+    Check(l[2] == 22030 && l[3] == -22030, "gain: loud - over the knee softened, both signs alike");
+    Check(l[4] == 29490 && l[5] == -29490, "gain: loud - the top not reached, nothing clipped");
+    bool up = true;
+    short prev = 0;
+    for (int x = 0; x <= 32767; x += 97) {
+        short v = (short)x;
+        VoiceGain((char*)&v, 2, 16, kVoiceLoud);
+        up = up && v >= prev && v <= 32767;
+        prev = v;
+    }
+    Check(up, "gain: loud - never falls as the input grows, never past the top");
     short s[4] = { 10000, -10000, 32767, -32768 };
-    VoiceGain((char*)s, sizeof(s), 16, kVoiceLoud);
-    Check(s[0] == 10000 && s[1] == -10000 && s[2] == 32767 && s[3] == -32768, "gain: loud - as recorded");
     VoiceGain((char*)s, sizeof(s), 16, kVoiceMedium);
     Check(s[0] == 5500 && s[1] == -5500 && s[2] == 18021 && s[3] == -18022, "gain: medium - 55 %");
     short q[2] = { 10000, -10000 };
@@ -261,9 +275,13 @@ static void TestDevice()
     // 2026-11-21: no prompts over the radio with the stock shell - they went to the mapper)
     Check(VoiceDevice(1, 4) == 1, "device: the stock shell - Audio Output 1 too");
     Check(VoiceDevice(1, 1) == -1, "device: the stock shell, one device - the mapper");
-    // VestaHome said: its own music plays (the media source) - our sound mixed with it on device 0, the music it turns
-    // down itself (the users 2026-11-21: quiet prompts over the card's music)
-    Check(VoiceDevice(3, 4) == 0 && VoiceDevice(3, 1) == 0, "device: VestaHome's media - device 0, mixed");
+    // the loud level's boost only without VestaHome (the user 2026-11-21: with it the prompts were loud enough over
+    // its music; the stock shell's and the other units' were not)
+    Check(VoiceLevelFor(kVoiceLoud, 1) == kVoiceLoud && VoiceLevelFor(kVoiceLoud, 0) == kVoiceLoud,
+          "level: loud with the stock shell or no one - boosted");
+    Check(VoiceLevelFor(kVoiceLoud, 2) == 0, "level: loud with VestaHome - as recorded");
+    Check(VoiceLevelFor(kVoiceMedium, 2) == kVoiceMedium && VoiceLevelFor(kVoiceQuiet, 1) == kVoiceQuiet,
+          "level: quiet and medium the same everywhere");
     Check(VoiceDevice(0, 4) == -1, "device: no one asked (the PC) - the mapper");
 }
 
