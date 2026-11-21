@@ -5,6 +5,7 @@
 #include "lang.h"
 #include "startpt.h"
 #include "segpick.h"
+#include "recent.h"
 
 static int s_failed, s_checks;
 
@@ -101,8 +102,53 @@ static void TestLang()
     LangOff();
 }
 
+// The recent addresses of "Куда едем?" (the user 2026-11-21): the newest first, at most kRecentMax, the same place
+// (150 m) or the same name once - moved up; the file's lines "name<TAB>lat<TAB>lon".
+static void TestRecent()
+{
+    Recents r;
+    RecentClear(&r);
+    RecentAdd(&r, L"Ленина, 1", 55.7500, 37.6000);
+    RecentAdd(&r, L"Мира, 5", 55.8000, 37.6500);
+    Check(r.n == 2 && !wcscmp(r.it[0].name, L"Мира, 5") && !wcscmp(r.it[1].name, L"Ленина, 1"), "recent: the newest first");
+    RecentAdd(&r, L"Ленина, 1 (подъезд)", 55.7505, 37.6005);
+    Check(r.n == 2 && !wcscmp(r.it[0].name, L"Ленина, 1 (подъезд)") && !wcscmp(r.it[1].name, L"Мира, 5"),
+          "recent: the same place (70 m) - moved up with its new name, not twice");
+    RecentAdd(&r, L"Мира, 5", 55.9000, 37.9000);
+    Check(r.n == 2 && !wcscmp(r.it[0].name, L"Мира, 5") && r.it[0].lat == 55.9, "recent: the same name - moved up, its new place");
+    RecentAdd(&r, L"Вокзал", 55.7600, 37.6000);
+    Check(r.n == 3 && !wcscmp(r.it[0].name, L"Вокзал"), "recent: 1.1 km away - another place");
+    for (int i = 0; i < 10; i++) {
+        wchar_t n[16];
+        swprintf(n, 16, L"Место %d", i);
+        RecentAdd(&r, n, 50 + i, 30);
+    }
+    Check(r.n == kRecentMax && !wcscmp(r.it[0].name, L"Место 9") && !wcscmp(r.it[kRecentMax - 1].name, L"Место 5"),
+          "recent: no more than kRecentMax, the oldest out");
+    RecentAdd(&r, L"", 1, 1);
+    Check(r.n == kRecentMax && !wcscmp(r.it[0].name, L"Место 9"), "recent: no name - not kept");
+
+    wchar_t text[1024];
+    RecentClear(&r);
+    RecentAdd(&r, L"Ленина, 1", 55.75, 37.6);
+    RecentAdd(&r, L"Мира, 5", 55.8, 37.65);
+    RecentFormat(&r, text, 1024);
+    Check(!wcscmp(text, L"Мира, 5\t55.800000\t37.650000\nЛенина, 1\t55.750000\t37.600000\n"), "recent: the file's text");
+    Recents g;
+    Check(RecentParse(text, &g) == 2 && !wcscmp(g.it[0].name, L"Мира, 5") && g.it[1].lat == 55.75 && g.it[1].lon == 37.6,
+          "recent: read back as written");
+    Check(RecentParse(L"bad line\nA\t1\t2\r\n\t3\t4\nB\t5\n", &g) == 1 && !wcscmp(g.it[0].name, L"A") &&
+          g.it[0].lat == 1 && g.it[0].lon == 2, "recent: lines without both numbers or a name left out, CRLF too");
+    wchar_t room[30];
+    RecentFormat(&r, room, 30);
+    Check(!wcscmp(room, L"Мира, 5\t55.800000\t37.650000\n"), "recent: whole lines only - the room for one");
+    RecentFormat(&r, room, 20);
+    Check(!room[0], "recent: no room for a line - nothing");
+}
+
 int main()
 {
+    TestRecent();
     TestStart();
     TestSegPick();
     TestLang();

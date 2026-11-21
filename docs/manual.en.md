@@ -298,7 +298,7 @@ street: "Жигулёвск Ткачёва 71".
 **Favorites in the search.** The "ИЗБРАННОЕ" key with an empty field shows your favorite places. A tap on a place lays
 a route. The ✕ button on the right deletes the place: the first tap asks "Удалить «…»?" (Delete "…"?), the second
 deletes it. The search finds your favorite places too: those with the typed text in their name come first, with
-their signs.
+their signs. A list longer than five rows scrolls with a finger up and down, a bar on the right shows where you are.
 
 ---
 
@@ -308,7 +308,7 @@ When there is no route, tap the map: the "Куда едем?" card appears above
 
 - The "Куда едем?" field opens the search.
 - Under it are the first three favorite places with the distance to them. A tap lays a route to the place.
-- The star to the right of the field shows all your favorite places, three a row; another tap - the first three again.
+- Below are the last three addresses routed to from the search (`recent.txt` next to the app). A tap lays the route again.
 
 ---
 

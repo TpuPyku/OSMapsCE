@@ -9,6 +9,7 @@
 #include "vhap.h"      // VestaCore: VestaHome's add-ons' protocol
 #include "lang.h"      // the interface's languages
 #include "startpt.h"   // where a route starts
+#include "recent.h"    // the recent addresses of "Куда едем?"
 #include "vnav.h"      // VestaCore: the next manoeuvre as VestaHome is told it, its sign
 #include "vfont.h"     // VestaCore: the fonts
 static const wchar_t* const kRelease = L"2.1";   // raise by hand: minor - significant changes, major - big releases
@@ -227,7 +228,7 @@ enum { kKbY = 66, kKbRowH = 81 };
 enum { P_BACK = 1, P_ROW = 10, P_DEL = 20, P_ADDVIA = 30, P_GO, P_CH_GPS = 40, P_CH_SEARCH, P_CH_FAV, P_CH_MAP,
        P_CH_CANCEL, P_PICK_CANCEL = 50, M_VIA = 60, M_NEW, M_FAV, M_CARD, M_STOP_OUT, M_STOP_UP, M_STOP_CANCEL, M_RESUME_GO,
        M_RESUME_NO, M_RESUME_BOX, P_TRIP_X = 80,
-       P_TRIP, F_GO = 90, F_EDIT, F_CANCEL, F_VIA, E_ICON = 100, E_NAME = E_ICON + VFAV_ICONS, E_DEL, E_DONE, E_BOX, W_FIELD = 120, W_STAR, W_FAV, W_BOX = W_FAV + VFAV_MAX };
+       P_TRIP, F_GO = 90, F_EDIT, F_CANCEL, F_VIA, E_ICON = 100, E_NAME = E_ICON + VFAV_ICONS, E_DEL, E_DONE, E_BOX, W_FIELD = 120, W_FAV, W_REC = W_FAV + 3, W_BOX = W_REC + kRecentMax };
 static bool       s_plan;
 static int        s_planChoose = -1;   // the slot whose choices are open
 static int        s_planPressed = -1;
@@ -4576,14 +4577,25 @@ enum { kHitRows = 5 };   // (the panel beside the map: design v3)
 // The favourites the query names (the user 2026-11-21: the search finds them too) - the list's first rows.
 static int FavFound(int* idx)
 {
-    return s_showFavs ? 0 : VFavsFind(&s_favs, s_kb.text, idx, kHitRows);
+    return s_showFavs ? 0 : VFavsFind(&s_favs, s_kb.text, idx, VFAV_MAX);
 }
 
-static int ListCount()   // the list's rows: the favourites, or the ones found and the search's hits, kHitRows at most
+// The list scrolls (the user 2026-11-21: favourites past the fifth could not be chosen): s_listTop - the first row
+// shown; a finger moved up / down the rows moves it a row each kHitRowH px (s_listY: where it was put down, -1 none).
+enum { kHitRowH = 66 };
+static int  s_listTop, s_listY = -1, s_listTop0;
+static bool s_listMoved;
+
+static int ListTotal()   // all the rows: the favourites, or the ones found and the search's hits
 {
-    int f[kHitRows];
-    int n = s_showFavs ? s_favs.n : FavFound(f) + SearchCount();
-    return n < kHitRows ? n : kHitRows;
+    int f[VFAV_MAX];
+    return s_showFavs ? s_favs.n : FavFound(f) + SearchCount();
+}
+
+static int ListCount()   // the rows shown from s_listTop, kHitRows at most
+{
+    int n = ListTotal() - s_listTop;
+    return n < 0 ? 0 : n < kHitRows ? n : kHitRows;
 }
 
 static bool FavHit(int i, SearchHit* h)   // a favourite as a search's hit
@@ -4597,9 +4609,10 @@ static bool FavHit(int i, SearchHit* h)   // a favourite as a search's hit
     return true;
 }
 
-static bool ListHit(int i, SearchHit* h)   // a row of the list, as a search's hit
+static bool ListHit(int i, SearchHit* h)   // a row shown (from s_listTop), as a search's hit
 {
-    int f[kHitRows], nf = FavFound(f);
+    int f[VFAV_MAX], nf = FavFound(f);
+    i += s_listTop;
     if (i < nf)
         return FavHit(f[i], h);
     if (!s_showFavs) {
@@ -4749,8 +4762,11 @@ static void SearchFrom(double* lon, double* lat)
 // The route to a place: from StartNow() (without a fix the map shows where it goes)
 static void FitBack(bool restore);
 
+static void RecentKeep(const SearchHit* h);   // (below: "Куда едем?")
+
 static void RouteToHit(const SearchHit* h)
 {
+    RecentKeep(h);
     FitBack(false);
     StartPoint st = StartNow();
     RouteTo(h, st.lon, st.lat, st.source == START_CENTER ? -2 : st.source == START_CAR && s_gps.speedKmh > 10 ? s_gps.course : -1);
@@ -4828,13 +4844,15 @@ static void OnSearchKey(int id)
         double lon, lat;
         SearchFrom(&lon, &lat);
         s_showFavs = !n;   // the query empty: the favourites
+        s_listTop = 0;
         s_showHits = true;
         s_fitDone = false;
         if (n)
             SearchStart(s_kb.text, lon, lat);   // (the query is in the log as the request's URL)
     } else if (id >= K_FAVDEL) {   // a favourite's "x": "ТОЧНО?", then gone
         if (s_favDel == id - K_FAVDEL) {
-            VFavsDel(&s_favs, s_favDel);
+            VFavsDel(&s_favs, s_listTop + s_favDel);
+            s_listTop = s_listTop > 0 && s_listTop + kHitRows > s_favs.n ? s_listTop - 1 : s_listTop;
             FavsSave();
             s_favDel = -1;
         } else {
@@ -4920,12 +4938,12 @@ static bool HitsMessage(HDC dc)   // nothing to list: why, in the panel; true: s
 static void HitSign(HDC dc, int i, int x, int y)   // a row's number (its mark on the map's) or a favourite's sign
 {
     wchar_t num[4];
-    _snwprintf(num, 4, L"%d", i + 1);
-    int f[kHitRows], nf = FavFound(f);
-    if (s_showFavs || i < nf)   // (a favourite the search found: its sign too)
-        FavSign(dc, s_favs.f[s_showFavs ? i : f[i]].icon, x, y, 11, kOrange, kInk);
+    int j = s_listTop + i, f[VFAV_MAX], nf = FavFound(f);   // (its number in the whole list)
+    _snwprintf(num, 4, L"%d", j + 1);
+    if (s_showFavs || j < nf)   // (a favourite the search found: its sign too)
+        FavSign(dc, s_favs.f[s_showFavs ? j : f[j]].icon, x, y, 11, kOrange, kInk);
     else
-        RouteMarker(dc, x, y, i == 0 || s_kbPressed == K_HIT + i ? kOrange : kInk, num);
+        RouteMarker(dc, x, y, j == 0 || s_kbPressed == K_HIT + i ? kOrange : kInk, num);
 }
 
 static void HitDel(HDC dc, int i, bool sure)   // a favourite's "x" ("ТОЧНО?" - red)
@@ -4986,6 +5004,14 @@ static void DrawHits(HDC dc)   // the found places beside the map (design v3), n
     double lon, lat;
     SearchFrom(&lon, &lat);
     DrawHitMarks(dc, box.right);
+    int total = ListTotal();
+    if (total > kHitRows) {   // the scroll's bar: where the rows shown are in all of them
+        int top = 124, h = kHitRows * kHitRowH - 4, y0 = top + h * s_listTop / total;
+        RECT t = { box.right - 8, top, box.right - 4, top + h }, b = { box.right - 8, y0, box.right - 4,
+                   y0 + h * kHitRows / total };
+        Tile(dc, t, kPanel2, kPanel2, 2);
+        Tile(dc, b, kOrange, kOrange, 2);
+    }
     for (int i = 0; i < ListCount(); i++) {
         SearchHit h;
         if (ListHit(i, &h))
@@ -5323,6 +5349,7 @@ static void OnPlanCtl(int id)
         s_plan = false;
         s_search = true;
         s_showHits = s_showFavs = id == P_CH_FAV;
+        s_listTop = 0;
         s_fitDone = false;
     } else if (id == P_CH_MAP) {
         s_pickSlot = s_planChoose;
@@ -5737,27 +5764,80 @@ static bool WhereShown()
            s_pickSlot < 0;
 }
 
-static bool s_whereAll;   // the star (the user 2026-11-21): all the favourites in the card, not the first three
+static Recents s_recent;   // the recent addresses (recent.txt beside the exe; the user 2026-11-21, design v3)
 
-static int WhereFavs()   // the favourites the card shows
+static void RecentLoad()
 {
-    int m = s_whereAll ? s_favs.n : 3;
-    return m < s_favs.n ? m : s_favs.n;
+    wchar_t path[MAX_PATH];
+    PathInDir(path, L"recent.txt");
+    HANDLE f = CreateFile(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    RecentClear(&s_recent);
+    if (f == INVALID_HANDLE_VALUE)
+        return;
+    char b[4096];
+    DWORD got = 0;
+    ReadFile(f, b, sizeof(b) - 1, &got, NULL);
+    CloseHandle(f);
+    b[got] = 0;
+    wchar_t w[4096];
+    int n = MultiByteToWideChar(CP_UTF8, 0, b, -1, w, 4096);
+    w[n > 0 ? n - 1 : 0] = 0;
+    RecentParse(w, &s_recent);
+}
+
+static void RecentKeep(const SearchHit* h)   // a place routed to from the search: first among the recent ones
+{
+    if (!wcscmp(h->sub, L"Избранное"))   // (a favourite has its own row)
+        return;
+    RecentAdd(&s_recent, h->name, h->lat, h->lon);
+    wchar_t w[kRecentMax * (kRecentName + 48)], path[MAX_PATH];
+    RecentFormat(&s_recent, w, kRecentMax * (kRecentName + 48));
+    char b[4096 * 2];
+    int n = WideCharToMultiByte(CP_UTF8, 0, w, -1, b, sizeof(b), NULL, NULL);
+    PathInDir(path, L"recent.txt");
+    HANDLE f = CreateFile(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
+    DWORD put = 0;
+    if (f != INVALID_HANDLE_VALUE) {
+        WriteFile(f, b, n > 0 ? n - 1 : 0, &put, NULL);
+        CloseHandle(f);
+    }
+}
+
+static bool RecentHit(int i, SearchHit* h)   // a recent address as a search's hit
+{
+    if (i < 0 || i >= s_recent.n)
+        return false;
+    wcscpy(h->name, s_recent.it[i].name);
+    wcscpy(h->sub, L"Недавнее");
+    h->lat = s_recent.it[i].lat;
+    h->lon = s_recent.it[i].lon;
+    return true;
+}
+
+static int WhereFavs()   // the favourites the card shows (the first three)
+{
+    return s_favs.n < 3 ? s_favs.n : 3;
+}
+
+static int WhereRecent()   // the recent addresses it shows (three at most)
+{
+    return s_recent.n < 3 ? s_recent.n : 3;
 }
 
 static bool WhereRect(int id, RECT* r)
 {
-    if (!WhereShown() || (id >= W_FAV && id < W_BOX && id - W_FAV >= WhereFavs()) || (id == W_STAR && !s_favs.n))
+    if (!WhereShown() || (id >= W_FAV && id < W_REC && id - W_FAV >= WhereFavs()) ||
+        (id >= W_REC && id < W_BOX && id - W_REC >= WhereRecent()))
         return false;
-    int rows = (WhereFavs() + 2) / 3, k = id - W_FAV;
+    int y0 = WhereFavs() ? 186 : 122;   // the recent ones' first row
     if (id == W_BOX)
-        SetRect(r, 16, 56, 380, s_favs.n ? 190 + (rows - 1) * 64 : 124);
+        SetRect(r, 16, 56, 380, WhereRecent() ? y0 + WhereRecent() * 46 + 4 : WhereFavs() ? 190 : 124);
     else if (id == W_FIELD)
-        SetRect(r, 28, 68, s_favs.n ? 312 : 368, 112);
-    else if (id == W_STAR)
-        SetRect(r, 320, 68, 368, 112);
+        SetRect(r, 28, 68, 368, 112);
+    else if (id >= W_REC)
+        SetRect(r, 28, y0 + (id - W_REC) * 46, 368, y0 + (id - W_REC) * 46 + 40);
     else
-        SetRect(r, 28 + k % 3 * 116, 122 + k / 3 * 64, 28 + k % 3 * 116 + 108, 178 + k / 3 * 64);
+        SetRect(r, 28 + (id - W_FAV) * 116, 122, 28 + (id - W_FAV) * 116 + 108, 178);
     return true;
 }
 
@@ -5830,10 +5910,7 @@ static void OnWhere(int id)   // "Куда едем?": the field - the search; a
     SearchHit h;
     if (id == W_FIELD) {
         OnButton(B_SEARCH);
-    } else if (id == W_STAR) {
-        s_whereAll = !s_whereAll;
-    } else if (id < W_BOX && FavHit(id - W_FAV, &h)) {
-        s_whereAll = false;
+    } else if ((id < W_REC && FavHit(id - W_FAV, &h)) || (id >= W_REC && RecentHit(id - W_REC, &h))) {
         RouteToHit(&h);
         DockShow(false);
     }
@@ -6010,14 +6087,19 @@ static void DrawWhere(HDC dc)
     Tile(dc, r, kPanel2, s_planPressed == W_FIELD ? kOrange : kPanel2, 22);
     Magnifier(dc, r.left + 26, (r.top + r.bottom) / 2, kTextDim);
     Text(dc, s_fontBig, kTextDim, r.left + 48, r.top, r.right - 12, r.bottom, DT_LEFT, L"Куда едем?");
-    if (WhereRect(W_STAR, &r)) {   // all the favourites / the first three
-        bool on = s_whereAll || s_planPressed == W_STAR;
-        Tile(dc, r, on ? kOrange : kPanel2, on ? kOrange : kPanel2, 16);
-        FavSign(dc, VFAV_STAR, (r.left + r.right) / 2, (r.top + r.bottom) / 2, 13, on ? kInk : kOrange, on ? kOrange : kPanel2);
-    }
     double lon, lat;
     SearchFrom(&lon, &lat);
-    for (int id = W_FAV; id < W_BOX && WhereRect(id, &r); id++) {
+    for (int id = W_REC; id < W_BOX && WhereRect(id, &r); id++) {   // the recent addresses: a row each
+        const RecentItem& it = s_recent.it[id - W_REC];
+        bool down = s_planPressed == id;
+        Tile(dc, r, down ? kOrange : kPanel2, down ? kOrange : kPanel2, 14);
+        double dx = (it.lon - lon) * 111320 * cos(lat * M_PI / 180), dy = (it.lat - lat) * 110540;
+        wchar_t d[32];
+        FmtDist(d, 32, (int)sqrt(dx * dx + dy * dy));
+        Text(dc, s_fontLabel, down ? kInk : kText, r.left + 12, r.top, r.right - 80, r.bottom, DT_LEFT, it.name);
+        Text(dc, s_fontSmall, down ? kInk : kTextDim, r.right - 80, r.top, r.right - 10, r.bottom, DT_RIGHT, d);
+    }
+    for (int id = W_FAV; id < W_REC && WhereRect(id, &r); id++) {
         const VFav& f = s_favs.f[id - W_FAV];
         bool down = s_planPressed == id;
         Tile(dc, r, down ? kOrange : kPanel2, down ? kOrange : kPanel2, 16);
@@ -6470,6 +6552,7 @@ static void OnCreate(HWND hwnd)
         wchar_t path[MAX_PATH];
         PathInDir(path, L"favorites.txt");
         VFavsLoad(&s_favs, path);
+        RecentLoad();
     }
     if ((s_resume = RouteKept(&s_resumePlan)) != false)
         Log("route: one on when closed - asked to go on");
@@ -6977,6 +7060,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 VKeysCursorAt(&s_kb, x - kFieldX, kFieldR - kFieldX);
             if (s_kbPressed < 0 && s_showHits)   // beside the found places' panel: the search closed
                 SearchClose();
+            if (s_showHits && s_kbPressed >= K_HIT && y >= 120) {   // on the rows: maybe a scroll
+                s_listY = y;
+                s_listTop0 = s_listTop;
+                s_listMoved = false;
+            }
         } else if (s_plan) {
             s_planPressed = HitPlan(x, y);
         } else if ((s_planPressed = HitOverMap(x, y)) >= 0) {
@@ -7006,6 +7094,22 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 
     case WM_MOUSEMOVE: {
         int x = (short)LOWORD(lp), y = (short)HIWORD(lp);
+        if (s_search && s_showHits && s_listY >= 0) {   // the rows follow the finger
+            int d = s_listY - y, most = ListTotal() - kHitRows;
+            if (!s_listMoved && (d > 16 || d < -16)) {
+                s_listMoved = true;
+                s_kbPressed = -1;   // (a scroll, not a tap)
+            }
+            int top = s_listTop0 + (d >= 0 ? d + kHitRowH / 2 : d - kHitRowH / 2) / kHitRowH;
+            top = top > most ? most : top;
+            top = top < 0 ? 0 : top;
+            if (s_listMoved && top != s_listTop) {
+                s_listTop = top;
+                s_favDel = -1;
+                InvalidateRect(hwnd, NULL, FALSE);
+            }
+            return 0;
+        }
         if (s_search && s_kbPressed == K_FIELD && !s_showHits) {   // the cursor follows the finger
             VKeysCursorAt(&s_kb, x - kFieldX, kFieldR - kFieldX);
             InvalidateRect(hwnd, NULL, FALSE);
@@ -7039,6 +7143,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_LBUTTONUP: {
         int x = (short)LOWORD(lp), y = (short)HIWORD(lp);
         ReleaseCapture();
+        s_listY = -1;   // (the rows' scroll ends)
         if (s_pressed >= 0) {
             int b = s_pressed;
             bool inside = HitButton(x, y) == b;

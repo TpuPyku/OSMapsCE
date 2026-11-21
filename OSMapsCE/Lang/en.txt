@@ -139,6 +139,7 @@ GPS не найден на COM1…COM9	No GPS found on COM1…COM9
 осталось	left
 км/ч	km/h
 Избранное	Favorites
+Недавнее	Recent
 Короткое имя: Дом, Работа…	Short name: Home, Work…
 Адрес или место	Address or place
 Значок: %s	Sign: %s
