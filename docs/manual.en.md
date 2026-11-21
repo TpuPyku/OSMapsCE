@@ -297,7 +297,8 @@ street: "Жигулёвск Ткачёва 71".
 
 **Favorites in the search.** The "ИЗБРАННОЕ" key with an empty field shows your favorite places. A tap on a place lays
 a route. The ✕ button on the right deletes the place: the first tap asks "Удалить «…»?" (Delete "…"?), the second
-deletes it.
+deletes it. The search finds your favorite places too: those with the typed text in their name come first, with
+their signs.
 
 ---
 
@@ -307,6 +308,7 @@ When there is no route, tap the map: the "Куда едем?" card appears above
 
 - The "Куда едем?" field opens the search.
 - Under it are the first three favorite places with the distance to them. A tap lays a route to the place.
+- The star to the right of the field shows all your favorite places, three a row; another tap - the first three again.
 
 ---
 
@@ -460,7 +462,8 @@ cottage, block of flats, shop, hospital, school, car park.
 
 **The sign on the map.** A tap on a place's sign opens its menu: the name, the distance "Избранное · … от вас"
 (Favorites · … from you), the buttons "Маршрут сюда" (Route here) and "Изменить" (Edit). "Маршрут сюда" lays the route
-at once. "Изменить" opens the place's card:
+at once. During a route there is "Заехать" (Stop) too: the place becomes a stop on the way (up to three). "Изменить"
+opens the place's card:
 
 - twelve signs: a tap chooses a sign;
 - "Имя" (Name): opens the keyboard;

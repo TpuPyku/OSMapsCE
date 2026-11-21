@@ -227,7 +227,7 @@ enum { kKbY = 66, kKbRowH = 81 };
 enum { P_BACK = 1, P_ROW = 10, P_DEL = 20, P_ADDVIA = 30, P_GO, P_CH_GPS = 40, P_CH_SEARCH, P_CH_FAV, P_CH_MAP,
        P_CH_CANCEL, P_PICK_CANCEL = 50, M_VIA = 60, M_NEW, M_FAV, M_CARD, M_STOP_OUT, M_STOP_UP, M_STOP_CANCEL, M_RESUME_GO,
        M_RESUME_NO, M_RESUME_BOX, P_TRIP_X = 80,
-       P_TRIP, F_GO = 90, F_EDIT, F_CANCEL, E_ICON = 100, E_NAME = E_ICON + VFAV_ICONS, E_DEL, E_DONE, E_BOX, W_FIELD = 120, W_FAV, W_BOX = W_FAV + 3 };
+       P_TRIP, F_GO = 90, F_EDIT, F_CANCEL, F_VIA, E_ICON = 100, E_NAME = E_ICON + VFAV_ICONS, E_DEL, E_DONE, E_BOX, W_FIELD = 120, W_STAR, W_FAV, W_BOX = W_FAV + VFAV_MAX };
 static bool       s_plan;
 static int        s_planChoose = -1;   // the slot whose choices are open
 static int        s_planPressed = -1;
@@ -4573,9 +4573,16 @@ enum { kFieldX = 92, kFieldR = 800 - 24 };   // the query's text on the field (f
 // Where control id of the search screen is; false if it is not there now.
 enum { kHitRows = 5 };   // (the panel beside the map: design v3)
 
-static int ListCount()   // the list's rows: the favourites or the search's hits, kHitRows at most
+// The favourites the query names (the user 2026-11-21: the search finds them too) - the list's first rows.
+static int FavFound(int* idx)
 {
-    int n = s_showFavs ? s_favs.n : SearchCount();
+    return s_showFavs ? 0 : VFavsFind(&s_favs, s_kb.text, idx, kHitRows);
+}
+
+static int ListCount()   // the list's rows: the favourites, or the ones found and the search's hits, kHitRows at most
+{
+    int f[kHitRows];
+    int n = s_showFavs ? s_favs.n : FavFound(f) + SearchCount();
     return n < kHitRows ? n : kHitRows;
 }
 
@@ -4592,8 +4599,11 @@ static bool FavHit(int i, SearchHit* h)   // a favourite as a search's hit
 
 static bool ListHit(int i, SearchHit* h)   // a row of the list, as a search's hit
 {
+    int f[kHitRows], nf = FavFound(f);
+    if (i < nf)
+        return FavHit(f[i], h);
     if (!s_showFavs) {
-        const SearchHit* s = SearchGet(i);
+        const SearchHit* s = SearchGet(i - nf);
         if (s)
             *h = *s;
         return s != NULL;
@@ -4897,8 +4907,8 @@ static bool GeoScreen(double lon, double lat, int* x, int* y)   // a place on th
 static bool HitsMessage(HDC dc)   // nothing to list: why, in the panel; true: shown
 {
     int st = SearchState(), n = ListCount();
-    const wchar_t* msg = s_showFavs ? (n ? NULL : L"Избранного нет") : st == SEARCH_BUSY ? L"Поиск…"
-                       : st == SEARCH_FAIL ? L"Нет связи с сервером поиска" : !n ? L"Ничего не найдено" : NULL;
+    const wchar_t* msg = s_showFavs ? (n ? NULL : L"Избранного нет") : n ? NULL : st == SEARCH_BUSY ? L"Поиск…"
+                       : st == SEARCH_FAIL ? L"Нет связи с сервером поиска" : L"Ничего не найдено";
     if (!msg)
         return false;
     Text(dc, s_fontLabel, st == SEARCH_FAIL ? kTextErr : kTextDim, 28, 130, 324, 160, DT_CENTER, msg);
@@ -4911,8 +4921,9 @@ static void HitSign(HDC dc, int i, int x, int y)   // a row's number (its mark o
 {
     wchar_t num[4];
     _snwprintf(num, 4, L"%d", i + 1);
-    if (s_showFavs)
-        FavSign(dc, s_favs.f[i].icon, x, y, 11, kOrange, kInk);
+    int f[kHitRows], nf = FavFound(f);
+    if (s_showFavs || i < nf)   // (a favourite the search found: its sign too)
+        FavSign(dc, s_favs.f[s_showFavs ? i : f[i]].icon, x, y, 11, kOrange, kInk);
     else
         RouteMarker(dc, x, y, i == 0 || s_kbPressed == K_HIT + i ? kOrange : kInk, num);
 }
@@ -5509,12 +5520,23 @@ static bool FavBox(RECT* r)   // the mark's menu's card or the favourite's; fals
 }
 
 // The mark's menu (three rows) and the favourite's card (E_BOX: the card itself - a tap between its controls).
+static bool FavVia()   // "Заехать" in the mark's menu: a route on, room for a stop (the user 2026-11-21)
+{
+    RouteInfo ri;
+    RouteGet(&ri);
+    return (ri.state == ROUTE_ON || ri.state == ROUTE_BUSY) && RoutePlanGet()->nvia < kMaxVia;
+}
+
 static bool FavRect(int id, RECT* r)
 {
-    bool menu = s_favMenu >= 0 && id >= F_GO && id <= F_EDIT, card = s_favEdit >= 0 && id >= E_ICON && id < E_BOX;
+    bool via = FavVia();
+    bool menu = s_favMenu >= 0 && ((id >= F_GO && id <= F_EDIT) || (id == F_VIA && via)),
+         card = s_favEdit >= 0 && id >= E_ICON && id < E_BOX;
     if (id == E_BOX)
         return FavBox(r);
-    if (menu)   // "Маршрут сюда" in the accent, "Изменить" (no "Отмена": a tap beside)
+    if (menu && via)   // "Маршрут сюда" in the accent, "Заехать", "Изменить"
+        SetRect(r, id == F_GO ? 180 : id == F_VIA ? 348 : 496, 384, id == F_GO ? 340 : id == F_VIA ? 488 : 620, 446);
+    else if (menu)   // "Маршрут сюда" in the accent, "Изменить" (no "Отмена": a tap beside)
         SetRect(r, id == F_GO ? 180 : 412, 384, id == F_GO ? 400 : 620, 446);
     else if (card)
         FavCardRect(id, r);
@@ -5715,16 +5737,27 @@ static bool WhereShown()
            s_pickSlot < 0;
 }
 
+static bool s_whereAll;   // the star (the user 2026-11-21): all the favourites in the card, not the first three
+
+static int WhereFavs()   // the favourites the card shows
+{
+    int m = s_whereAll ? s_favs.n : 3;
+    return m < s_favs.n ? m : s_favs.n;
+}
+
 static bool WhereRect(int id, RECT* r)
 {
-    if (!WhereShown() || (id >= W_FAV && id < W_BOX && id - W_FAV >= s_favs.n))
+    if (!WhereShown() || (id >= W_FAV && id < W_BOX && id - W_FAV >= WhereFavs()) || (id == W_STAR && !s_favs.n))
         return false;
+    int rows = (WhereFavs() + 2) / 3, k = id - W_FAV;
     if (id == W_BOX)
-        SetRect(r, 16, 56, 380, s_favs.n ? 190 : 124);
+        SetRect(r, 16, 56, 380, s_favs.n ? 190 + (rows - 1) * 64 : 124);
     else if (id == W_FIELD)
-        SetRect(r, 28, 68, 368, 112);
+        SetRect(r, 28, 68, s_favs.n ? 312 : 368, 112);
+    else if (id == W_STAR)
+        SetRect(r, 320, 68, 368, 112);
     else
-        SetRect(r, 28 + (id - W_FAV) * 116, 122, 28 + (id - W_FAV) * 116 + 108, 178);
+        SetRect(r, 28 + k % 3 * 116, 122 + k / 3 * 64, 28 + k % 3 * 116 + 108, 178 + k / 3 * 64);
     return true;
 }
 
@@ -5756,16 +5789,25 @@ static int HitOverMap(int x, int y)
 static void OnFavMenu(int id)   // the mark's menu
 {
     SearchHit h;
-    if (id == F_GO && FavHit(s_favMenu, &h))
+    if (id == F_GO && FavHit(s_favMenu, &h)) {
         RouteToHit(&h);
-    else if (id == F_EDIT)
+    } else if (id == F_VIA) {   // a stop on the way, named as the favourite
+        const VFav& f = s_favs.f[s_favMenu];
+        RoutePlace p = MapPlace(f.lon, f.lat);
+        wcsncpy(p.name, f.name, 79);
+        p.name[79] = 0;
+        double lon, lat, course;
+        PlanStart(RoutePlanGet(), &lon, &lat, &course);
+        RouteAddVia(p, lon, lat, course, true);
+    } else if (id == F_EDIT) {
         s_favEdit = s_favMenu;
+    }
     s_favMenu = -1;
 }
 
 static void OnFavCtl(int id)   // the mark's menu, the favourite's card
 {
-    if (id <= F_CANCEL)
+    if (id <= F_VIA)
         OnFavMenu(id);
     else if (id < E_NAME) {
         s_favs.f[s_favEdit].icon = id - E_ICON;
@@ -5788,7 +5830,10 @@ static void OnWhere(int id)   // "Куда едем?": the field - the search; a
     SearchHit h;
     if (id == W_FIELD) {
         OnButton(B_SEARCH);
+    } else if (id == W_STAR) {
+        s_whereAll = !s_whereAll;
     } else if (id < W_BOX && FavHit(id - W_FAV, &h)) {
+        s_whereAll = false;
         RouteToHit(&h);
         DockShow(false);
     }
@@ -5883,6 +5928,8 @@ static void DrawFavMenu(HDC dc)
     DrawMainCtl(dc, r, s_planPressed == F_GO, L"Маршрут сюда");
     FavRect(F_EDIT, &r);
     DrawCtl(dc, r, s_planPressed == F_EDIT, s_fontLabel, L"Изменить");
+    if (FavRect(F_VIA, &r))
+        DrawCtl(dc, r, s_planPressed == F_VIA, s_fontLabel, L"Заехать");
 }
 
 static void DrawFavSigns(HDC dc)   // the card's row of signs: its own in the accent's frame
@@ -5963,6 +6010,11 @@ static void DrawWhere(HDC dc)
     Tile(dc, r, kPanel2, s_planPressed == W_FIELD ? kOrange : kPanel2, 22);
     Magnifier(dc, r.left + 26, (r.top + r.bottom) / 2, kTextDim);
     Text(dc, s_fontBig, kTextDim, r.left + 48, r.top, r.right - 12, r.bottom, DT_LEFT, L"Куда едем?");
+    if (WhereRect(W_STAR, &r)) {   // all the favourites / the first three
+        bool on = s_whereAll || s_planPressed == W_STAR;
+        Tile(dc, r, on ? kOrange : kPanel2, on ? kOrange : kPanel2, 16);
+        FavSign(dc, VFAV_STAR, (r.left + r.right) / 2, (r.top + r.bottom) / 2, 13, on ? kInk : kOrange, on ? kOrange : kPanel2);
+    }
     double lon, lat;
     SearchFrom(&lon, &lat);
     for (int id = W_FAV; id < W_BOX && WhereRect(id, &r); id++) {
