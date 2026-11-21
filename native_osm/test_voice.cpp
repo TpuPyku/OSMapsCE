@@ -257,7 +257,13 @@ static void TestDevice()
     Check(VoiceDevice(2, 4) == 1, "device: VestaHome turned the radio down (no shell) - Audio Output 1");
     Check(VoiceDevice(2, 2) == 1, "device: two devices, VestaHome - 1");
     Check(VoiceDevice(2, 1) == -1, "device: one device only - the mapper");
-    Check(VoiceDevice(1, 4) == -1, "device: the stock shell (as CityGuide) - the mapper");
+    // the stock shell turns the radio down (0x101D) and lets Audio Output 1 through - as VestaHome's beep (the users
+    // 2026-11-21: no prompts over the radio with the stock shell - they went to the mapper)
+    Check(VoiceDevice(1, 4) == 1, "device: the stock shell - Audio Output 1 too");
+    Check(VoiceDevice(1, 1) == -1, "device: the stock shell, one device - the mapper");
+    // VestaHome said: its own music plays (the media source) - our sound mixed with it on device 0, the music it turns
+    // down itself (the users 2026-11-21: quiet prompts over the card's music)
+    Check(VoiceDevice(3, 4) == 0 && VoiceDevice(3, 1) == 0, "device: VestaHome's media - device 0, mixed");
     Check(VoiceDevice(0, 4) == -1, "device: no one asked (the PC) - the mapper");
 }
 

@@ -189,5 +189,7 @@ void VoiceGain(char* pcm, int len, int bits, int level)
 
 int VoiceDevice(int via, int devs)
 {
-    return via == 2 && devs > 1 ? 1 : -1;
+    if (via == 3)
+        return 0;
+    return (via == 1 || via == 2) && devs > 1 ? 1 : -1;
 }
