@@ -153,7 +153,6 @@ GPS не найден на COM1…COM9	No GPS found on COM1…COM9
 СТЕРЕТЬ	DELETE
 НАЙТИ	FIND
 СОХРАНИТЬ	SAVE
-ИЗБРАННОЕ	FAVORITES
 Точка на карте (%.5f, %.5f)	Point on the map (%.5f, %.5f)
 Выберите, куда ехать	Choose where to go
 Куда	To

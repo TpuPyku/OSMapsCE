@@ -3236,8 +3236,8 @@ static void FavSign(HDC dc, int icon, int x, int y, int r, COLORREF fg, COLORREF
 }
 
 // The favourites' marks: a dark disc in a white ring, the sign in the accent, the name under it on a card (from
-// kFavNamesZ: further out they pile up); none further out than kFavMarksZ.
-enum { kFavMarksZ = 12, kFavNamesZ = 14 };
+// kFavNamesZ: further out they pile up); none further out than kFavMarksZ (the user 2026-11-22: seen from z8).
+enum { kFavMarksZ = 8, kFavNamesZ = 14 };
 
 static void DrawFavMarks(HDC dc, double cx, double cy, double vx, double vy, double angle)
 {

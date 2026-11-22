@@ -246,7 +246,7 @@ closer than 100 m.
 
 **What the map shows.**
 
-- Favorite places: signs from zoom 12, their names from zoom 14.
+- Favorite places: signs from zoom 8, their names from zoom 14.
 - Car parks: from zoom 14; red is paid, green is free, grey means the fee is not known.
 - Traffic lights and speed bumps: from zoom 15, when they are on in the map settings.
 - Moscow's paid street parking: lines along the streets from zoom 15. The color follows the price for the current day
