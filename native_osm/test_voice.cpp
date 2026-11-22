@@ -1,4 +1,4 @@
-// The voice prompts (voice.cpp): OSRM's maneuver -> the action, when each prompt is due, its clips.
+﻿// The voice prompts (voice.cpp): OSRM's maneuver -> the action, when each prompt is due, its clips.
 #include "voice.h"
 #include <stdio.h>
 #include <string.h>
@@ -115,7 +115,7 @@ static void TestThresholds()
 static bool Clips(int stage, int act, int m, const char* want)
 {
     const char* c[8];
-    int n = VoiceSay(stage, act, m, c, 8);
+    int n = VoiceSay(stage, act, m, NULL, c, 8);
     char got[200] = "";
     for (int i = 0; i < n; i++) {
         if (i)
@@ -153,7 +153,34 @@ static void TestSay()
           "say: halfway 3-5 km - the lower, a metre on - 5 km");
     Check(Clips(VS_FAR, VA_RIGHT, 5000, "d5000 right"), "say: the last one itself");
     const char* c[2];
-    Check(VoiceSay(VS_MID, VA_RIGHT, 290, c, 1) == 0, "say: no room for the distance - nothing");
+    Check(VoiceSay(VS_MID, VA_RIGHT, 290, NULL, c, 1) == 0, "say: no room for the distance - nothing");
+}
+
+static bool Lanes(int n, unsigned valid, const char* want)
+{
+    const char* got = VoiceLanes(n, valid);
+    bool ok = want ? got && !strcmp(got, want) : !got;
+    if (!ok)
+        printf("  lanes %d/%x: got \"%s\", want \"%s\"\n", n, valid, got ? got : "-", want ? want : "-");
+    return ok;
+}
+
+// The lanes to take (the user 2026-11-22: lanes by voice too): the block of the route's lanes, counted from its side
+static void TestLanes()
+{
+    Check(Lanes(4, 0x3, "lanes_left2") && Lanes(3, 0x1, "lanes_left1") && Lanes(5, 0x7, "lanes_left3"),
+          "lanes: the left ones");
+    Check(Lanes(4, 0x8, "lanes_right1") && Lanes(4, 0xC, "lanes_right2") && Lanes(5, 0x1C, "lanes_right3"),
+          "lanes: the right ones");
+    Check(Lanes(3, 0x2, "lanes_middle") && Lanes(5, 0xE, "lanes_middles"), "lanes: the middle ones");
+    Check(Lanes(3, 0x7, NULL) && Lanes(3, 0, NULL) && Lanes(0, 0, NULL), "lanes: all, none, no lanes - nothing");
+    Check(Lanes(4, 0x5, NULL), "lanes: not side by side - nothing");
+    Check(Lanes(6, 0xF, NULL) && Lanes(6, 0x3C, NULL), "lanes: four or more from a side - nothing (no clip)");
+    const char* c[8];
+    Check(VoiceSay(VS_MID, VA_LEFT, 290, "lanes_left2", c, 8) == 3 && !strcmp(c[2], "lanes_left2"),
+          "say: mid - the distance, the turn, the lanes");
+    Check(VoiceSay(VS_NOW, VA_LEFT, 90, "lanes_left2", c, 8) == 1, "say: now - no lanes (too late to change)");
+    Check(VoiceSay(VS_FAR, VA_LEFT, 990, "lanes_left2", c, 2) == 2, "say: no room for the lanes - left out");
 }
 
 static void Le(unsigned char* p, unsigned v, int bytes)   // little-endian
@@ -290,6 +317,7 @@ int main()
     TestDue();
     TestThresholds();
     TestSay();
+    TestLanes();
     TestWav();
     TestDevice();
     TestGain();

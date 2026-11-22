@@ -149,15 +149,37 @@ bool VoiceWavParse(const unsigned char* b, int n, VoiceWav* w)
     return true;
 }
 
+const char* VoiceLanes(int n, unsigned valid)
+{
+    static const char* const kLeft[] = { 0, "lanes_left1", "lanes_left2", "lanes_left3" };
+    static const char* const kRight[] = { 0, "lanes_right1", "lanes_right2", "lanes_right3" };
+    unsigned all = n > 0 && n < 32 ? (1u << n) - 1 : 0;
+    valid &= all;
+    if (!valid || valid == all)
+        return NULL;
+    int first = 0, k = 0;
+    while (!(valid >> first & 1))
+        first++;
+    while (valid >> (first + k) & 1)
+        k++;
+    if (valid >> (first + k))
+        return NULL;   // (not one block)
+    if (first == 0 || first + k == n)
+        return k <= 3 ? (first == 0 ? kLeft : kRight)[k] : NULL;
+    return k == 1 ? "lanes_middle" : "lanes_middles";
+}
+
 static bool Silent(int stage, int act) { return act == VA_NONE || (act == VA_FINISH && stage == VS_NOW); }
 
-int VoiceSay(int stage, int act, int nextM, const char** out, int cap)
+int VoiceSay(int stage, int act, int nextM, const char* lanes, const char** out, int cap)
 {
-    const char* c[2];
+    const char* c[3];
     int n = 0;
     if (stage != VS_NOW)
         c[n++] = Distance(nextM);
     c[n++] = kAct[act];
+    if (stage != VS_NOW && lanes && n < cap)
+        c[n++] = lanes;
     if (Silent(stage, act) || n > cap)
         return 0;
     memcpy(out, c, n * sizeof(c[0]));

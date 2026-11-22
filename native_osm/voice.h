@@ -20,9 +20,15 @@ void VoiceReset(VoiceState* s);
 int VoiceDue(VoiceState* s, int man, int nextM, int kmh);
 
 // The clips of a prompt (ids of phrases.tsv) into out, their count: stage VS_FAR / VS_MID with the distance,
-// VS_NOW without. The maneuver close behind is never told with it (the user 2026-11-22: "then ..." said before the
-// first was made misled) - its own prompt comes once the first is passed.
-int VoiceSay(int stage, int act, int nextM, const char** out, int cap);
+// VS_NOW without; lanes (VoiceLanes' clip, NULL: none) after the action, at the far and mid ones only. The maneuver
+// close behind is never told with it (the user 2026-11-22: "then ..." said before the first was made misled) - its
+// own prompt comes once the first is passed.
+int VoiceSay(int stage, int act, int nextM, const char* lanes, const char** out, int cap);
+
+// The lanes to take, as a clip (the user 2026-11-22): n lanes left to right, valid - bit i: the route's lane i. One
+// block from a side (up to 3) - "keep to the two left lanes"; in the middle - "the middle lane(s)"; all, none, not one
+// block, 4+ from a side - NULL.
+const char* VoiceLanes(int n, unsigned valid);
 
 // The route's own prompt when it changes (an id of phrases.tsv, 0: none): a new route, a new one off the line, the
 // arrival, a stop passed. serial: the route's number (a new one each), vias: the stops left.
