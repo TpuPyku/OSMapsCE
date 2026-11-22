@@ -334,15 +334,17 @@ static int  s_flSign = -1;   // the favourite whose sign is being chosen (the si
 // 2026-10-29: the graphs for the routes and the search without the internet) - the release's catalog by its titles,
 // kMapsRows a page, a row's button downloads it (the trunk roads after the first one), "ОТМЕНА" while it goes;
 // "ЗАГРУЗИТЬ" and "ОК" (the same again) asked "ТОЧНО?"
+// (seven rows, as the main page's: kMainRowH; the user 2026-11-22: the dangers' row)
 enum { M_KIND_PREV, M_KIND_NEXT, M_DETAIL_PREV, M_DETAIL_NEXT, M_TRF_PREV, M_TRF_NEXT, M_SIGNAL_PREV, M_SIGNAL_NEXT, M_BUMP_PREV,
-       M_BUMP_NEXT, M_REGIONS, M_BACK, M_COUNT };
+       M_BUMP_NEXT, M_DANGER_PREV, M_DANGER_NEXT, M_REGIONS, M_BACK, M_COUNT };
 static const RECT kMapsCtl[M_COUNT] = {
-    { 512, 79, 560, 123 }, { 712, 79, 760, 123 },     // the steppers: the kind, the detail
-    { 512, 129, 560, 173 }, { 712, 129, 760, 173 },
-    { 512, 179, 560, 223 }, { 712, 179, 760, 223 },   // the traffic: on the map / on the route alone
-    { 512, 229, 560, 273 }, { 712, 229, 760, 273 },   // the layers of a downloaded region: traffic lights, speed bumps
-    { 512, 279, 560, 323 }, { 712, 279, 760, 323 },
-    { 576, 329, 760, 373 },                            // the regions' page
+    { 512, 78, 560, 118 }, { 712, 78, 760, 118 },     // the steppers: the kind, the detail
+    { 512, 124, 560, 164 }, { 712, 124, 760, 164 },
+    { 512, 170, 560, 210 }, { 712, 170, 760, 210 },   // the traffic: on the map / on the route alone
+    { 512, 216, 560, 256 }, { 712, 216, 760, 256 },   // the layers of a downloaded region: traffic lights, speed bumps,
+    { 512, 262, 560, 302 }, { 712, 262, 760, 302 },   // dangers
+    { 512, 308, 560, 348 }, { 712, 308, 760, 348 },
+    { 576, 354, 760, 394 },                            // the regions' page
     { 8, 412, 80, 480 },                               // back to the settings
 };
 enum { kMapsRows = 6 };
@@ -1360,6 +1362,8 @@ static void OnMapsCtl(int id)
     case M_SIGNAL_NEXT: g_cfg.layerSignals = !g_cfg.layerSignals; ConfigSave(); break;
     case M_BUMP_PREV:
     case M_BUMP_NEXT:   g_cfg.layerBumps = !g_cfg.layerBumps; ConfigSave(); break;
+    case M_DANGER_PREV: g_cfg.layerDangers = (g_cfg.layerDangers + DANGERS_COUNT - 1) % DANGERS_COUNT; ConfigSave(); break;
+    case M_DANGER_NEXT: g_cfg.layerDangers = (g_cfg.layerDangers + 1) % DANGERS_COUNT; ConfigSave(); break;
     case M_BACK:        s_maps = false; break;
     case M_REGIONS:
         s_regions = true;
@@ -3272,7 +3276,7 @@ static void DrawFavMarks(HDC dc, double cx, double cy, double vx, double vy, dou
     }
 }
 
-// ---- the layers of a downloaded region (layers.h): traffic lights, speed bumps, car parks
+// ---- the layers of a downloaded region (layers.h): traffic lights, speed bumps, car parks, dangers
 
 enum { kParkPriceZ = 16, kParkPriceMinPx = 48, kParkCullPx = 480 };
 enum { kLayerZ = 15, kParkingZ = 14, kLayerViewPx = 900, kLayerCarDeg = 4000, kWarnKmh = 15, kWarnMinM = 100, kWarnSec = 10 };
@@ -3280,10 +3284,16 @@ static const LayerPoint* s_layer;
 static int s_layerN, s_layerParks, s_parkLines;
 static const COLORREF kParkPaid = RGB(205, 60, 50), kParkFree = RGB(40, 150, 75);
 
+static unsigned WarnWanted()   // the points warned of on the way: bumps, dangers
+{
+    return LayersWanted(0, g_cfg.layerBumps, g_cfg.layerDangers);
+}
+
 // What is wanted of the region now: the view's points when they are shown; else, for the warning, those around the car
 static bool LayerBox(int* box, double vx, double vy)
 {
-    bool shown = (g_cfg.parking && !g_cfg.traffic && g_cfg.z >= kParkingZ) || ((g_cfg.layerSignals || g_cfg.layerBumps) && g_cfg.z >= kLayerZ);
+    bool shown = (g_cfg.parking && !g_cfg.traffic && g_cfg.z >= kParkingZ) ||
+                 ((g_cfg.layerSignals || g_cfg.layerBumps || g_cfg.layerDangers) && g_cfg.z >= kLayerZ);
     if (shown) {
         double lon0, lat0, lon1, lat1;
         WorldToGeo(vx - kLayerViewPx, vy - kLayerViewPx, g_cfg.z, &lon0, &lat1);
@@ -3294,7 +3304,7 @@ static bool LayerBox(int* box, double vx, double vy)
         box[3] = (int)(lon1 * 1e6);
         return true;
     }
-    if (!g_cfg.layerBumps || !s_gps.valid)
+    if (!WarnWanted() || !s_gps.valid)
         return false;
     int lat = (int)(s_gps.lat * 1e6), lon = (int)(s_gps.lon * 1e6);
     box[0] = lat - kLayerCarDeg;
@@ -3323,7 +3333,8 @@ static void SignalMark(HDC dc, int x, int y)   // a dark box of three lights
     DeleteObject(box);
 }
 
-static void BumpSign(HDC dc, int x, int y)   // the road sign's look: a warning triangle with the bump in it
+// The road sign's look: a warning triangle with the bump in it, or (a danger: the user 2026-11-22) a "!"
+static void WarnSign(HDC dc, int x, int y, bool bump)
 {
     POINT tri[3] = { { x, y - 12 }, { x + 13, y + 10 }, { x - 13, y + 10 } };
     POINT hump[5] = { { x - 7, y + 7 }, { x - 3, y + 1 }, { x + 3, y + 1 }, { x + 7, y + 7 }, { x - 7, y + 7 } };
@@ -3333,7 +3344,12 @@ static void BumpSign(HDC dc, int x, int y)   // the road sign's look: a warning 
     Polygon(dc, tri, 3);
     SelectObject(dc, ink);
     SelectObject(dc, GetStockObject(NULL_PEN));
-    Polygon(dc, hump, 5);
+    if (bump) {
+        Polygon(dc, hump, 5);
+    } else {
+        Rectangle(dc, x - 1, y - 5, x + 2, y + 4);   // (no pen: the right and bottom edges not drawn)
+        Rectangle(dc, x - 1, y + 5, x + 2, y + 8);
+    }
     SelectObject(dc, op);
     SelectObject(dc, ob);
     DeleteObject(pen);
@@ -3357,8 +3373,8 @@ static void LayerMark(HDC dc, const LayerPoint& p, int x, int y)
 {
     if (p.kind == LAY_PARKING)
         ParkingMark(dc, x, y, p.fee);
-    else if (p.kind == LAY_BUMP)
-        BumpSign(dc, x, y);
+    else if (p.kind == LAY_BUMP || p.kind == LAY_DANGER)
+        WarnSign(dc, x, y, p.kind == LAY_BUMP);
     else
         SignalMark(dc, x, y);
 }
@@ -3367,7 +3383,7 @@ static bool LayerShown(const LayerPoint& p)
 {
     if (p.kind == LAY_PARKING)
         return g_cfg.parking && !g_cfg.traffic && g_cfg.z >= kParkingZ;
-    return (p.kind == LAY_BUMP ? g_cfg.layerBumps : g_cfg.layerSignals) && g_cfg.z >= kLayerZ;
+    return LayerWanted(p, LayersWanted(g_cfg.layerSignals, g_cfg.layerBumps, g_cfg.layerDangers)) && g_cfg.z >= kLayerZ;
 }
 
 static void ParkPriceTag(HDC dc, int x, int y, int rub)
@@ -3486,10 +3502,10 @@ static void LayerStamp(HDC dc, const LayerPoint& p, int x, int y)
     StampDraw(dc, key, x - kMarkR, y - kMarkR, 2 * kMarkR + 1, 2 * kMarkR + 1, MarkPaint, (void*)&p, kMarkR, kMarkR);
 }
 
-// The shown points on the screen (lat, lon: y, x), car parks' and bumps' signs over one another merged into one at their
-// middle (the user 2026-11-16; LayersMergeOnScreen); s_layerParks counted
-enum { kMarkGap = 24 };   // (a car park's or a bump's sign: 23 - 26 px wide)
-static LayerPoint s_marks[3000];   // (layers.cpp's kMaxPoints)
+// The shown points on the screen (lat, lon: y, x), car parks', bumps' and dangers' signs over one another merged into one
+// at their middle (the user 2026-11-16; LayersMergeOnScreen); s_layerParks counted
+enum { kMarkGap = 24 };   // (a car park's, a bump's or a danger's sign: 23 - 26 px wide)
+static LayerPoint s_marks[LAYERS_MAX];
 
 static int LayerMarks(const ParkView& v)
 {
@@ -3526,20 +3542,44 @@ static void DrawLayers(HDC dc, double cx, double cy, double vx, double vy, doubl
     }
 }
 
-// A speed bump on the way ahead (the user 2026-11-06: with a warning): at 10 s of the speed, at least 100 m
-static void DrawBumpWarning(HDC dc)
+static const wchar_t* DangerName(int type)   // DANGER_*: the warning's words
+{
+    switch (type) {
+    case DANGER_CROSSING:   return L"Пешеходный переход";
+    case DANGER_BAD_ROAD:   return L"Плохая дорога";
+    case DANGER_TURN:       return L"Опасный поворот";
+    case DANGER_CROSSROADS: return L"Опасный перекрёсток";
+    default:                return L"Опасность";
+    }
+}
+
+// A speed bump or a danger on the way ahead, the nearest (the user 2026-11-06: with a warning; 2026-11-22: the dangers
+// as the bumps): at 10 s of the speed, at least 100 m. The card as wide as its words
+static void DrawLayerWarning(HDC dc)
 {
     double m = s_gps.speedKmh / 3.6 * kWarnSec;
-    int d;
-    if (!g_cfg.layerBumps || !s_gps.valid || s_gps.speedKmh < kWarnKmh ||
-        !LayerAhead(s_layer, s_layerN, LAY_BUMP, (int)(s_gps.lat * 1e6), (int)(s_gps.lon * 1e6), s_gps.course, m > kWarnMinM ? (int)m : kWarnMinM, &d))
+    int d, at;
+    if (!WarnWanted() || !s_gps.valid || s_gps.speedKmh < kWarnKmh)
         return;
+    at = LayerAhead(s_layer, s_layerN, WarnWanted(), (int)(s_gps.lat * 1e6), (int)(s_gps.lon * 1e6), s_gps.course,
+                    m > kWarnMinM ? (int)m : kWarnMinM, &d);
+    if (at < 0)
+        return;
+    bool bump = s_layer[at].kind == LAY_BUMP;
+    wchar_t s[64];
+    if (bump)
+        _snwprintf(s, 64, Tr(L"Неровность · %d м"), d);
+    else
+        _snwprintf(s, 64, Tr(L"%s · %d м"), Tr(DangerName(s_layer[at].fee)), d);
+    s[63] = 0;
+    SIZE sz;
+    SelectObject(dc, s_fontLabel);
+    GetTextExtentPoint32(dc, s, (int)wcslen(s), &sz);
     RECT r = { 470, 56, 712, 104 };
+    if (r.right - 58 - sz.cx < r.left)
+        r.left = r.right - 58 - sz.cx;
     Card(dc, r, 16);
-    BumpSign(dc, r.left + 26, r.top + 24);
-    wchar_t s[48];
-    _snwprintf(s, 48, Tr(L"Неровность · %d м"), d);
-    s[47] = 0;
+    WarnSign(dc, r.left + 26, r.top + 24, bump);
     Text(dc, s_fontLabel, kText, r.left + 46, r.top, r.right - 8, r.bottom, DT_LEFT, s);
 }
 
@@ -4118,25 +4158,28 @@ static void MapsLine(HDC dc)   // the job's line, with the download's progress w
 static void MapsLook(HDC dc)
 {
     wchar_t s[64];
-    SetRow(dc, kSetRow0, L"Вид", g_cfg.vector ? L"векторная, OpenFreeMap" : L"растровая, тайлы OSM", true);
+    MainRow(dc, 0, L"Вид", g_cfg.vector ? L"векторная, OpenFreeMap" : L"растровая, тайлы OSM", true);
     StepperAt(dc, kMapsCtl[M_KIND_PREV], kMapsCtl[M_KIND_NEXT], s_mapsPressed - M_KIND_PREV,
               g_cfg.vector ? L"Вектор" : L"Растр");
     if (g_cfg.detail)
         wcscpy(s, L"меньше деталей — быстрее рисуется");
     else
         _snwprintf(s, 64, Tr(L"по скорости устройства: сейчас %s"), Tr(kDetailLow[VTileDetail()]));
-    SetRow(dc, kSetRow0 + kSetRowH, L"Детализация", s, true);
+    MainRow(dc, 1, L"Детализация", s, true);
     StepperAt(dc, kMapsCtl[M_DETAIL_PREV], kMapsCtl[M_DETAIL_NEXT], s_mapsPressed - M_DETAIL_PREV,
               kDetailNames[g_cfg.detail]);
-    SetRow(dc, kSetRow0 + 2 * kSetRowH, L"Пробки", g_cfg.trafficRoute ? L"только на проложенном маршруте"
-                                                                   : L"на карте и на маршруте", true);
+    MainRow(dc, 2, L"Пробки", g_cfg.trafficRoute ? L"только на проложенном маршруте" : L"на карте и на маршруте", true);
     StepperAt(dc, kMapsCtl[M_TRF_PREV], kMapsCtl[M_TRF_NEXT], s_mapsPressed - M_TRF_PREV,
               g_cfg.trafficRoute ? L"Маршрут" : L"Везде");
-    SetRow(dc, kSetRow0 + 3 * kSetRowH, L"Светофоры", L"значки на карте, из скачанной области", true);
+    MainRow(dc, 3, L"Светофоры", L"значки на карте, из скачанной области", true);
     StepperAt(dc, kMapsCtl[M_SIGNAL_PREV], kMapsCtl[M_SIGNAL_NEXT], s_mapsPressed - M_SIGNAL_PREV, g_cfg.layerSignals ? L"Вкл" : L"Выкл");
-    SetRow(dc, kSetRow0 + 4 * kSetRowH, L"Неровности", L"значки и предупреждение в пути", true);
+    MainRow(dc, 4, L"Неровности", L"значки и предупреждение в пути", true);
     StepperAt(dc, kMapsCtl[M_BUMP_PREV], kMapsCtl[M_BUMP_NEXT], s_mapsPressed - M_BUMP_PREV, g_cfg.layerBumps ? L"Вкл" : L"Выкл");
-    SetRow(dc, kSetRow0 + 5 * kSetRowH, L"Карты областей", L"маршрут и поиск без интернета", false);
+    static const wchar_t* kDangerSet[DANGERS_COUNT] = { L"Выкл", L"Основные", L"Все" };
+    MainRow(dc, 5, L"Опасности", L"значки и предупреждение, openspeedcam.net", true);
+    StepperAt(dc, kMapsCtl[M_DANGER_PREV], kMapsCtl[M_DANGER_NEXT], s_mapsPressed - M_DANGER_PREV,
+              kDangerSet[g_cfg.layerDangers]);
+    MainRow(dc, 6, L"Карты областей", L"маршрут и поиск без интернета", false);
     DrawCtl(dc, kMapsCtl[M_REGIONS], s_mapsPressed == M_REGIONS, s_fontLabel, L"СКАЧАТЬ");
 }
 
@@ -4172,7 +4215,7 @@ static void DrawRegions(HDC dc)
 static void DrawMaps(HDC dc)
 {
     PageTop(dc, s_regions ? L"Карты областей" : L"Карта", s_mapsPressed == (s_regions ? R_BACK : M_BACK),
-            s_regions ? 412 : 376);
+            s_regions ? 412 : 400);
     if (s_regions)
         DrawRegions(dc);
     else
@@ -6432,7 +6475,7 @@ static void Paint(HDC hdc)
         DrawStatus(dc);
         if (s_pickSlot < 0 && RouteAlts() < 2)   // (not over the alternatives' panel)
             DrawGuide(dc);
-        DrawBumpWarning(dc);
+        DrawLayerWarning(dc);
         AltFit();
         DrawTrip(dc);
         DrawButtons(dc);

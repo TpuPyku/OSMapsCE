@@ -555,7 +555,7 @@ class Maps(unittest.TestCase):
                 self.assertFalse(thread.called)                                     # nothing chosen: nothing
                 app.chosen = {'a_oblast'}
                 app.write_chosen()
-                self.assertEqual(thread.call_args[1]['args'][1:], ([cat['regions'][0]], drive, True, True))   # no
+                self.assertEqual(thread.call_args[1]['args'][1:], ([cat['regions'][0]], drive, True, True, True))   # no
                                                                                    # trunk roads, no overview there: too
                 self.assertEqual(app.go['text'], 'Отменить запись')                 # busy: the button cancels
                 self.assertEqual(str(app.go['style']), 'Busy.TButton')
@@ -569,7 +569,7 @@ class Maps(unittest.TestCase):
                 self.assertFalse(app.stop.is_set())                                 # the next one not stopped
                 app.chosen = {'overview'}                                           # that row alone: both
                 app.write_chosen()
-                self.assertEqual(thread.call_args[1]['args'][1:], ([], drive, True, True))
+                self.assertEqual(thread.call_args[1]['args'][1:], ([], drive, True, True, True))   # (cameras: on)
                 app.on_done(None)
                 self.assertEqual(app.go['text'], 'Собрать выбранные карты')   # (renamed: the user 2026-11-12)
                 self.assertEqual(str(app.go['style']), 'Go.TButton')
@@ -585,7 +585,7 @@ class Maps(unittest.TestCase):
                 app.click(type('E', (), {'x': bx[0] + 5, 'y': bx[1] + 5})())        # its button: that source's zip
                 self.assertEqual(app.chosen, set())                                 # (not picked)
                 self.assertEqual(thread.call_args[1]['args'][1:], ([('a_oblast', app.cat['regions'][0])], 'files',
-                                                                   drive))
+                                                                   drive, True))
                 self.assertEqual(app.go['text'], 'Отменить запись')                 # the bottom button cancels it
                 app.get_ready('a_oblast', 'files')
                 self.assertEqual(thread.call_count, 1)                              # not twice at once

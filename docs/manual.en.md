@@ -53,8 +53,8 @@ With the English interface ([section 11](#11-languages)) the screen shows the En
 - **Voice prompts** in Russian or English, without internet access. On the Lada Vesta they play over the radio.
   → [section 12](#12-voice-prompts)
 - **Favorites:** up to 12 places, each with its own sign. → [section 9](#9-favorites)
-- **Layers of a downloaded region:** traffic lights, speed bumps with a warning on the way, car parks, Moscow's paid
-  street parking with prices. The road's speed limit sign.
+- **Layers of a downloaded region:** traffic lights, speed bumps and road dangers with a warning on the way, car parks,
+  Moscow's paid street parking with prices. The road's speed limit sign.
 - **Interface languages:** Russian and English. A new language is one text file. → [section 11](#11-languages)
 - **With VestaHome:** the "Карта OSM" (OSM map) widget on the home screen, the theme color, a shared day / night
   mode, the maneuver in VestaHome's top bar, zoom with the steering wheel buttons.
@@ -103,7 +103,7 @@ other programs.
 - the region's vector map (the "Вектор" (Vector) map type, [section 10](#map));
 - address and place search;
 - routes, including avoiding toll roads;
-- layers: traffic lights, speed bumps, car parks, Moscow's paid street parking;
+- layers: traffic lights, speed bumps, road dangers, car parks, Moscow's paid street parking;
 - the speed limit sign of the road you are on;
 - the car marker kept on the road.
 
@@ -181,6 +181,13 @@ deletes the ticked regions from the drive. While writing, the main button reads 
 What has been downloaded stays on the computer, and the next writing continues from it. The "RU / EN" button switches
 the program's language.
 
+**Cameras and dangers.** With "Камеры и опасности (openspeedcam.net)" (Cameras and dangers, on by default) ticked, each
+region gets the speed cameras and road dangers of the [openspeedcam.net](https://openspeedcam.net) database along with
+its maps: `speedcam.txt` (the cameras) and `danger.lay` (speed bumps, pedestrian crossings, bad road, dangerous turns
+and crossroads) in the region's folder. The database is downloaded once per run of the program. "Обновить камеры"
+(Update cameras) refreshes them for all regions on the drive without downloading the maps again. If the database
+cannot be downloaded, the maps are still written and the status line says "cameras not downloaded".
+
 ---
 
 ## 4. The screen
@@ -240,15 +247,19 @@ Without a route, the "Куда едем?" (Where to?) card appears over the rais
 **Speed.** When there is a position, the speed in km/h is shown in the bottom left corner. Next to it is the road's
 speed limit sign. The sign comes from a downloaded region when the limit is tagged in OSM.
 
-**A speed bump ahead.** When "Неровности" (Speed bumps) is on, at 15 km/h and faster the caption
+**A speed bump or a danger ahead.** When "Неровности" (Speed bumps) is on, at 15 km/h and faster the caption
 "Неровность · 120 м" (Speed bump · 120 m) appears at the top. It shows 10 seconds of driving before the bump, but not
-closer than 100 m.
+closer than 100 m. Road dangers warn the same way when "Опасности" (Dangers) is on: "Плохая дорога" (Bad road),
+"Опасный поворот" (Dangerous turn), "Опасный перекрёсток" (Dangerous crossroads), and with the setting "Все" (All)
+also "Пешеходный переход" (Pedestrian crossing) and "Опасность" (Danger, the other ones). One caption shows: the
+nearest ahead.
 
 **What the map shows.**
 
 - Favorite places: signs from zoom 8, their names from zoom 14.
 - Car parks: from zoom 14; red is paid, green is free, grey means the fee is not known.
-- Traffic lights and speed bumps: from zoom 15, when they are on in the map settings.
+- Traffic lights, speed bumps and road dangers: from zoom 15, when they are on in the map settings. A danger is a
+  yellow triangle with a red edge and a "!", a speed bump the same triangle with a bump in it.
 - Moscow's paid street parking: lines along the streets from zoom 15. The color follows the price for the current day
   and hour by the device's clock: red is paid, green is free right now. From zoom 16 the lines show the price for a car
   in rubles per hour. The app does not recognize public holidays and shows the usual price. Data:
@@ -256,6 +267,10 @@ closer than 100 m.
   changed, so check the signs.
 
 Car parks, traffic lights and speed bumps come from a downloaded region. It must be a region built with these layers.
+Road dangers and more speed bumps come from the [openspeedcam.net](https://openspeedcam.net) database: the computer
+program OSMapsCE-Maps writes them into the region's folder (the file `danger.lay`,
+[section 3](#downloading-regions-on-a-computer)). No such file: no dangers, the rest works as before. Speed bumps of
+both sources close together (up to 40 m) show as one sign; so do dangers of one kind.
 
 **Raster and vector map.** The raster map is OpenStreetMap tiles from the internet. Without a network you see what is
 already in the cache. When a tile is missing, a coarser one is stretched in its place. The app draws the vector map
@@ -507,6 +522,9 @@ Under the row's name is the map type. The "КАРТЫ" (Maps) button opens the "
   laid).
 - **Светофоры** (Traffic lights): traffic light signs from a downloaded region. Off after installation.
 - **Неровности** (Speed bumps): speed bump signs and the warning on the way. On after installation.
+- **Опасности** (Dangers): road danger signs and the warning on the way: "Выкл" (Off), "Основные" (Main: bad road,
+  dangerous turns and crossroads), "Все" (All: also pedestrian crossings and other dangers). "Основные" after
+  installation.
 - **Карты областей** (Region maps): the "СКАЧАТЬ" (Download maps) button ([section 3](#downloading-regions-on-the-device)).
 
 ### Route
@@ -586,6 +604,7 @@ Almost everything can be changed on the screen. Edit the file while the app is c
 | `junction` | 0 | 1: junction diagram |
 | `no_toll` | 0 | 1: avoid toll roads |
 | `layer_signals`, `layer_bumps` | 0, 1 | traffic lights, speed bumps |
+| `layer_dangers` | 1 | road dangers: 0 off, 1 main, 2 all |
 | `cache_mb` | 500 | cache limit, MB |
 | `cache_days` | 7 | days before a tile is checked against the server (0: never) |
 | `gps`, `gps_port@<device>`, `gps_baud@<device>` | 1, COM4:, 115200 | GPS on/off, port, speed (0: keep) |
@@ -683,6 +702,8 @@ together with it.
   the "НАЙТИ" (Find) key. The app asks for a point's address on a long press and when you pick a point on the map.
 - **Routes:** downloaded regions, otherwise OSRM on the [FOSSGIS](https://routing.openstreetmap.de) servers, without
   traffic.
+- **Cameras and dangers:** the [openspeedcam.net](https://openspeedcam.net) database (its export for Navitel), written
+  by the `OSMapsCE-Maps` program together with the regions.
 
 **Limits.** Traffic is limited by the number of requests per day: Yandex 900, 2GIS 2000. The app keeps the last 100
 requests before the limit for refreshes caused by your actions: moving the map, zooming, tapping the map. Search,

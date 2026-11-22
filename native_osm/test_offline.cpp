@@ -1108,6 +1108,77 @@ static void LayerRegionChecks()   // the region's under the box, kept
     LayersDrop();
 }
 
+static int KindCount(const LayerPoint* p, int n, int kind)
+{
+    int k = 0;
+    for (int i = 0; i < n; i++)
+        k += p[i].kind == kind ? 1 : 0;
+    return k;
+}
+
+// A region's .lay file as make_layers.py writes it (the PC loader's danger.lay too): the points given in their cells' order
+static void PutLay(const wchar_t* name, const LayerPoint* p, int n)
+{
+    char* buf = (char*)malloc(16 + n * 20);
+    DWORD* cells = (DWORD*)(buf + 16), nc = 0;
+    for (int i = 0; i < n; i++) {
+        DWORD key = (DWORD)((p[i].lat + 90000000) / 10000) << 16 | (DWORD)((p[i].lon + 180000000) / 10000);
+        if (!nc || cells[2 * nc - 2] != key) {
+            cells[2 * nc] = key;
+            cells[2 * nc++ + 1] = i;
+        }
+    }
+    DWORD head[4] = { 0x4C4D534F, 1, nc, (DWORD)n };
+    memcpy(buf, head, 16);
+    memcpy(buf + 16 + nc * 8, p, n * sizeof(LayerPoint));
+    PutFile(name, buf, 16 + nc * 8 + n * sizeof(LayerPoint));
+    free(buf);
+}
+
+// The region's danger.lay (the PC loader, openspeedcam.net; the user 2026-11-22) with its layers.lay: tiny's west cell
+// has a light, a bump (53.000, 50.005) and a car park
+static void DangerRegionChecks()
+{
+    static const wchar_t kDanger[] = L"..\\OSMapsData\\tiny\\danger.lay";
+    LayerPoint d[5] = { { 53000000, 50005000, LAY_DANGER, DANGER_BAD_ROAD, 0 },   // (at the bump)
+                        { 53000150, 50005000, LAY_BUMP, 0, 0 },                     // (17 m from it)
+                        { 53000100, 50005000, LAY_DANGER, DANGER_TURN, 0 },
+                        { 53000200, 50005000, LAY_DANGER, DANGER_BAD_ROAD, 0 },     // (22 m from the other)
+                        { 53001500, 50002000, LAY_DANGER, DANGER_CROSSING, 0 } };
+    PutLay(kDanger, d, 5);
+    LayersDrop();
+    int n = 0, west[4] = { 53000000, 50000000, 53002000, 50004000 };
+    const LayerPoint* p = LayersIn(west, &n);
+    Check(n == 6 && KindCount(p, n, LAY_BUMP) == 1 && KindCount(p, n, LAY_DANGER) == 3 && KindCount(p, n, LAY_SIGNAL) == 1 &&
+          KindCount(p, n, LAY_PARKING) == 1, "dangers: with layers.lay's points; the bumps one, the bad roads one, apart from the bump", NULL);
+    wchar_t path[MAX_PATH], kept[MAX_PATH];
+    PathInDir(path, L"..\\OSMapsData\\tiny\\layers.lay");
+    PathInDir(kept, L"..\\OSMapsData\\tiny\\layers.keep");
+    MoveFile(path, kept);
+    LayersDrop();
+    LayersIn(west, &n);
+    Check(n == 4, "dangers: a region without layers.lay - danger.lay's alone", NULL);
+    MoveFile(kept, path);
+    // danger.lay's room its own: its points (car parks here: never merged) cannot push out layers.lay's
+    LayerPoint* many = (LayerPoint*)malloc((LAYERS_MAX_DANGERS + 50) * sizeof(LayerPoint));
+    for (int i = 0; i < LAYERS_MAX_DANGERS + 50; i++) {
+        LayerPoint q = { 53000000, 50001000, LAY_PARKING, 0, 0 };
+        many[i] = q;
+    }
+    PutLay(kDanger, many, LAYERS_MAX_DANGERS + 50);
+    free(many);
+    LayersDrop();
+    p = LayersIn(west, &n);
+    Check(n == 3 + LAYERS_MAX_DANGERS && KindCount(p, n, LAY_SIGNAL) == 1 && KindCount(p, n, LAY_BUMP) == 1,
+          "dangers: danger.lay's points up to its own room, layers.lay's all there", NULL);
+    PathInDir(path, kDanger);
+    DeleteFile(path);
+    LayersDrop();
+    LayersIn(west, &n);
+    Check(n == 3, "dangers: no danger.lay - as before", NULL);
+    LayersDrop();
+}
+
 static void ParkLineChecks()   // Moscow's paid street parking as make_parklines.py writes it (parking.lay)
 {
     wchar_t path[MAX_PATH], kept[MAX_PATH], other[MAX_PATH];
@@ -1159,13 +1230,6 @@ static void ParkPriceChecks()   // Sunday 0: as GetLocalTime tells
     Check(ParkPrice(top, 1, 0) == 2550, "park price: up to the byte's whole", NULL);
 }
 
-static int KindCount(const LayerPoint* p, int n, int kind)
-{
-    int k = 0;
-    for (int i = 0; i < n; i++)
-        k += p[i].kind == kind ? 1 : 0;
-    return k;
-}
 
 // One icon for one thing (the user 2026-11-12): a bump of each direction, the lights of each approach of a crossing.
 // (At 53 degrees: 1 m - 9 units of latitude, 15 of longitude.)
@@ -1219,6 +1283,24 @@ static void LayerMergeChecks()
     LayerPoint half[2] = { { 53000000, 50000000, LAY_BUMP, 0, 0 }, { 53000101, 50000001, LAY_BUMP, 0, 0 } };
     Check(LayersMerge(half, 2) == 1 && half[0].lat == 53000051 && half[0].lon == 50000001,
           "merge: the middle rounded (half up)", NULL);
+    // dangers (the user 2026-11-22): one type within 40 m - one; another type, a bump - each its own
+    LayerPoint turns[2] = { { 53000000, 50000000, LAY_DANGER, DANGER_TURN, 0 }, { 53000300, 50000000, LAY_DANGER, DANGER_TURN, 0 } };
+    Check(LayersMerge(turns, 2) == 1 && turns[0].lat == 53000150 && turns[0].kind == LAY_DANGER && turns[0].fee == DANGER_TURN,
+          "merge: two dangerous turns 33 m apart - one, between them, still a turn", NULL);
+    LayerPoint turns50[2] = { { 53000000, 50000000, LAY_DANGER, DANGER_TURN, 0 }, { 53000450, 50000000, LAY_DANGER, DANGER_TURN, 0 } };
+    Check(LayersMerge(turns50, 2) == 2, "merge: dangers 50 m apart - both", NULL);
+    LayerPoint types[4] = { { 53000000, 50000000, LAY_DANGER, DANGER_TURN, 0 }, { 53000010, 50000000, LAY_DANGER, DANGER_CROSSING, 0 },
+                            { 53000020, 50000000, LAY_DANGER, DANGER_TURN, 0 }, { 53000005, 50000000, LAY_BUMP, 0, 0 } };
+    m = LayersMerge(types, 4);
+    int crossings = 0, dturns = 0;
+    for (int i = 0; i < m; i++) {
+        crossings += types[i].kind == LAY_DANGER && types[i].fee == DANGER_CROSSING;
+        dturns += types[i].kind == LAY_DANGER && types[i].fee == DANGER_TURN;
+    }
+    Check(m == 3 && crossings == 1 && dturns == 1 && KindCount(types, m, LAY_BUMP) == 1,
+          "merge: a crossing between two turns, a bump - the turns one; the crossing, the bump apart", NULL);
+    LayerPoint dark[2] = { { 53000000, 50000000, LAY_DANGER, DANGER_OTHER, 0 }, { 53000000, 50000000, 7, 0, 0 } };
+    Check(LayersMerge(dark, 2) == 2, "merge: a kind not known - never with the dangers (nor aliased to one)", NULL);
 }
 
 // Signs over one another on the screen (the user 2026-11-16): car parks and bumps - one at the middle of the ones around
@@ -1248,27 +1330,80 @@ static void LayerScreenChecks()
                             { 100, 200, LAY_SIGNAL, 0, 0 }, { 100, 200, LAY_SIGNAL, 0, 0 } };
     int m = LayersMergeOnScreen(kinds, 4, 24);
     Check(m == 4, "screen: a bump and a car park at one place - each; lights never merged here", NULL);
+    LayerPoint dangers[4] = { { 100, 200, LAY_DANGER, DANGER_TURN, 0 }, { 100, 220, LAY_DANGER, DANGER_TURN, 0 },
+                              { 100, 210, LAY_DANGER, DANGER_CROSSING, 0 }, { 100, 210, LAY_BUMP, 0, 0 } };
+    m = LayersMergeOnScreen(dangers, 4, 24);
+    Check(m == 3 && KindCount(dangers, m, LAY_DANGER) == 2 && KindCount(dangers, m, LAY_BUMP) == 1,
+          "screen: dangers of one type - one; another type, a bump - each", NULL);
+}
+
+static bool Ahead(const LayerPoint* p, int n, int kind, int lat, int lon, double course, int maxM, int* dist)   // one kind
+{
+    return LayerAhead(p, n, LayersWanted(kind == LAY_SIGNAL, kind == LAY_BUMP, 0), lat, lon, course, maxM, dist) >= 0;
+}
+
+// The dangers (danger.lay; the user 2026-11-22: as the bumps): their setting - off, the main ones, all
+static void DangerWantedChecks()
+{
+    LayerPoint bump = { 0, 0, LAY_BUMP, 0, 0 }, light = { 0, 0, LAY_SIGNAL, 0, 0 }, park = { 0, 0, LAY_PARKING, 0, 0 };
+    LayerPoint d = { 0, 0, LAY_DANGER, DANGER_BAD_ROAD, 0 };
+    Check(LayerWanted(bump, LayersWanted(0, 1, 0)) && !LayerWanted(bump, LayersWanted(1, 0, 2)), "wanted: bumps by their own switch", NULL);
+    Check(LayerWanted(light, LayersWanted(1, 0, 0)) && !LayerWanted(light, LayersWanted(0, 1, 2)), "wanted: lights by theirs", NULL);
+    Check(!LayerWanted(park, LayersWanted(1, 1, 2)), "wanted: car parks not of these switches", NULL);
+    static const int kMain[3] = { DANGER_BAD_ROAD, DANGER_TURN, DANGER_CROSSROADS }, kRest[2] = { DANGER_CROSSING, DANGER_OTHER };
+    bool off = false, main1 = true, all = true, rest1 = false;
+    for (int i = 0; i < 3; i++) {
+        d.fee = (unsigned char)kMain[i];
+        off = off || LayerWanted(d, LayersWanted(1, 1, DANGERS_OFF));
+        main1 = main1 && LayerWanted(d, LayersWanted(0, 0, DANGERS_MAIN));
+        all = all && LayerWanted(d, LayersWanted(0, 0, DANGERS_ALL));
+    }
+    for (int i = 0; i < 2; i++) {
+        d.fee = (unsigned char)kRest[i];
+        off = off || LayerWanted(d, LayersWanted(1, 1, DANGERS_OFF));
+        rest1 = rest1 || LayerWanted(d, LayersWanted(1, 1, DANGERS_MAIN));
+        all = all && LayerWanted(d, LayersWanted(0, 0, DANGERS_ALL));
+    }
+    Check(!off, "wanted: dangers off - none", NULL);
+    Check(main1 && !rest1, "wanted: the main ones - bad road, dangerous turn and crossroads; no crossings, no other", NULL);
+    Check(all, "wanted: all - every type", NULL);
+    Check(!LayerWanted(d, LayersWanted(1, 1, DANGERS_OFF)) && !LayerWanted(bump, LayersWanted(0, 0, DANGERS_ALL)),
+          "wanted: dangers and bumps apart", NULL);
+    LayerPoint odd = { 0, 0, 9, 0, 0 }, oddType = { 0, 0, LAY_DANGER, 200, 0 };
+    Check(!LayerWanted(odd, LayersWanted(1, 1, 2)) && !LayerWanted(oddType, LayersWanted(1, 1, 2)),
+          "wanted: a kind or type not known - none", NULL);
+    // ahead: the nearest of the wanted, bump or danger
+    LayerPoint p[3] = { { 53000000, 50005000, LAY_BUMP, 0, 0 }, { 53000000, 50004000, LAY_DANGER, DANGER_TURN, 0 },
+                        { 53000000, 50004500, LAY_DANGER, DANGER_CROSSING, 0 } };
+    int dist = 0;
+    Check(LayerAhead(p, 3, LayersWanted(0, 1, DANGERS_MAIN), 53000000, 50003000, 90, 200, &dist) == 1 && dist > 60 && dist < 75,
+          "ahead: a danger nearer than the bump - the danger", NULL);
+    Check(LayerAhead(p, 3, LayersWanted(0, 1, DANGERS_ALL), 53000000, 50004200, 90, 200, &dist) == 2,
+          "ahead: all - the crossing, the nearest", NULL);
+    Check(LayerAhead(p, 3, LayersWanted(0, 1, DANGERS_MAIN), 53000000, 50004200, 90, 200, &dist) == 0,
+          "ahead: the main ones - the crossing passed over, the bump", NULL);
+    Check(LayerAhead(p, 3, LayersWanted(0, 0, DANGERS_OFF), 53000000, 50003000, 90, 200, &dist) == -1, "ahead: none wanted - none", NULL);
 }
 
 static void LayerAheadChecks()
 {
     LayerPoint p[3] = { { 53000000, 50005000, LAY_BUMP, 0, 0 }, { 53000000, 50004000, LAY_SIGNAL, 0, 0 }, { 53000000, 50007000, LAY_BUMP, 0, 0 } };
     int d = 0;
-    Check(LayerAhead(p, 3, LAY_BUMP, 53000000, 50003000, 90, 200, &d) && d > 125 && d < 142, "ahead: east, the nearest of its kind", NULL);
-    Check(LayerAhead(p, 3, LAY_SIGNAL, 53000000, 50003000, 90, 200, &d) && d > 60 && d < 75, "ahead: another kind", NULL);
-    Check(!LayerAhead(p, 3, LAY_BUMP, 53000000, 50003000, 90, 100, &d), "ahead: too far yet", NULL);
-    Check(!LayerAhead(p, 3, LAY_BUMP, 53000000, 50003000, 270, 200, &d), "ahead: behind", NULL);
-    Check(!LayerAhead(p, 3, LAY_BUMP, 53000000, 50003000, 0, 200, &d), "ahead: to the side", NULL);
-    Check(!LayerAhead(p, 3, LAY_BUMP, 53000400, 50003000, 90, 200, &d), "ahead: on the next street (44 m off the line)", NULL);
-    Check(LayerAhead(p, 3, LAY_BUMP, 53000100, 50003000, 90, 200, &d), "ahead: a little off the line (GPS)", NULL);
-    Check(LayerAhead(p, 3, LAY_BUMP, 53000000, 50006000, 90, 200, &d) && d > 60 && d < 75, "ahead: the one passed no more", NULL);
-    Check(LayerAhead(p, 3, LAY_BUMP, 53000000, 50006000, 270, 200, &d) && d > 60 && d < 75, "ahead: the other way - the other one", NULL);
-    Check(!LayerAhead(p, 0, LAY_BUMP, 53000000, 50003000, 90, 200, &d), "ahead: no points", NULL);
-    Check(LayerAhead(p, 3, LAY_BUMP, 53000000, 50005000, 90, 200, &d) && d == 0, "ahead: right on it", NULL);
+    Check(Ahead(p, 3, LAY_BUMP, 53000000, 50003000, 90, 200, &d) && d > 125 && d < 142, "ahead: east, the nearest of its kind", NULL);
+    Check(Ahead(p, 3, LAY_SIGNAL, 53000000, 50003000, 90, 200, &d) && d > 60 && d < 75, "ahead: another kind", NULL);
+    Check(!Ahead(p, 3, LAY_BUMP, 53000000, 50003000, 90, 100, &d), "ahead: too far yet", NULL);
+    Check(!Ahead(p, 3, LAY_BUMP, 53000000, 50003000, 270, 200, &d), "ahead: behind", NULL);
+    Check(!Ahead(p, 3, LAY_BUMP, 53000000, 50003000, 0, 200, &d), "ahead: to the side", NULL);
+    Check(!Ahead(p, 3, LAY_BUMP, 53000400, 50003000, 90, 200, &d), "ahead: on the next street (44 m off the line)", NULL);
+    Check(Ahead(p, 3, LAY_BUMP, 53000100, 50003000, 90, 200, &d), "ahead: a little off the line (GPS)", NULL);
+    Check(Ahead(p, 3, LAY_BUMP, 53000000, 50006000, 90, 200, &d) && d > 60 && d < 75, "ahead: the one passed no more", NULL);
+    Check(Ahead(p, 3, LAY_BUMP, 53000000, 50006000, 270, 200, &d) && d > 60 && d < 75, "ahead: the other way - the other one", NULL);
+    Check(!Ahead(p, 0, LAY_BUMP, 53000000, 50003000, 90, 200, &d), "ahead: no points", NULL);
+    Check(Ahead(p, 3, LAY_BUMP, 53000000, 50005000, 90, 200, &d) && d == 0, "ahead: right on it", NULL);
     LayerPoint distant = { 52999784, 50014944, LAY_BUMP, 0, 0 };   // (1000 m east, 24 m south: the degrees' metres at this latitude)
-    Check(LayerAhead(&distant, 1, LAY_BUMP, 53000000, 50000000, 90, 2000, &d) && d >= 999 && d <= 1001, "ahead: far on, the line's edge, the distance exact", NULL);
+    Check(Ahead(&distant, 1, LAY_BUMP, 53000000, 50000000, 90, 2000, &d) && d >= 999 && d <= 1001, "ahead: far on, the line's edge, the distance exact", NULL);
     LayerPoint ne = { 53000636, 50001057, LAY_BUMP, 0, 0 };    // (100 m north-east)
-    Check(LayerAhead(&ne, 1, LAY_BUMP, 53000000, 50000000, 45, 200, &d) && d >= 99 && d <= 101, "ahead: a diagonal course", NULL);
+    Check(Ahead(&ne, 1, LAY_BUMP, 53000000, 50000000, 45, 200, &d) && d >= 99 && d <= 101, "ahead: a diagonal course", NULL);
     int t = 1, c = 0;
     OverlayNext(&t, &c);
     Check(!t && c, "overlay: traffic -> car parks", NULL);
@@ -1423,6 +1558,8 @@ int main()
     TrafficLookChecks();
     LayerFileChecks();
     LayerRegionChecks();
+    DangerRegionChecks();
+    DangerWantedChecks();
     ParkLineChecks();
     ParkPriceChecks();
     LayerAheadChecks();

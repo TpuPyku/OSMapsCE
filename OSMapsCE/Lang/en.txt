@@ -260,6 +260,16 @@ GPS: поиск · %d	GPS: searching · %d
 Неровности	Speed bumps
 значки и предупреждение в пути	signs and a warning on the way
 Неровность · %d м	Speed bump · %d m
+Опасности	Dangers
+значки и предупреждение, openspeedcam.net	signs and a warning, openspeedcam.net
+Основные	Main
+Все	All
+%s · %d м	%s · %d m
+Пешеходный переход	Pedestrian crossing
+Плохая дорога	Bad road
+Опасный поворот	Dangerous turn
+Опасный перекрёсток	Dangerous crossroads
+Опасность	Danger
 Парковки	Car parks
 Парковки · data.mos.ru	Car parks · data.mos.ru
 Парковки · приблизьте карту	Car parks · zoom in

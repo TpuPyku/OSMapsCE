@@ -55,8 +55,7 @@ EN = {
     'на Я.Диске': 'on Yandex Disk',
     'ссылка…': 'link…',
     'На флешку': 'To the drive',
-    'Готово %s: %s. Флешку — в ГУ (папка OSMapsData в корне).':
-        'Done %s: %s. The drive into the head unit (the OSMapsData folder at its root).',
+    'Готово %s: %s': 'Done %s: %s',
     'с сервера': 'from the server',
     'с Я.Диска': 'from Yandex Disk',
     '. Флешку — в ГУ (папка OSMapsData в корне).': '. The drive into the head unit (the OSMapsData folder at its root).',
@@ -68,4 +67,11 @@ EN = {
     ', магистрали записаны': ', the trunk roads written',
     ', магистрали уже свежие': ', the trunk roads up to date already',
     ', магистралей в релизе нет': ', no trunk roads in the release',
+    'Камеры и опасности (openspeedcam.net)': 'Cameras and dangers (openspeedcam.net)',
+    'Обновить камеры': 'Update cameras',
+    'Областей на флешке нет': 'No regions on the drive',
+    'Камеры обновлены': 'Cameras updated',
+    'Камеры': 'Cameras',
+    ', камеры не скачаны (%s)': ', cameras not downloaded (%s)',
+    ', камер и опасностей: %d (данные камер: openspeedcam.net)': ', cameras and dangers: %d (camera data: openspeedcam.net)',
 }
