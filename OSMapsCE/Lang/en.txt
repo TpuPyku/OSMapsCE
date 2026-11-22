@@ -148,8 +148,6 @@ GPS не найден на COM1…COM9	No GPS found on COM1…COM9
 Нет связи с сервером поиска	Cannot reach the search server
 Ничего не найдено	Nothing found
 долгое нажатие на карте → «В избранное»	long press on the map → “Add to favorites”
-Удалить «%s»?	Delete “%s”?
-ещё раз ✕ — удалить	press ✕ again to delete
 Избранного нет: долгое нажатие на карте → В ИЗБРАННОЕ	No favorites: long press on the map → Add to favorites
 ПРОБЕЛ	SPACE
 СТЕРЕТЬ	DELETE

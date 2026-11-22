@@ -295,10 +295,9 @@ the device have nothing, the app asks the Photon server over the internet. In do
 words such as "улица", "ул", "проспект", "шоссе" (street, avenue, highway), and you may write the town before the
 street: "Жигулёвск Ткачёва 71".
 
-**Favorites in the search.** The "ИЗБРАННОЕ" key with an empty field shows your favorite places. A tap on a place lays
-a route. The ✕ button on the right deletes the place: the first tap asks "Удалить «…»?" (Delete "…"?), the second
-deletes it. The search finds your favorite places too: those with the typed text in their name come first, with
-their signs. A list longer than five rows scrolls with a finger up and down, a bar on the right shows where you are.
+**Favorites in the search.** The search finds your favorite places too: those with every typed word in their name
+or address (say, "дом" or the place's street) come first, with their signs. OSMapsCE learns a place's address when
+you save it, for older places by itself, one at a time, when there is internet. A list longer than five rows scrolls with a finger up and down, a bar on the right shows where you are.
 
 ---
 
@@ -307,7 +306,9 @@ their signs. A list longer than five rows scrolls with a finger up and down, a b
 When there is no route, tap the map: the "Куда едем?" card appears above the bottom bar.
 
 - The "Куда едем?" field opens the search.
-- Under it are the first three favorite places with the distance to them. A tap lays a route to the place.
+- Under it the "Избранное" (Favorites) button with the number of places opens the list of all of them. A tap on a
+  place lays a route. Places are deleted and changed only in the place's card (its sign on the map → "Изменить") or in
+  the settings.
 - Below are the last three addresses routed to from the search (`recent.txt` next to the app). A tap lays the route again.
 
 ---
@@ -480,10 +481,10 @@ right:
 
 A tap on the sign or the name opens the "Значок: …" (Sign: …) page to choose a sign.
 
-The order matters. "Куда едем?" shows the first three places, the VestaHome widget the first two.
+The order matters: the "Избранное" list follows it, the VestaHome widget shows the first two.
 
-**Where else.** Favorites are in the search (the "ИЗБРАННОЕ" key with an empty field) and in the route editor
-("Избранное" in a row's choices).
+**Where else.** Favorites are in "Куда едем?" (the "Избранное" button), in the search (by name and address) and in the
+route editor ("Избранное" in a row's choices).
 
 ---
 
