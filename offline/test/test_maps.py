@@ -124,12 +124,18 @@ class Maps(unittest.TestCase):
 
     def test_release_store_key(self):
         """The publish job with the own server: the catalog tells its folder as "files" (the disk's link, old
-        OSMapsCE's, kept from the previous catalog); a catalog made after keeps both."""
+        OSMapsCE's, kept from the previous catalog); a catalog made after keeps both. The catalog itself goes up there too
+        (the user 2026-11-22: GitHub's storage out of reach from the unit by TLS 1.2 - OSMapsCE asks the server first)."""
         os.makedirs(self.dist)
         with open(os.path.join(self.dist, 'catalog.json'), 'w', encoding='utf-8') as f:
             json.dump({'regions': [{'name': 'tiny', 'bbox': [49.9, 52.9, 50.1, 53.1]}],
                        'disk': 'https://disk.example/d/x'}, f)
-        store = type('S', (), {'KEY': 'files', 'upload': lambda self, path, file: None,
+        ups = {}
+
+        def upload(self, path, file):
+            with open(file, encoding='utf-8') if path == 'catalog.json' else open(file, 'rb') as f:
+                ups[path] = json.load(f) if path == 'catalog.json' else None
+        store = type('S', (), {'KEY': 'files', 'upload': upload,
                                'publish': lambda self, path: 'http://203.0.113.5/maps/'})()
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, 'w') as z:
@@ -140,6 +146,7 @@ class Maps(unittest.TestCase):
             got = release_regions.publish_disk(self.dist, store, self.planet(), '20261030')
         self.assertEqual((got['files'], got['disk']), ('http://203.0.113.5/maps/', 'https://disk.example/d/x'))
         self.assertIs(got['overview']['files'], True)
+        self.assertEqual(ups.get('catalog.json'), got)   # (the server's catalog = the release's, written whole)
         os.makedirs(os.path.join(self.tmp, 'd2'))
         again = release_regions.catalog(os.path.join(self.tmp, 'd2'), got, {'tiny'})
         self.assertEqual((again['files'], again['disk']), (got['files'], got['disk']))

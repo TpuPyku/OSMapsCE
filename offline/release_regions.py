@@ -294,6 +294,8 @@ def publish_disk(dist, disk, get_bytes, day, also=None):
             print('disk listing: %s' % e)
     with open(path, 'w', encoding='utf-8') as f:
         json.dump(cat, f, ensure_ascii=False)
+    if disk.KEY == 'files':   # the catalog on the own server too (the user 2026-11-22: GitHub's storage, some of its
+        disk.upload('catalog.json', path)   # addresses, out of reach by TLS 1.2 - OSMapsCE asks the server first)
     return cat
 
 

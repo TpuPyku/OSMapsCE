@@ -168,6 +168,10 @@ static char* s_full;
 static char* s_ov;
 static int   s_fullLen, s_ovLen, s_withDisk, s_apiFail, s_ovAsks, s_catFails;
 static char  s_apiQuery[512];
+// the catalog on the maps' own server first (the user 2026-11-22: GitHub's storage out of reach by TLS 1.2 at some of
+// its addresses): s_srvCat 0 - no answer, 1 - a catalog of three regions, 2 - 404 (not put there yet); s_ghCat - GitHub
+// asked for the catalog
+static int   s_srvCat, s_ghCat;
 static char  s_filesAsked[1024];   // the own server's paths asked (s_withDisk 2: the catalog tells it, 2026-11-09)
 
 static char* FileBytes(const wchar_t* name, int* len)   // a file of obj\test (malloc)
@@ -237,6 +241,15 @@ static int FakeGet(const char* host, bool, const char* path, unsigned char** bod
     s_asked++;
     *body = (unsigned char*)malloc(1);
     *len = 0;
+    if (!strcmp(host, "osmapsce.duckdns.org") && !strcmp(path, "/maps/catalog.json") && s_srvCat) {
+        if (s_srvCat == 2) {
+            *status = 404;
+            return NET_OK;
+        }
+        return Body("{\"regions\":[{\"name\":\"aa\",\"zip\":\"aa.zip\"},{\"name\":\"bb\",\"zip\":\"bb.zip\"},"
+                    "{\"name\":\"cc\",\"zip\":\"cc.zip\"}]}", body, len, status);
+    }
+    s_ghCat += !strcmp(host, "github.com") && strstr(path, "catalog.json") != NULL;
     if (!strcmp(host, "github.com") && strstr(path, "catalog.json") && s_catFails-- > 0) {
         *status = 0;   // (the link lost: GitHub's storage over our TLS, 2026-10-31 - one in five)
         return NET_TIMEOUT;
@@ -570,6 +583,15 @@ static void DownloadChecks()
     Check(MapsList() && WaitMaps() && MapsCount() == 0, "job: the link lost for good - no catalog", NULL);
     s_catFails = 0;
     Check(MapsList() && WaitMaps() && MapsCount() == 2, "job: the catalog again", NULL);
+    s_srvCat = 1;
+    s_ghCat = 0;
+    Check(MapsList() && WaitMaps() && MapsCount() == 3 && !s_ghCat, "job: the catalog from the own server, GitHub not asked",
+          NULL);
+    s_srvCat = 2;
+    s_ghCat = 0;
+    Check(MapsList() && WaitMaps() && MapsCount() == 2 && s_ghCat == 1, "job: not on the server (404) - GitHub's", NULL);
+    s_srvCat = 0;
+    Check(MapsList() && WaitMaps() && MapsCount() == 2, "job: the server out of reach - GitHub's", NULL);
     MapRegion m;
     Check(MapsAt(0, &m) && !strcmp(m.name, "tiny") && MapState(m) == MAP_OK && MapsAt(1, &m) && MapState(m) == MAP_NEW
           && !MapsAt(2, &m), "job: the card's states", NULL);
