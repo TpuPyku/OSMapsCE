@@ -23,6 +23,8 @@ void Log(const char*, ...)
 
 bool ReadWholeFile(const wchar_t*, unsigned char**, int*) { return false; }   // (image.cpp's: its zlib is used here)
 
+int LaneValid(const WORD* lanes, int n, const char* mod);   // offline.cpp's (the lanes' JSON only uses it)
+
 int HttpGet(const char*, bool, const char*, unsigned char**, int*, int* status, const char*, char*, int,
             const HttpExtra*)   // (no network here: the downloads are asked of FakeGet)
 {
@@ -695,6 +697,37 @@ static void LevelChecks()
           "turn cost by bearings: 121-150 - 6.5 s", NULL);
     Check(TurnCostB(0, 107) == 200 && TurnCostB(0, 128) == 200 && TurnCostB(200, 72) == 200,
           "turn cost by bearings: back the way - 20 s", NULL);
+}
+
+// The lanes one may take for a maneuver (the user 2026-11-22: the lanes as OSRM shows them): each lane's indications'
+// bits in OSRM's order (none 1, uturn 2, sharp right 4, right 8, slight right 16, straight 32, slight left 64, left 128,
+// sharp left 256), left to right -> the lanes' mask (lane 0 = bit 0); 0 = no lane fits (none shown)
+static void LaneChecks()
+{
+    const WORD cross[] = { 128, 32, 32 | 8 };   // left | through | through;right
+    Check(LaneValid(cross, 3, "right") == 4 && LaneValid(cross, 3, "left") == 1 && LaneValid(cross, 3, "straight") == 6,
+          "lanes: a crossing - the lanes of the turn's arrow", NULL);
+    const WORD exit[] = { 32, 32, 32 | 16 };    // through | through | through;slight_right
+    Check(LaneValid(exit, 3, "slight right") == 4 && LaneValid(exit, 3, "right") == 4 &&
+          LaneValid(exit, 3, "sharp right") == 4, "lanes: no arrow of the turn's own - its side's", NULL);
+    Check(LaneValid(exit, 3, "slight left") == 1 && LaneValid(exit, 3, "left") == 0,
+          "lanes: none to that side - a fork keeps to the outer straight lane, a turn none", NULL);
+    const WORD blank[] = { 128, 1, 1 };         // left | none | none
+    Check(LaneValid(blank, 3, "straight") == 6 && LaneValid(blank, 3, "right") == 4 &&
+          LaneValid(blank, 3, "slight right") == 4, "lanes: an unmarked lane - straight, the outer one also the turn", NULL);
+    const WORD back[] = { 2 | 128, 32 }, left[] = { 128, 32 }, right[] = { 32, 8 };
+    Check(LaneValid(back, 2, "uturn") == 1 && LaneValid(left, 2, "uturn") == 1 && LaneValid(right, 2, "uturn") == 0,
+          "lanes: a U-turn - its arrow, else the left lanes", NULL);
+    Check(LaneValid(right, 2, "sharp left") == 0 && LaneValid(right, 2, "slight left") == 1,
+          "lanes: left of straight lanes only - a fork the leftmost, a turn none", NULL);
+    const WORD bend[] = { 64, 16 };
+    Check(LaneValid(bend, 2, "straight") == 0 && LaneValid(bend, 2, "none") == 0 && LaneValid(bend, 2, "x") == 0,
+          "lanes: straight with no straight lane, an unknown modifier - none", NULL);
+    WORD many[17];
+    for (int i = 0; i < 17; i++)
+        many[i] = 32;
+    Check(LaneValid(many, 16, "straight") == 0xFFFF && LaneValid(many, 17, "straight") == 0,
+          "lanes: up to 16 (the mask)", NULL);
 }
 
 static void JsonChecks()
@@ -1552,6 +1585,7 @@ int main()
     OffVolumes(false);   // (this PC's own disks' maps - a card in its reader - left out)
     OffFileChecks();
     LevelChecks();
+    LaneChecks();
     JsonChecks();
     MapsChecks();
     DownloadChecks();
@@ -1636,6 +1670,15 @@ int main()
     Check(b && Has(b, L"\"name\":\"Шоссе Восток\",\"ref\":\"\",\"maneuver\":{\"type\":\"turn\""),
           "an unnamed exit: named after the road it leads onto", b);
     Check(b && !Has(b, L"\"exit\""), "a ramp's steps: no roundabout exit number", b);
+    // the lanes (the user 2026-11-22, as OSRM's): the ring's way to the exit through|through|through;slight_right
+    Check(b && Has(b, L"\"location\":[50.000000,68.001799]},\"intersections\":[{\"location\":[50.000000,68.001799],"
+                      L"\"lanes\":[{\"valid\":false,\"indications\":[\"straight\"]},{\"valid\":false,\"indications\":"
+                      L"[\"straight\"]},{\"valid\":true,\"indications\":[\"slight right\",\"straight\"]}]}]}") &&
+          Count(b, "\"lanes\"") == 1, "lanes: the exit's step, its lane valid (the other steps' roads have none)", b);
+    free(b);
+    b = Route("50.000000,69.997000;50.008000,70.003058");   // rampold: the same, 70 N, its 'OSML' renamed (a part unknown)
+    Check(b && Has(b, L"\"type\":\"turn\",\"modifier\":\"right\"") && Has(b, L"\"location\":[50.000000,70.001799]") &&
+          !Has(b, L"\"intersections\""), "lanes: a part after the limits not theirs - the steps as before, no lanes", b);
     free(b);
     b = Route("50.000000,67.997000;50.000840,68.002518");   // the way ends on the exit: its heading changes little
     Check(b && Has(b, L"\"type\":\"fork\",\"modifier\":\"slight right\"") &&
@@ -1645,9 +1688,13 @@ int main()
     b = Route("50.006800,67.998201;50.000000,68.005000");
     Check(b && Has(b, L"\"type\":\"merge\",\"modifier\":\"slight left\"") &&
           Has(b, L"\"location\":[50.000000,68.000000]"), "an entry from the right onto the ring: merge, slight left", b);
+    Check(b && !Has(b, L"\"lanes\""), "lanes: a two-way street's turn:lanes (no direction) - none", b);
+    free(b);
     b = Route("49.995199,67.998201;49.987996,68.001259");
     Check(b && Has(b, L"\"type\":\"turn\",\"modifier\":\"left\"") &&
           Has(b, L"\"location\":[49.995199,68.000000]"), "a link off a service road, west 250 m on: turn left", b);
+    Check(b && Has(b, L"\"lanes\":[{\"valid\":true,\"indications\":[\"left\"]},{\"valid\":false,\"indications\":"
+                      L"[\"none\"]}]"), "lanes: a one-way's turn:lanes (left|), the left one valid", b);
     free(b);
 
     // from the east end to the upper corner: right onto the one-way street (east -> west, then north)

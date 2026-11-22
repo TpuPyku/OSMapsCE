@@ -25,6 +25,12 @@ copy of its via node with only the turns allowed (turn_rules) - the file and the
     limits   0-2 zero bytes to a multiple of 4 (the bearings' 2 an edge), 'OSMS', then u8 for each edge: its posted
              speed limit, km/h (limit_of; 0 = not known) - the speed limit sign (design v3, 2026-11-11); after the
              bearings, for the same reason
+    lanes    0-3 zero bytes to a multiple of 4, 'OSML', u32 count, u32 words, then count x (u32 edge, u32 at) by edge,
+             then words x u16 (0-1 more to a multiple of 4): at = the edge's lanes in that table - u16 n, then each
+             lane's indications left to right (bits in OSRM's order: kLaneBit) - turn:lanes (the user 2026-11-22: the
+             lanes as OSRM shows them; lanes_of): a way's forward lanes on the edge into its last node, its backward
+             ones on the edge into its first; only the edges with lanes; none in the region - no part (the file as
+             before)
 """
 import math
 import struct
@@ -61,10 +67,12 @@ VERSION = 1
 HEADER = '<4s5I4i2IiI6I'
 
 # a car road as read: its node ids, class, one-way (1 forward, -1 backward, 0 both), roundabout, km/h, name, ref
-Way = namedtuple('Way', 'ids cls oneway rb speed name ref toll wid limit', defaults=(0, 0))   # wid: its OSM id; limit: km/h
+Way = namedtuple('Way', 'ids cls oneway rb speed name ref toll wid limit lanes',
+                 defaults=(0, 0, ('', '')))   # wid: its OSM id; limit: km/h; lanes: turn:lanes (lanes_of)
 # a junction-to-junction part of a way: node indices a -> b, inner points, metres, its way's data, lights on it
-Piece = namedtuple('Piece', 'a b inner length cls oneway rb speed name signals gates toll wid limit wid2',
-                   defaults=(0, 0, 0))   # wid2: the way's id at the end b when not wid's (a joined piece - contract)
+Piece = namedtuple('Piece', 'a b inner length cls oneway rb speed name signals gates toll wid limit wid2 lanes',
+                   defaults=(0, 0, 0, ('', '')))   # wid2: the way's id at the end b when not wid's (a joined piece -
+#                                                    contract); lanes: turn:lanes into b, into a (the way's ends only)
 # the countries' limits by the kind of road (maxspeed's "RU:urban" and the like): Russia's and its neighbours' rules
 kKindLimits = {'urban': 60, 'rural': 90, 'motorway': 110, 'living_street': 20, 'trunk': 90}
 
@@ -136,6 +144,29 @@ def barrier_of(tags):
     return 'gate' if b in kGates else 'block'
 
 
+# turn:lanes' values -> the indications' bits (OSRM's order: none, uturn, sharp right, right, slight right, straight,
+# slight left, left, sharp left); a merging lane goes on (straight), anything else - none
+kLaneBit = {'none': 1, 'reverse': 2, 'sharp_right': 4, 'right': 8, 'slight_right': 16, 'through': 32,
+            'merge_to_left': 32, 'merge_to_right': 32, 'slight_left': 64, 'left': 128, 'sharp_left': 256}
+kMaxLanes = 16   # the router's lane mask
+
+
+def lane_masks(text):
+    """turn:lanes ("left|through;right|") -> each lane's bits, left to right; None when no lane tells anything."""
+    masks = [sum({kLaneBit.get(v.strip(), 1) for v in lane.split(';')}) for lane in text.split('|')][:kMaxLanes]
+    return masks if any(m != 1 for m in masks) else None
+
+
+def lanes_of(tags, oneway):
+    """The way's turn:lanes (along it, against it): a one-way's plain turn:lanes its flow's; a two-way road's plain
+    one tells no direction - none."""
+    plain = tags.get('turn:lanes', '')
+    fwd, bwd = tags.get('turn:lanes:forward', ''), tags.get('turn:lanes:backward', '')
+    if oneway:
+        return (fwd or plain, '') if oneway > 0 else ('', bwd or plain)
+    return fwd, bwd
+
+
 def toll_of(tags):   # a toll road (the user 2026-10-29: an option to keep off them; the edges' flag 8)
     return tags.get('toll') == 'yes' or tags.get('toll:motorcar') == 'yes'
 
@@ -146,9 +177,9 @@ def car_way(tags, ids, wid=0):
     if hw not in kCls or not allowed(tags) or len(ids) < 2:
         return None
     rb = tags.get('junction') in ('roundabout', 'circular')
-    cls = kCls[hw]
-    return Way(ids, cls, oneway_of(tags, rb), rb, speed_of(tags, cls), tags.get('name', ''), tags.get('ref', ''),
-               toll_of(tags), wid, limit_of(tags))
+    cls, oneway = kCls[hw], oneway_of(tags, rb)
+    return Way(ids, cls, oneway, rb, speed_of(tags, cls), tags.get('name', ''), tags.get('ref', ''),
+               toll_of(tags), wid, limit_of(tags), lanes_of(tags, oneway))
 
 
 kTurnKinds = {'no_left_turn', 'no_right_turn', 'no_straight_on', 'no_u_turn', 'only_left_turn', 'only_right_turn',
@@ -326,7 +357,10 @@ def make_pieces(ways, loc, signals, junction, tol_m=0, bars=NONE):
             continue
         nm = names.add(w.name, w.ref)
         lone = lone_signals(ids, loc, signals)
-        pieces += [make_piece(w, seg, nm, loc, lone, nodes, tol_m, bars) for seg in segments(ids, junction)]
+        segs = list(segments(ids, junction))
+        pieces += [make_piece(w, seg, nm, loc, lone, nodes, tol_m, bars)._replace(
+            lanes=(w.lanes[0] if k == len(segs) - 1 else '', w.lanes[1] if k == 0 else ''))   # (the way's ends')
+            for k, seg in enumerate(segs)]
     return nodes.pts, names.data, pieces
 
 
@@ -351,7 +385,8 @@ def ending_at(p, v):
     """The piece drawn so that it ends at v (the other way round: its ends, shape, direction and ways' ids swapped)."""
     if p.b == v:
         return p
-    return p._replace(a=p.b, b=p.a, inner=p.inner[::-1], oneway=-p.oneway, wid=end_wid(p, p.b), wid2=p.wid)
+    return p._replace(a=p.b, b=p.a, inner=p.inner[::-1], oneway=-p.oneway, wid=end_wid(p, p.b), wid2=p.wid,
+                      lanes=p.lanes[::-1])
 
 
 def contract(nodes, pieces, tol_m=0):
@@ -395,7 +430,8 @@ def walk(cur, at, pieces, used, goes_on, nodes):
         used[rest[0]] = True
         nxt = ending_at(pieces[rest[0]], v)   # (drawn to v: taken from v the other way round)
         cur = cur._replace(b=nxt.a, inner=cur.inner + [nodes[v]] + nxt.inner[::-1], length=cur.length + nxt.length,
-                           signals=cur.signals + nxt.signals, gates=cur.gates + nxt.gates, wid2=nxt.wid)
+                           signals=cur.signals + nxt.signals, gates=cur.gates + nxt.gates, wid2=nxt.wid,
+                           lanes=(nxt.lanes[1], cur.lanes[1]))   # (nxt drawn to v: away from v - its backward)
         v = cur.b
     return cur
 
@@ -621,7 +657,26 @@ def bearings(nodes, first, flat, geom):
     return bytes(out)
 
 
-def write(out, nodes, first, flat, geom, names, bbox, grid, cell=kCell, limits=b''):
+def lane_part(flat, pieces):
+    """The 'OSML' part after its tag: the edges' lanes (an edge read backwards: its piece's backward ones), each
+    distinct set once in the table; b'' when no edge has any."""
+    at, words, recs = {}, [], []
+    for i, e in enumerate(flat):
+        masks = lane_masks(pieces[e[8]].lanes[e[6] & 1])
+        if masks:
+            key = tuple(masks)
+            if key not in at:
+                at[key] = len(words)
+                words += [len(masks)] + masks
+            recs.append((i, at[key]))
+    if not recs:
+        return b''
+    body = struct.pack('<II', len(recs), len(words)) + b''.join(struct.pack('<II', *r) for r in recs)
+    body += struct.pack('<%dH' % len(words), *words)
+    return body + b'\0' * (-len(body) % 4)
+
+
+def write(out, nodes, first, flat, geom, names, bbox, grid, cell=kCell, limits=b'', lanes=b''):
     (min_lat, min_lon, max_lat, max_lon), (gw, gh, cstart, items) = bbox, grid
     off = [struct.calcsize(HEADER)]
     for size in (len(nodes) * 8, (len(nodes) + 1) * 4, len(flat) * 24, len(geom) * 8, (len(names) + 3) & ~3):
@@ -640,7 +695,9 @@ def write(out, nodes, first, flat, geom, names, bbox, grid, cell=kCell, limits=b
         pad = (len(flat) * 2) % 4
         if limits:
             f.write(b'\0' * pad + b'OSMS' + limits)
-    return off[-1] + (len(cstart) + len(items)) * 4 + 4 + len(flat) * 2 + (pad + 4 + len(limits) if limits else 0)
+        if lanes:
+            f.write(b'\0' * (-f.tell() % 4) + b'OSML' + lanes)
+        return f.tell()
 
 
 def build(src, out, classes=None, simplify_m=0, cell=kCell, west=None, max_cells=kMaxCells, chains=False):
@@ -665,9 +722,10 @@ def build(src, out, classes=None, simplify_m=0, cell=kCell, west=None, max_cells
         gw, gh = (bbox[3] - bbox[1]) // cell + 1, (bbox[2] - bbox[0]) // cell + 1
     cstart, items = make_grid(pieces, nodes, piece_edge, (bbox[0], bbox[1], gw, cell), gw * gh)
     limits = bytes(pieces[e[8]].limit for e in flat)
-    size = write(out, nodes, first, flat, geom, names, bbox, (gw, gh, cstart, items), cell, limits)
-    print('nodes %d, edges %d, geom %d, names %d B, grid %dx%d (%d items); file %.1f MB' % (
-        len(nodes), len(flat), len(geom), len(names), gw, gh, len(items), size / 1e6))
+    lanes = lane_part(flat, pieces)
+    size = write(out, nodes, first, flat, geom, names, bbox, (gw, gh, cstart, items), cell, limits, lanes)
+    print('nodes %d, edges %d, geom %d, names %d B, grid %dx%d (%d items), lanes %d B; file %.1f MB' % (
+        len(nodes), len(flat), len(geom), len(names), gw, gh, len(items), len(lanes), size / 1e6))
 
 
 if __name__ == '__main__':

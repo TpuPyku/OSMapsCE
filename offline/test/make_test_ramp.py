@@ -2,7 +2,9 @@
 шоссе: the exit 105A leaves the ring 15 degrees off it - told "straight"; a ramp joining the ring from the right just
 before it - told "keep right", the driver moves left). 68 degrees north, apart from the others; metres east / north:
 
-    The ring (trunk, both ways): S0 (0, -400) - J (0, 0) - K (0, 200) - S1 (0, 600), north.
+    The ring (trunk, both ways): S0 (0, -400) - J (0, 0) - K (0, 200) - S1 (0, 600), north; its way to K has lanes
+      (the user 2026-11-22, the lanes as OSRM shows them): north through|through|through;slight_right, south
+      left|through.
     The exit at K (trunk_link, one way): K - R1 (10, 40 past K) - R2 (60, 120 past K) - R3 (150, 140 past K): 14
       degrees off the ring at K, to the right; then the road P (primary): R3 - P1 (400, 340).
     The entry at J (trunk_link, one way): Q0 (100, -200) - Q1 (8, -40) - J: from the right, 11 degrees left of north,
@@ -11,10 +13,12 @@ before it - told "keep right", the driver moves left). 68 degrees north, apart f
     The service road (the user 2026-11-22, Шоссе Энтузиастов's: a link back to the big road off it, the service road
       going on a class lower): D0 (-200, -400) - D1 (-200, 0) (primary, one way north) - D2 (-200, 400) - S1
       (secondary); the
-      link at D1 (primary_link, one way): D1 - L1 (-209, 40) - L2 (-260, 120) - L3 (-350, 140): 13 degrees left of
+      link at D1 (primary_link, one way; the service road's lanes before it left|(none)): D1 - L1 (-209, 40) -
+      L2 (-260, 120) - L3 (-350, 140): 13 degrees left of
       the service road; then the road W (primary): L3 - W1 (-600, 140) - W0 (-600, -400) - D0, W0 - S0.
 
-    python make_test_ramp.py <out.osm>        python make_test_ramp.py point <place>  ("lon,lat")
+    python make_test_ramp.py <out.osm> [lat]  python make_test_ramp.py point <place>  ("lon,lat")
+    (lat: the region's latitude instead of 68 - the copy made as a graph before the lanes)
 """
 import math
 import sys
@@ -27,28 +31,31 @@ PLACES = {'S0': (0, -400), 'J': (0, 0), 'K': (0, 200), 'S1': (0, 600), 'R1': (10
           'L3': (-350, 140), 'W1': (-600, 140), 'W0': (-600, -400)}
 IDS = {k: i for i, k in enumerate(PLACES, 1)}
 LINK = {'highway': 'trunk_link', 'oneway': 'yes'}
-WAYS = [(['S0', 'J', 'K', 'S1'], 'МКАД', {'highway': 'trunk'}),
+WAYS = [(['S0', 'J', 'K'], 'МКАД', {'highway': 'trunk',
+                                    'turn:lanes:forward': 'through|through|through;slight_right',
+                                    'turn:lanes:backward': 'left|through'}),
+        (['K', 'S1'], 'МКАД', {'highway': 'trunk'}),
         (['K', 'R1', 'R2', 'R3'], '', LINK),
         (['R3', 'P1'], 'Шоссе Восток', {'highway': 'primary'}),
-        (['Q00', 'Q0'], 'Улица Въезд', {'highway': 'primary'}),
+        (['Q00', 'Q0'], 'Улица Въезд', {'highway': 'primary', 'turn:lanes': 'left|right'}),   # (two-way: none)
         (['Q0', 'Q1', 'J'], '', LINK),
         (['Q00', 'P0', 'P1'], 'Улица Обход', {'highway': 'primary'}),
-        (['D0', 'D1'], 'Дублёр', {'highway': 'primary', 'oneway': 'yes'}),
+        (['D0', 'D1'], 'Дублёр', {'highway': 'primary', 'oneway': 'yes', 'turn:lanes': 'left|'}),
         (['D1', 'D2', 'S1'], 'Дублёр', {'highway': 'secondary', 'oneway': 'yes'}),
         (['D1', 'L1', 'L2', 'L3'], '', {'highway': 'primary_link', 'oneway': 'yes'}),
         (['L3', 'W1', 'W0', 'D0'], 'Шоссе Запад', {'highway': 'primary'}),
         (['W0', 'S0'], 'Улица Запад', {'highway': 'primary'})]
 
 
-def lat_lon(name):
+def lat_lon(name, lat=LAT):
     e, n = PLACES[name]
-    return LAT + n / M_LAT, LON + e / (M_LAT * math.cos(math.radians(LAT)))
+    return lat + n / M_LAT, LON + e / (M_LAT * math.cos(math.radians(lat)))
 
 
-def osm():
+def osm(lat=LAT):
     out = ['<?xml version="1.0" encoding="UTF-8"?>', '<osm version="0.6">']
     for name, i in IDS.items():
-        la, lo = lat_lon(name)
+        la, lo = lat_lon(name, lat)
         out.append('  <node id="%d" lat="%.7f" lon="%.7f" version="1"/>' % (i, la, lo))
     for k, (names, street, tags) in enumerate(WAYS, 1):
         tags = dict(tags, name=street) if street else tags
@@ -65,4 +72,4 @@ if __name__ == '__main__':
         print('%.6f,%.6f' % (lo, la))
     else:
         with open(sys.argv[1], 'w', encoding='utf-8', newline='\n') as f:
-            f.write(osm())
+            f.write(osm(float(sys.argv[2]) if len(sys.argv) > 2 else LAT))
