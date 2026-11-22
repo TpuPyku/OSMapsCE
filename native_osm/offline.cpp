@@ -1,4 +1,4 @@
-#include "yamaps.h"
+﻿#include "yamaps.h"
 
 // Offline routing (2026-10-27, the user: a full offline mode; the data on the SD card, regions to choose): a region's
 // road graph (OSMapsData\<region>\route.grf, made by offline/make_graph.py from OSM) and A* over it on the download
@@ -864,6 +864,9 @@ struct Turn {            // a node between two of the way's edges
     double rivalMin;     // the straightest rival's turn (its size)
     double rivalTurn;
     DWORD  rivalName;    // the straightest rival's name
+    int    stays;        // the other ways out at most a class below the edge before (the road we leave, going on)
+    double stayMin;      // the straightest of them: its turn's size, its turn
+    double stayTurn;
 };
 
 // The other ways out of the node (from, the way going on by e) and the rivals among them.
@@ -872,14 +875,24 @@ static void Rivals(DWORD from, DWORD e, const Prev& prev, Turn* t)
     t->alts = t->rivals = 0;
     t->rivalMin = 1e9;
     t->rivalTurn = 0;
+    t->stays = 0;
+    t->stayMin = 1e9;
+    t->stayTurn = 0;
     for (DWORD k = s_g.first[from]; k < s_g.first[from + 1]; k++) {
         const GEdge& o = s_g.edges[k];
         if (k == e || BackWay(o, prev))
             continue;
         t->alts++;
+        double ot = TurnOf(prev.after, FirstBearing(from, k));
+        if (Level(o.cls) <= Level(t->p->cls) + 1) {
+            t->stays++;
+            if (fabs(ot) < t->stayMin) {
+                t->stayMin = fabs(ot);
+                t->stayTurn = ot;
+            }
+        }
         if (Level(o.cls) > Level(t->g->cls))
             continue;
-        double ot = TurnOf(prev.after, FirstBearing(from, k));
         t->rivals++;
         if (fabs(ot) < t->rivalMin) {
             t->rivalMin = fabs(ot);
@@ -922,14 +935,15 @@ static int RoundaboutExit(const Way& w, int i, int cnt, DWORD* name)
 }
 
 // Onto a link: off a big road, else onto one. Nearly straight off it (the user 2026-11-22, MKAD's exit 105A: 14 degrees,
-// told "straight") - the side of the road going on beside it.
+// told "straight") - the side of the road we leave, going on beside it, maybe a class lower (Шоссе Энтузиастов's
+// service road: primary, a link back to the big road off it, then secondary - not a rival, told "straight").
 static const char* RampKind(const Turn& t, const char** mod)
 {
     if (!(t.g->flags & 4) || (t.p->flags & 4))
         return NULL;
     *mod = Modifier(t.turn);
-    if (!strcmp(*mod, "straight") && t.rivals)
-        *mod = t.turn >= t.rivalTurn ? "slight right" : "slight left";
+    if (!strcmp(*mod, "straight") && t.stays)
+        *mod = t.turn >= t.stayTurn ? "slight right" : "slight left";
     return t.p->cls <= C_TRUNK ? "off ramp" : "on ramp";
 }
 

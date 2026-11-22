@@ -8,6 +8,11 @@ before it - told "keep right", the driver moves left). 68 degrees north, apart f
     The entry at J (trunk_link, one way): Q0 (100, -200) - Q1 (8, -40) - J: from the right, 11 degrees left of north,
       onto the ring going north (it turns 11 degrees right to join it); from the street Q (primary): Q00 (300, -200) -
       Q0, and back to P: Q00 - P0 (400, -200) - P1 (the graph keeps the part every node of it reaches).
+    The service road (the user 2026-11-22, Шоссе Энтузиастов's: a link back to the big road off it, the service road
+      going on a class lower): D0 (-200, -400) - D1 (-200, 0) (primary, one way north) - D2 (-200, 400) - S1
+      (secondary); the
+      link at D1 (primary_link, one way): D1 - L1 (-209, 40) - L2 (-260, 120) - L3 (-350, 140): 13 degrees left of
+      the service road; then the road W (primary): L3 - W1 (-600, 140) - W0 (-600, -400) - D0, W0 - S0.
 
     python make_test_ramp.py <out.osm>        python make_test_ramp.py point <place>  ("lon,lat")
 """
@@ -17,7 +22,9 @@ import sys
 LAT, LON = 68.0, 50.0
 M_LAT = 111195.0
 PLACES = {'S0': (0, -400), 'J': (0, 0), 'K': (0, 200), 'S1': (0, 600), 'R1': (10, 240), 'R2': (60, 320),
-          'R3': (150, 340), 'P1': (400, 340), 'Q0': (100, -200), 'Q1': (8, -40), 'Q00': (300, -200), 'P0': (400, -200)}
+          'R3': (150, 340), 'P1': (400, 340), 'Q0': (100, -200), 'Q1': (8, -40), 'Q00': (300, -200), 'P0': (400, -200),
+          'D0': (-200, -400), 'D1': (-200, 0), 'D2': (-200, 400), 'L1': (-209, 40), 'L2': (-260, 120),
+          'L3': (-350, 140), 'W1': (-600, 140), 'W0': (-600, -400)}
 IDS = {k: i for i, k in enumerate(PLACES, 1)}
 LINK = {'highway': 'trunk_link', 'oneway': 'yes'}
 WAYS = [(['S0', 'J', 'K', 'S1'], 'МКАД', {'highway': 'trunk'}),
@@ -25,7 +32,12 @@ WAYS = [(['S0', 'J', 'K', 'S1'], 'МКАД', {'highway': 'trunk'}),
         (['R3', 'P1'], 'Шоссе Восток', {'highway': 'primary'}),
         (['Q00', 'Q0'], 'Улица Въезд', {'highway': 'primary'}),
         (['Q0', 'Q1', 'J'], '', LINK),
-        (['Q00', 'P0', 'P1'], 'Улица Обход', {'highway': 'primary'})]
+        (['Q00', 'P0', 'P1'], 'Улица Обход', {'highway': 'primary'}),
+        (['D0', 'D1'], 'Дублёр', {'highway': 'primary', 'oneway': 'yes'}),
+        (['D1', 'D2', 'S1'], 'Дублёр', {'highway': 'secondary', 'oneway': 'yes'}),
+        (['D1', 'L1', 'L2', 'L3'], '', {'highway': 'primary_link', 'oneway': 'yes'}),
+        (['L3', 'W1', 'W0', 'D0'], 'Шоссе Запад', {'highway': 'primary'}),
+        (['W0', 'S0'], 'Улица Запад', {'highway': 'primary'})]
 
 
 def lat_lon(name):

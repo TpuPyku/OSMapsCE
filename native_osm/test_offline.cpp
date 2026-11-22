@@ -1497,6 +1497,9 @@ int main()
     b = Route("50.006800,67.998201;50.000000,68.005000");
     Check(b && Has(b, L"\"type\":\"merge\",\"modifier\":\"slight left\"") &&
           Has(b, L"\"location\":[50.000000,68.000000]"), "an entry from the right onto the ring: merge, slight left", b);
+    b = Route("49.995199,67.998201;49.987996,68.001259");
+    Check(b && Has(b, L"\"type\":\"on ramp\",\"modifier\":\"slight left\"") &&
+          Has(b, L"\"location\":[49.995199,68.000000]"), "a link off a service road of a lower class: slight left", b);
     free(b);
 
     // from the east end to the upper corner: right onto the one-way street (east -> west, then north)
