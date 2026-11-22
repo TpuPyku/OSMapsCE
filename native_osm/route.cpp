@@ -137,6 +137,7 @@ struct Maneuver {
     int     shape;          // its point on the line
     int     turn;           // RouteInfo::turn
     bool    complex;        // a fork, a ramp, a roundabout, a merge (JunctionComplex: the junction card)
+    LaneSet lanes;          // the lanes before it (lanes.h)
     int     act;            // what to say (VA_*)
     wchar_t text[112];
 };
@@ -594,7 +595,7 @@ static void OnRoute(const char* body, int k)
         nlegs++;
     for (const char* lg = JFirst(legs); lg; lg = JNext(lg), leg++) {
         bool stop = leg < nlegs - 1;
-        for (const char* st = JFirst(JKey(lg, "steps")); st && s_nm < nm; st = JNext(st)) {
+        for (const char *st = JFirst(JKey(lg, "steps")), *prev = NULL; st && s_nm < nm; prev = st, st = JNext(st)) {
             const char* m = JKey(st, "maneuver");
             char type[24], mod[24];
             JStr(JKey(m, "type"), type, sizeof(type));
@@ -618,6 +619,7 @@ static void OnRoute(const char* body, int k)
             d.shape = at;
             d.turn = Turn(m, type, mod, stop);
             d.complex = JunctionComplex(type);
+            LanesOfStep(st, prev, &d.lanes);
             d.act = VoiceAct(type, mod, (int)JNum(JKey(m, "exit"), 0), stop);
             Instruction(st, m, type, mod, stop, d.text, 112);
             if (stop && !strcmp(type, "arrive") && s_nViaShape < kMaxVia)
@@ -819,6 +821,7 @@ void RouteGet(RouteInfo* o)
             o->text = s_man[i].text;
             o->turn = s_man[i].turn;
             o->complex = s_man[i].complex;
+            o->lanes = s_man[i].lanes;
             o->shape = s_man[i].shape;
             o->nextM = (int)(s_cum[s_man[i].shape] - s_along);
             if (o->nextM < 0)

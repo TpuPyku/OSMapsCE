@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <math.h>
+#include "lanes.h"
 
 #define APP_NAME   L"OSMapsCE"
 #define APP_CLASS  L"OSMapsCE_Wnd"
@@ -292,6 +293,7 @@ struct RouteInfo {
     int            act;         // what it asks (VA_*)
     int            serial;      // the route's number: a new one for each answer of the router
     int            vias;        // the stops left on the way
+    LaneSet        lanes;       // the lanes before the next maneuver (n 0: none known)
 };
 void SearchStart(const wchar_t* q, double lon, double lat);
 int  SearchState();

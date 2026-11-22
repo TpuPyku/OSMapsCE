@@ -47,7 +47,7 @@ With the English interface ([section 11](#11-languages)) the screen shows the En
 - **Traffic** from Yandex or 2GIS: on the map or only on the route line. Travel time with traffic.
 - **Routes:** your own starting point, up to three stops, several alternatives to choose from, avoiding toll roads.
   → [section 7](#7-routes)
-- **Guidance:** a maneuver card, a diagram of complex junctions, the arrival time, rerouting when you leave the route.
+- **Guidance:** a maneuver card with the lanes, a diagram of complex junctions, the arrival time, rerouting when you leave the route.
   In a tunnel without GPS the marker moves on along the route. After a restart the app offers to continue the route.
   → [section 8](#8-guidance-on-the-way)
 - **Voice prompts** in Russian or English, without internet access. On the Lada Vesta they play over the radio.
@@ -418,6 +418,11 @@ The next maneuver is shown in the top left.
 - Closer than 300 m (at speed, 20 seconds of driving before it): a big card with the sign, the distance, what to do
   ("Поверните направо" (Turn right), "Держитесь левее" (Keep left), "На кольце 2-й съезд" (At the roundabout, exit
   2)…), the road's name. Below it the line "затем — …" (then: …) with the maneuver after it.
+
+**Lanes.** When the lanes before the maneuver are known, a strip appears beside the big card: an arrow for each lane,
+left to right, as on a sign over the road. The lanes the route takes are in the accent color, the others gray. The
+lanes come from the router's answer (OpenStreetMap data), so not every junction has them. For now they are shown on
+online routes; on offline routes, after the regions' maps are rebuilt with lanes.
 
 **Junction diagram.** When it is on ("Настройки → Маршрут", Settings → Route), before a fork, an exit, an entry, a
 roundabout or a merge a piece of the map around the maneuver appears under the big card. The map is turned so that the

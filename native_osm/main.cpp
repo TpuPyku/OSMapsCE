@@ -4452,6 +4452,31 @@ static void DrawGuideCard(HDC dc, int dx, int dy, const RouteInfo& ri)
     }
 }
 
+// The lanes before the maneuver (the user 2026-11-22), a strip beside the big card (under it: no room for the junction
+// card above the speed): a sign per lane left to right, a lane's arrows from one stem; the route's lanes in the accent,
+// the rest dim. Not before the destination or a stop.
+static void DrawLanes(HDC dc, const RouteInfo& ri)
+{
+    const LaneSet& l = ri.lanes;
+    if (!l.n || ri.turn >= 997)
+        return;
+    enum { kCell = 36 };
+    RECT c = { 274, 56, 274 + l.n * kCell + 16, 56 + kCell + 20 };
+    Card(dc, c, 18);
+    HBRUSH sep = CreateSolidBrush(kLine);
+    for (int i = 0; i < l.n; i++) {
+        RECT r = { c.left + 8 + i * kCell, c.top + 8, c.left + 8 + (i + 1) * kCell, c.bottom - 8 };
+        if (i) {   // the lanes' line
+            RECT s = { r.left, r.top + 4, r.left + 2, r.bottom - 4 };
+            FillRect(dc, &s, sep);
+        }
+        int t[LANE_KINDS], k = LaneTurns(l.ind[i], t);
+        for (int j = 0; j < k; j++)
+            DrawTurn(dc, r, t[j], l.valid & 1u << i ? kOrange : kTextDim);
+    }
+    DeleteObject(sep);
+}
+
 static void DrawGuide(HDC dc)
 {
     RouteInfo ri;
@@ -4484,6 +4509,7 @@ static void DrawGuide(HDC dc)
     }
     DrawJunction(dc, (ri.thenText ? 222 : 188) + 8);   // (under the card: its own pixels first, the card's GDI after)
     DrawGuideCard(dc, 0, 0, ri);
+    DrawLanes(dc, ri);
 }
 
 // The trip at the bottom (design v3): the arrival, the minutes (with the range by the traffic seen), the km, and
