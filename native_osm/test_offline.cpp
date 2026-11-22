@@ -1487,6 +1487,17 @@ int main()
     Check(b && Has(b, L"\"type\":\"fork\",\"modifier\":\"slight left\",\"bearing_before\":90") &&
           Has(b, L"\"location\":[50.000000,64.000000]"), "a fork bending away within metres: told", b);
     free(b);
+    // the ramp region (68 N; the user 2026-11-22, MKAD's exit 105A to Щёлковское шоссе): an exit leaving the ring 14
+    // degrees off it, to the right - "off ramp" right, never "straight" (the ring goes on straight beside it)
+    b = Route("50.000000,67.997000;50.009000,68.003058");
+    Check(b && Has(b, L"\"type\":\"off ramp\",\"modifier\":\"slight right\"") &&
+          Has(b, L"\"location\":[50.000000,68.001799]"), "an exit nearly straight off the ring: off ramp, slight right", b);
+    free(b);
+    // an entry joining the ring from the right (it turns 11 degrees right onto it): the driver moves left - merge left
+    b = Route("50.006800,67.998201;50.000000,68.005000");
+    Check(b && Has(b, L"\"type\":\"merge\",\"modifier\":\"slight left\"") &&
+          Has(b, L"\"location\":[50.000000,68.000000]"), "an entry from the right onto the ring: merge, slight left", b);
+    free(b);
 
     // from the east end to the upper corner: right onto the one-way street (east -> west, then north)
     b = Route("50.006,53.000;50.004,53.002");

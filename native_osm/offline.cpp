@@ -921,19 +921,25 @@ static int RoundaboutExit(const Way& w, int i, int cnt, DWORD* name)
     return exitNo;
 }
 
-static const char* RampKind(const Turn& t, const char** mod)   // onto a link: off a big road, else onto one
+// Onto a link: off a big road, else onto one. Nearly straight off it (the user 2026-11-22, MKAD's exit 105A: 14 degrees,
+// told "straight") - the side of the road going on beside it.
+static const char* RampKind(const Turn& t, const char** mod)
 {
     if (!(t.g->flags & 4) || (t.p->flags & 4))
         return NULL;
     *mod = Modifier(t.turn);
+    if (!strcmp(*mod, "straight") && t.rivals)
+        *mod = t.turn >= t.rivalTurn ? "slight right" : "slight left";
     return t.p->cls <= C_TRUNK ? "off ramp" : "on ramp";
 }
 
-static const char* MergeKind(const Turn& t, const char** mod)   // off a link onto a big road, nearly straight
+// Off a link onto a big road, nearly straight: the driver moves towards the road - a link joining from the right turns
+// right onto it, and moves left (the user 2026-11-22: "keep right" told there).
+static const char* MergeKind(const Turn& t, const char** mod)
 {
     if ((t.g->flags & 4) || !(t.p->flags & 4) || t.g->cls > C_TRUNK || fabs(t.turn) >= 45)
         return NULL;
-    *mod = t.turn > 0 ? "slight right" : "slight left";
+    *mod = t.turn > 0 ? "slight left" : "slight right";
     return "merge";
 }
 

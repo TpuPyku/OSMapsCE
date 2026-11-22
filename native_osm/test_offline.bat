@@ -47,6 +47,10 @@ if not "%1"=="build" (
   python ..\offline\test\make_test_hook.py obj\test\hookold.osm 66 || goto :bad
   python ..\offline\make_graph.py obj\test\hookold.osm obj\test\OSMapsData\hookold\route.grf >nul || goto :bad
   python -c "import sys; p = sys.argv[1]; d = open(p, 'rb').read(); open(p, 'wb').write(d[:d.rindex(b'OSMB')])" obj\test\OSMapsData\hookold\route.grf || goto :bad
+  rem the ramp region: a ring road, an exit off it nearly straight, an entry joining it from the right, 68 degrees north
+  if not exist obj\test\OSMapsData\ramp mkdir obj\test\OSMapsData\ramp
+  python ..\offline\test\make_test_ramp.py obj\test\ramp.osm || goto :bad
+  python ..\offline\make_graph.py obj\test\ramp.osm obj\test\OSMapsData\ramp\route.grf >nul || goto :bad
 )
 set OPT=/O2
 if "%COVER%"=="1" set OPT=/Od /Zi
