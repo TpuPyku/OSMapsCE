@@ -1629,6 +1629,8 @@ int main()
     b = Route("50.000000,67.997000;50.009000,68.003058");
     Check(b && Has(b, L"\"type\":\"off ramp\",\"modifier\":\"slight right\"") &&
           Has(b, L"\"location\":[50.000000,68.001799]"), "an exit nearly straight off the ring: off ramp, slight right", b);
+    Check(b && Has(b, L"\"name\":\"Шоссе Восток\",\"ref\":\"\",\"maneuver\":{\"type\":\"off ramp\""),
+          "an unnamed exit: named after the road it leads onto", b);
     free(b);
     // an entry joining the ring from the right (it turns 11 degrees right onto it): the driver moves left - merge left
     b = Route("50.006800,67.998201;50.000000,68.005000");

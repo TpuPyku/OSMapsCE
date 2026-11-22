@@ -1003,6 +1003,18 @@ static const char* Kind(const Turn& t, const char** mod)
     return k ? k : PlainKind(t, mod);
 }
 
+// A step's name: its edge's; onto unnamed links - the road they lead onto (the user 2026-11-22: "Съезд направо:
+// Щёлковское шоссе", not a nameless exit). The way ends on the links: their own (none).
+static DWORD StepName(const Way& w, int i, int cnt)
+{
+    for (int j = i; j < cnt; j++) {
+        const GEdge& g = s_g.edges[EdgeAt(w, j)];
+        if (!(g.flags & 4) || Named(g))
+            return g.name;
+    }
+    return s_g.edges[EdgeAt(w, i)].name;
+}
+
 // The step at the node where the way's edge i (pc) begins, coming by prev; b0: the edge's first bearing.
 static void Maneuver(JBuf& b, bool& first, const Way& w, int i, int cnt, const Piece& pc, const Prev& prev, double b0)
 {
@@ -1021,7 +1033,7 @@ static void Maneuver(JBuf& b, bool& first, const Way& w, int i, int cnt, const P
     const char* mod;
     const char* type = Kind(t, &mod);
     if (type)
-        Step(b, first, type, mod, prev.after, b0, la, lo, t.g->name, 0);
+        Step(b, first, type, mod, prev.after, b0, la, lo, StepName(w, i, cnt), 0);
 }
 
 // One leg's steps: depart, the maneuvers at the nodes between its edges, arrive. The line grows.
