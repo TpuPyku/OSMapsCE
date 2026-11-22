@@ -112,10 +112,10 @@ static void TestThresholds()
     Check(Due(40, 5) == VS_NOW && Due(41, 5) == VS_MID, "threshold: now at least 40 m");
 }
 
-static bool Clips(int stage, int act, int m, int then, const char* want)
+static bool Clips(int stage, int act, int m, const char* want)
 {
     const char* c[8];
-    int n = VoiceSay(stage, act, m, then, c, 8);
+    int n = VoiceSay(stage, act, m, c, 8);
     char got[200] = "";
     for (int i = 0; i < n; i++) {
         if (i)
@@ -129,33 +129,31 @@ static bool Clips(int stage, int act, int m, int then, const char* want)
 
 static void TestSay()
 {
-    Check(Clips(VS_FAR, VA_RIGHT, 990, VA_NONE, "d1000 right"), "say: far - the distance and the turn");
-    Check(Clips(VS_MID, VA_LEFT, 290, VA_NONE, "d300 left"), "say: mid");
-    Check(Clips(VS_NOW, VA_KEEP_LEFT, 90, VA_NONE, "keep_left"), "say: now - just the action");
-    Check(Clips(VS_NOW, VA_RIGHT, 90, VA_LEFT, "right then left"), "say: now and the one close behind");
-    Check(Clips(VS_MID, VA_RIGHT, 290, VA_LEFT, "d300 right"), "say: then - only with now");
-    Check(Clips(VS_FAR, VA_ROUND1 + 2, 480, VA_NONE, "d500 round3"), "say: a roundabout's exit");
-    Check(Clips(VS_MID, VA_FINISH, 300, VA_NONE, "d300 finish"), "say: the destination ahead");
-    Check(Clips(VS_NOW, VA_FINISH, 50, VA_NONE, ""), "say: at the destination - the arrival says it");
-    Check(Clips(VS_NOW, VA_NONE, 50, VA_NONE, ""), "say: nothing to say");
+    Check(Clips(VS_FAR, VA_RIGHT, 990, "d1000 right"), "say: far - the distance and the turn");
+    Check(Clips(VS_MID, VA_LEFT, 290, "d300 left"), "say: mid");
+    Check(Clips(VS_NOW, VA_KEEP_LEFT, 90, "keep_left"), "say: now - just the action");
+    // (the user 2026-11-22: "then ..." of a turn close behind told before the first was made - misleading; said after it)
+    Check(Clips(VS_NOW, VA_RIGHT, 90, "right"), "say: now - the one close behind not told with it");
+    Check(Clips(VS_FAR, VA_ROUND1 + 2, 480, "d500 round3"), "say: a roundabout's exit");
+    Check(Clips(VS_MID, VA_FINISH, 300, "d300 finish"), "say: the destination ahead");
+    Check(Clips(VS_NOW, VA_FINISH, 50, ""), "say: at the destination - the arrival says it");
+    Check(Clips(VS_NOW, VA_NONE, 50, ""), "say: nothing to say");
     // the distances: the nearest clip
-    Check(Clips(VS_MID, VA_RIGHT, 60, VA_NONE, "d100 right"), "say: under 100 m - 100");
-    Check(Clips(VS_MID, VA_RIGHT, 170, VA_NONE, "d150 right"), "say: 170 - 150");
-    Check(Clips(VS_MID, VA_RIGHT, 180, VA_NONE, "d200 right"), "say: 180 - 200");
-    Check(Clips(VS_FAR, VA_RIGHT, 700, VA_NONE, "d600 right"), "say: 700 - the nearer below");
-    Check(Clips(VS_FAR, VA_RIGHT, 1300, VA_NONE, "d1500 right"), "say: 1300 - 1.5 km");
-    Check(Clips(VS_FAR, VA_RIGHT, 1980, VA_NONE, "d2000 right"), "say: 2 km");
-    Check(Clips(VS_FAR, VA_RIGHT, 9000, VA_NONE, "d5000 right"), "say: far beyond - 5 km");
-    Check(Clips(VS_MID, VA_RIGHT, 125, VA_NONE, "d100 right"), "say: halfway 100-150 - the lower");
-    Check(Clips(VS_MID, VA_RIGHT, 120, VA_NONE, "d100 right") && Clips(VS_MID, VA_RIGHT, 130, VA_NONE, "d150 right"),
+    Check(Clips(VS_MID, VA_RIGHT, 60, "d100 right"), "say: under 100 m - 100");
+    Check(Clips(VS_MID, VA_RIGHT, 170, "d150 right"), "say: 170 - 150");
+    Check(Clips(VS_MID, VA_RIGHT, 180, "d200 right"), "say: 180 - 200");
+    Check(Clips(VS_FAR, VA_RIGHT, 700, "d600 right"), "say: 700 - the nearer below");
+    Check(Clips(VS_FAR, VA_RIGHT, 1300, "d1500 right"), "say: 1300 - 1.5 km");
+    Check(Clips(VS_FAR, VA_RIGHT, 1980, "d2000 right"), "say: 2 km");
+    Check(Clips(VS_FAR, VA_RIGHT, 9000, "d5000 right"), "say: far beyond - 5 km");
+    Check(Clips(VS_MID, VA_RIGHT, 125, "d100 right"), "say: halfway 100-150 - the lower");
+    Check(Clips(VS_MID, VA_RIGHT, 120, "d100 right") && Clips(VS_MID, VA_RIGHT, 130, "d150 right"),
           "say: 120 - 100, 130 - 150");
-    Check(Clips(VS_FAR, VA_RIGHT, 4000, VA_NONE, "d3000 right") && Clips(VS_FAR, VA_RIGHT, 4001, VA_NONE, "d5000 right"),
+    Check(Clips(VS_FAR, VA_RIGHT, 4000, "d3000 right") && Clips(VS_FAR, VA_RIGHT, 4001, "d5000 right"),
           "say: halfway 3-5 km - the lower, a metre on - 5 km");
-    Check(Clips(VS_FAR, VA_RIGHT, 5000, VA_NONE, "d5000 right"), "say: the last one itself");
+    Check(Clips(VS_FAR, VA_RIGHT, 5000, "d5000 right"), "say: the last one itself");
     const char* c[2];
-    Check(VoiceSay(VS_NOW, VA_RIGHT, 90, VA_LEFT, c, 2) == 1 && !strcmp(c[0], "right"),
-          "say: no room for \"then\" and its action - left out whole");
-    Check(VoiceSay(VS_MID, VA_RIGHT, 290, VA_NONE, c, 1) == 0, "say: no room for the distance - nothing");
+    Check(VoiceSay(VS_MID, VA_RIGHT, 290, c, 1) == 0, "say: no room for the distance - nothing");
 }
 
 static void Le(unsigned char* p, unsigned v, int bytes)   // little-endian

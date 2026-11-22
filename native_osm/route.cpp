@@ -827,8 +827,6 @@ void RouteGet(RouteInfo* o)
                 o->thenText = s_man[i + 1].text;
             o->man = i;
             o->act = s_man[i].act;
-            if (i + 1 < s_nm && s_cum[s_man[i + 1].shape] - s_cum[s_man[i].shape] <= kThenM)
-                o->thenAct = s_man[i + 1].act;
             break;
         }
     if (s_off)

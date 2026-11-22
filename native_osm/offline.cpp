@@ -1015,6 +1015,45 @@ static DWORD StepName(const Way& w, int i, int cnt)
     return s_g.edges[EdgeAt(w, i)].name;
 }
 
+// The way's heading kAheadM past the node where its edge i begins (its last when it ends before): the bearing of its
+// segment there. (s_pts reused: the edge i is in the line already.)
+enum { kAheadM = 250, kAheadTurn = 40 };
+static double AheadBearing(const Way& w, int i, int cnt)
+{
+    double left = kAheadM, b = 0;
+    for (int j = i; j < cnt; j++) {
+        Piece pc = PieceAt(w, j, cnt);
+        int n = EdgePts(pc.from, pc.e, s_pts, kPtsCap);
+        if (pc.z && pc.z->seg + 2 < n)
+            n = pc.z->seg + 2;   // (the way ends on its segment seg)
+        for (int k = 1; k < n; k++) {
+            const int* p = s_pts + (k - 1) * 2;
+            double dx = (p[3] - p[1]) * s_kx, dy = (p[2] - p[0]) * 0.111195;
+            b = Bearing(p[0], p[1], p[2], p[3]);
+            if ((left -= sqrt(dx * dx + dy * dy)) <= 0)
+                return b;
+        }
+    }
+    return b;
+}
+
+// A fork or a ramp whose way turns off kAheadTurn+ by kAheadM on is a turn, else a fork - keep to its side (the user
+// 2026-11-22: "keep to a side" is a road that branches and still leads the same way; a crossing with gentle ramps is a
+// turn). The side: the junction's.
+static const char* AheadKind(const char* type, const char** mod, double ahead)
+{
+    bool junction = !strcmp(type, "fork") || !strcmp(type, "off ramp") || !strcmp(type, "on ramp");
+    if (!junction || !strcmp(*mod, "straight"))
+        return type;
+    bool right = strstr(*mod, "right") != NULL;
+    if (fabs(ahead) < kAheadTurn) {
+        *mod = right ? "slight right" : "slight left";
+        return "fork";
+    }
+    *mod = right ? "right" : "left";
+    return "turn";
+}
+
 // The step at the node where the way's edge i (pc) begins, coming by prev; b0: the edge's first bearing.
 static void Maneuver(JBuf& b, bool& first, const Way& w, int i, int cnt, const Piece& pc, const Prev& prev, double b0)
 {
@@ -1032,6 +1071,8 @@ static void Maneuver(JBuf& b, bool& first, const Way& w, int i, int cnt, const P
     }
     const char* mod;
     const char* type = Kind(t, &mod);
+    if (type)
+        type = AheadKind(type, &mod, TurnOf(prev.after, AheadBearing(w, i, cnt)));
     if (type)
         Step(b, first, type, mod, prev.after, b0, la, lo, StepName(w, i, cnt), 0);
 }

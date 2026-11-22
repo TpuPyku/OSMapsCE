@@ -1624,25 +1624,30 @@ int main()
     free(b);
     // W -> N: the loop it is; at A it bends away within metres - told as a fork, left
     b = Route("49.996923,64.000000;50.000146,64.001799");
-    Check(b && Has(b, L"\"type\":\"fork\",\"modifier\":\"slight left\",\"bearing_before\":90") &&
-          Has(b, L"\"location\":[50.000000,64.000000]"), "a fork bending away within metres: told", b);
+    Check(b && Has(b, L"\"type\":\"turn\",\"modifier\":\"left\",\"bearing_before\":90") &&
+          Has(b, L"\"location\":[50.000000,64.000000]"), "a fork bending away within metres: told (the hairpin 250 m on: a turn)", b);
     free(b);
     // the ramp region (68 N; the user 2026-11-22, MKAD's exit 105A to Щёлковское шоссе): an exit leaving the ring 14
     // degrees off it, to the right - "off ramp" right, never "straight" (the ring goes on straight beside it)
     b = Route("50.000000,67.997000;50.009000,68.003058");
-    Check(b && Has(b, L"\"type\":\"off ramp\",\"modifier\":\"slight right\"") &&
-          Has(b, L"\"location\":[50.000000,68.001799]"), "an exit nearly straight off the ring: off ramp, slight right", b);
-    Check(b && Has(b, L"\"name\":\"Шоссе Восток\",\"ref\":\"\",\"maneuver\":{\"type\":\"off ramp\""),
+    // (the user 2026-11-22: a junction with gentle ramps whose way turns off 250 m on - a turn, its side the ramp's)
+    Check(b && Has(b, L"\"type\":\"turn\",\"modifier\":\"right\"") &&
+          Has(b, L"\"location\":[50.000000,68.001799]"), "an exit nearly straight off the ring, east 250 m on: turn right", b);
+    Check(b && Has(b, L"\"name\":\"Шоссе Восток\",\"ref\":\"\",\"maneuver\":{\"type\":\"turn\""),
           "an unnamed exit: named after the road it leads onto", b);
     Check(b && !Has(b, L"\"exit\""), "a ramp's steps: no roundabout exit number", b);
+    free(b);
+    b = Route("50.000000,67.997000;50.000840,68.002518");   // the way ends on the exit: its heading changes little
+    Check(b && Has(b, L"\"type\":\"fork\",\"modifier\":\"slight right\"") &&
+          Has(b, L"\"location\":[50.000000,68.001799]"), "an exit going on nearly as the ring: keep right (a fork)", b);
     free(b);
     // an entry joining the ring from the right (it turns 11 degrees right onto it): the driver moves left - merge left
     b = Route("50.006800,67.998201;50.000000,68.005000");
     Check(b && Has(b, L"\"type\":\"merge\",\"modifier\":\"slight left\"") &&
           Has(b, L"\"location\":[50.000000,68.000000]"), "an entry from the right onto the ring: merge, slight left", b);
     b = Route("49.995199,67.998201;49.987996,68.001259");
-    Check(b && Has(b, L"\"type\":\"on ramp\",\"modifier\":\"slight left\"") &&
-          Has(b, L"\"location\":[49.995199,68.000000]"), "a link off a service road of a lower class: slight left", b);
+    Check(b && Has(b, L"\"type\":\"turn\",\"modifier\":\"left\"") &&
+          Has(b, L"\"location\":[49.995199,68.000000]"), "a link off a service road, west 250 m on: turn left", b);
     free(b);
 
     // from the east end to the upper corner: right onto the one-way street (east -> west, then north)

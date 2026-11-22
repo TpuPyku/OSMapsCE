@@ -151,19 +151,13 @@ bool VoiceWavParse(const unsigned char* b, int n, VoiceWav* w)
 
 static bool Silent(int stage, int act) { return act == VA_NONE || (act == VA_FINISH && stage == VS_NOW); }
 
-int VoiceSay(int stage, int act, int nextM, int then, const char** out, int cap)
+int VoiceSay(int stage, int act, int nextM, const char** out, int cap)
 {
-    const char* c[4];
+    const char* c[2];
     int n = 0;
     if (stage != VS_NOW)
         c[n++] = Distance(nextM);
     c[n++] = kAct[act];
-    int must = n;   // ("then" and its action: whole or not at all)
-    if (stage == VS_NOW && then != VA_NONE) {
-        c[n++] = "then";
-        c[n++] = kAct[then];
-    }
-    n = n > cap ? must : n;
     if (Silent(stage, act) || n > cap)
         return 0;
     memcpy(out, c, n * sizeof(c[0]));

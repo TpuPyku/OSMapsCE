@@ -192,7 +192,7 @@ void SayTick(int kmh)
     } else if (now.on && !ri.off) {
         int stage = VoiceDue(&s_vs, ri.man, ri.nextM, kmh);
         if (stage)
-            n = VoiceSay(stage, ri.act, ri.nextM, ri.thenAct, ids, kMaxClips);
+            n = VoiceSay(stage, ri.act, ri.nextM, ids, kMaxClips);
     }
     if (n && g_cfg.voice)
         Say(ids, n);
