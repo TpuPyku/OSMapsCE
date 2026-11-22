@@ -1301,6 +1301,8 @@ static void LayerMergeChecks()
           "merge: a crossing between two turns, a bump - the turns one; the crossing, the bump apart", NULL);
     LayerPoint dark[2] = { { 53000000, 50000000, LAY_DANGER, DANGER_OTHER, 0 }, { 53000000, 50000000, 7, 0, 0 } };
     Check(LayersMerge(dark, 2) == 2, "merge: a kind not known - never with the dangers (nor aliased to one)", NULL);
+    LayerPoint past[2] = { { 53000000, 50000000, LAY_KINDS, 0, 0 }, { 53000000, 50000000, LAY_KINDS, 0, 0 } };
+    Check(LayersMerge(past, 2) == 2, "merge: the first kind past the known ones - never merged", NULL);
 }
 
 // Signs over one another on the screen (the user 2026-11-16): car parks and bumps - one at the middle of the ones around
@@ -1369,8 +1371,9 @@ static void DangerWantedChecks()
     Check(all, "wanted: all - every type", NULL);
     Check(!LayerWanted(d, LayersWanted(1, 1, DANGERS_OFF)) && !LayerWanted(bump, LayersWanted(0, 0, DANGERS_ALL)),
           "wanted: dangers and bumps apart", NULL);
-    LayerPoint odd = { 0, 0, 9, 0, 0 }, oddType = { 0, 0, LAY_DANGER, 200, 0 };
-    Check(!LayerWanted(odd, LayersWanted(1, 1, 2)) && !LayerWanted(oddType, LayersWanted(1, 1, 2)),
+    LayerPoint odd = { 0, 0, 9, 0, 0 }, odd8 = { 0, 0, 8, 0, 0 }, oddType = { 0, 0, LAY_DANGER, 200, 0 };
+    Check(!LayerWanted(odd, LayersWanted(1, 1, 2)) && !LayerWanted(odd8, LayersWanted(1, 1, 2)) &&
+          !LayerWanted(oddType, LayersWanted(1, 1, 2)),
           "wanted: a kind or type not known - none", NULL);
     // ahead: the nearest of the wanted, bump or danger
     LayerPoint p[3] = { { 53000000, 50005000, LAY_BUMP, 0, 0 }, { 53000000, 50004000, LAY_DANGER, DANGER_TURN, 0 },
@@ -1631,6 +1634,7 @@ int main()
           Has(b, L"\"location\":[50.000000,68.001799]"), "an exit nearly straight off the ring: off ramp, slight right", b);
     Check(b && Has(b, L"\"name\":\"Шоссе Восток\",\"ref\":\"\",\"maneuver\":{\"type\":\"off ramp\""),
           "an unnamed exit: named after the road it leads onto", b);
+    Check(b && !Has(b, L"\"exit\""), "a ramp's steps: no roundabout exit number", b);
     free(b);
     // an entry joining the ring from the right (it turns 11 degrees right onto it): the driver moves left - merge left
     b = Route("50.006800,67.998201;50.000000,68.005000");
