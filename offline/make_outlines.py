@@ -8,6 +8,7 @@ simplified (OUTLINE_M) and rounded, east of 180 degrees kept on the east (Chukot
 import json
 import re
 import sys
+import urllib.error
 
 import make_graph
 import make_region
@@ -49,8 +50,29 @@ def outlines(regions, get):
     """{name: rings} of make_region.regions()'s {name: url or [urls]}; get(url) -> the .poly's text."""
     out = {}
     for name, urls in regions.items():
-        out[name] = [shape(r) for u in (urls if isinstance(urls, list) else [urls]) for r in parse_poly(get(poly_url(u)))]
+        out[name] = [shape(r) for u in (urls if isinstance(urls, list) else [urls]) for r in parse_poly(poly_text(u, get))]
     return out
+
+
+def poly_urls(pbf_url):
+    """Where an extract's .poly may be: beside it, then - Geofabrik's - in the region's own folder (Geofabrik moved its
+    regions into folders 2026-11-23; the old .poly's redirect lost "europe/" - 404)."""
+    url = poly_url(pbf_url)
+    if 'download.geofabrik.de/' not in url:
+        return [url]
+    head, name = url.rsplit('/', 1)
+    return [url, '%s/%s/%s' % (head, name[:-len('.poly')], name)]
+
+
+def poly_text(pbf_url, get):
+    """The first .poly of poly_urls there (a 404 tries the next; the last one's error raised)."""
+    urls = poly_urls(pbf_url)
+    for i, u in enumerate(urls):
+        try:
+            return get(u)
+        except urllib.error.HTTPError as e:
+            if e.code != 404 or i == len(urls) - 1:
+                raise
 
 
 def main(argv):

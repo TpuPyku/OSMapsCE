@@ -8,6 +8,7 @@ the server has a newer one), builds route.grf (make_graph.py) and search.idx (ma
 <card>\\OSMapsData\\ (the SD card for the unit: \\SDMemory\\OSMapsData). The extracts and the tools' work: offline\\work.
 Repeatable: a run after an interrupted one finishes it; nothing is rebuilt that is up to date.
 """
+import datetime
 import email.utils
 import os
 import pathlib
@@ -122,7 +123,38 @@ def regions(get=get):
 kTries, kPause = 5, 60   # a source not reached: tried again a minute later (2026-11-16: Geofabrik refused some runners)
 
 
+kDatedDays = 7   # Geofabrik's dated extracts tried when its "latest" is missing
+
+
+def dated_urls(url, today):
+    """Geofabrik's dated extracts of a "latest" one, newest first (its region's folder: <dir>/<name>/<name>-YYMMDD;
+    2026-11-23 its "latest" led to a dated file not there yet - 404 for hours); other sources: none."""
+    if 'download.geofabrik.de/' not in url or not url.endswith('-latest.osm.pbf'):
+        return []
+    head, name = url[:-len('-latest.osm.pbf')].rsplit('/', 1)
+    days = [today - datetime.timedelta(days=d) for d in range(kDatedDays)]
+    return ['%s/%s/%s-%s.osm.pbf' % (head, name, name, d.strftime('%y%m%d')) for d in days]
+
+
 def fetch(url, path):
+    """fetch_tries; Geofabrik's "latest" missing (404) - its dated extracts of the last days, newest first."""
+    try:
+        return fetch_tries(url, path)
+    except urllib.error.HTTPError as e:
+        alts = dated_urls(url, datetime.datetime.utcnow().date()) if e.code == 404 else []
+        if not alts:
+            raise
+        for i, alt in enumerate(alts):
+            try:
+                got = fetch_tries(alt, path)
+                print('%s: 404 - took %s' % (url, alt), flush=True)
+                return got
+            except urllib.error.HTTPError as e2:
+                if e2.code != 404 or i == len(alts) - 1:
+                    raise
+
+
+def fetch_tries(url, path):
     """fetch_once, tried again when the source was not reached or broke off (a missing file - an HTTP error - not)."""
     for left in range(kTries - 1, -1, -1):
         try:

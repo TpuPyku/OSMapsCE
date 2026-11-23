@@ -997,6 +997,30 @@ class Maps(unittest.TestCase):
                                     [[180.5, 65.0], [181.0, 65.0], [181.0, 66.0], [180.5, 65.0]]])
         self.assertEqual(len(got['ab']), 3)                                 # both extracts' rings
 
+    def test_outlines_geofabrik_new_layout(self):
+        """Geofabrik moved each region into its own folder (2026-11-23) and its old .poly's redirect lost "europe/" -
+        404: the region's folder is tried next; a missing one everywhere still fails."""
+        import make_outlines
+        self.assertEqual(make_outlines.poly_urls('https://download.geofabrik.de/europe/germany/bayern-latest.osm.pbf'),
+                         ['https://download.geofabrik.de/europe/germany/bayern.poly',
+                          'https://download.geofabrik.de/europe/germany/bayern/bayern.poly'])
+        self.assertEqual(make_outlines.poly_urls('http://download.openstreetmap.fr/extracts/russia/x-latest.osm.pbf'),
+                         ['http://download.openstreetmap.fr/polygons/russia/x.poly'])
+        ring = 'b\n1\n 40 40\n 41 40\n 41 41\n 40 40\nEND\nEND\n'
+        asked = []
+
+        def get(url):
+            asked.append(url)
+            if url.endswith('/b/b.poly'):
+                return ring
+            raise make_outlines.urllib.error.HTTPError(url, 404, 'Not Found', {}, None)
+        got = make_outlines.outlines({'b': 'https://download.geofabrik.de/europe/b-latest.osm.pbf'}, get)
+        self.assertEqual(len(got['b']), 1)
+        self.assertEqual(asked, ['https://download.geofabrik.de/europe/b.poly',
+                                 'https://download.geofabrik.de/europe/b/b.poly'])
+        self.assertRaises(make_outlines.urllib.error.HTTPError, make_outlines.outlines,
+                          {'c': 'https://download.geofabrik.de/europe/c-latest.osm.pbf'}, get)
+
     def test_region_colours(self):
         """The map's regions (the user 2026-10-30: the outline of one with an update hid under its neighbours'): chosen -
         orange, on the drive and fresh - green, both edged white; with an update - white, edged black; else as the

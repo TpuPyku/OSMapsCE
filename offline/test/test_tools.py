@@ -1267,6 +1267,41 @@ class Tools(unittest.TestCase):
             self.assertRaises(make_region.urllib.error.URLError, make_region.fetch, 'http://h/c.pbf', out)
         self.assertEqual(get.call_count, make_region.kTries)
 
+    def test_fetch_geofabrik_dated(self):
+        """Geofabrik's "latest" led to a dated file not there yet (2026-11-23, its new folders: 404 for hours): the
+        region's dated extracts of the last days are tried, newest first; other sources' 404 stays an error."""
+        import datetime
+        url = 'https://download.geofabrik.de/europe/germany/bayern-latest.osm.pbf'
+        self.assertEqual(make_region.dated_urls(url, datetime.date(2026, 11, 23))[:2],
+                         ['https://download.geofabrik.de/europe/germany/bayern/bayern-261123.osm.pbf',
+                          'https://download.geofabrik.de/europe/germany/bayern/bayern-261122.osm.pbf'])
+        self.assertEqual(len(make_region.dated_urls(url, datetime.date(2026, 11, 23))), make_region.kDatedDays)
+        self.assertEqual(make_region.dated_urls('http://download.openstreetmap.fr/extracts/x-latest.osm.pbf',
+                                                datetime.date(2026, 11, 23)), [])
+        src = os.path.join(self.tmp, 'src.pbf')
+        with open(src, 'wb') as f:
+            f.write(b'osm')
+        real = make_region.urllib.request.urlopen
+        asked = []
+
+        def urlopen(req, timeout):   # latest and the newest dated missing, the day before there
+            asked.append(req.full_url)
+            if req.full_url.endswith('-latest.osm.pbf') or len(asked) == 2:
+                raise make_region.urllib.error.HTTPError(req.full_url, 404, 'Not Found', {}, None)
+            return real(pathlib.Path(src).as_uri())
+        out = os.path.join(self.tmp, 'bayern.pbf')
+        with mock.patch.object(make_region.urllib.request, 'urlopen', side_effect=urlopen), \
+                mock.patch.object(make_region.time, 'sleep'):
+            self.assertTrue(make_region.fetch(url, out))
+        self.assertEqual(len(asked), 3)
+        self.assertIn('/bayern/bayern-', asked[2])
+        with open(out, 'rb') as f:
+            self.assertEqual(f.read(), b'osm')
+        gone = make_region.urllib.error.HTTPError('x', 404, 'Not Found', {}, None)
+        with mock.patch.object(make_region.urllib.request, 'urlopen', side_effect=gone), \
+                mock.patch.object(make_region.time, 'sleep'):
+            self.assertRaises(make_region.urllib.error.HTTPError, make_region.fetch, url, out)
+
     def test_region_links(self):
         top = '<a href="volga_federal_district/">v</a><a href="ural_federal_district/">u</a>'
         page = '<a href="samara_oblast-latest.osm.pbf">s</a><a href="x.txt">x</a>'
