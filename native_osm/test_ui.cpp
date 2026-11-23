@@ -5,6 +5,8 @@
 #include "lang.h"
 #include "startpt.h"
 #include "segpick.h"
+#include "recent.h"
+#include "lanes.h"
 
 static int s_failed, s_checks;
 
@@ -101,11 +103,144 @@ static void TestLang()
     LangOff();
 }
 
+// The recent addresses of "Куда едем?" (the user 2026-11-21): the newest first, at most kRecentMax, the same place
+// (150 m) or the same name once - moved up; the file's lines "name<TAB>lat<TAB>lon".
+static void TestRecent()
+{
+    Recents r;
+    RecentClear(&r);
+    RecentAdd(&r, L"Ленина, 1", 55.7500, 37.6000);
+    RecentAdd(&r, L"Мира, 5", 55.8000, 37.6500);
+    Check(r.n == 2 && !wcscmp(r.it[0].name, L"Мира, 5") && !wcscmp(r.it[1].name, L"Ленина, 1"), "recent: the newest first");
+    RecentAdd(&r, L"Ленина, 1 (подъезд)", 55.7505, 37.6005);
+    Check(r.n == 2 && !wcscmp(r.it[0].name, L"Ленина, 1 (подъезд)") && !wcscmp(r.it[1].name, L"Мира, 5"),
+          "recent: the same place (70 m) - moved up with its new name, not twice");
+    RecentAdd(&r, L"Мира, 5", 55.9000, 37.9000);
+    Check(r.n == 2 && !wcscmp(r.it[0].name, L"Мира, 5") && r.it[0].lat == 55.9, "recent: the same name - moved up, its new place");
+    RecentAdd(&r, L"Вокзал", 55.7600, 37.6000);
+    Check(r.n == 3 && !wcscmp(r.it[0].name, L"Вокзал"), "recent: 1.1 km away - another place");
+    for (int i = 0; i < 10; i++) {
+        wchar_t n[16];
+        swprintf(n, 16, L"Место %d", i);
+        RecentAdd(&r, n, 50 + i, 30);
+    }
+    Check(r.n == kRecentMax && !wcscmp(r.it[0].name, L"Место 9") && !wcscmp(r.it[kRecentMax - 1].name, L"Место 5"),
+          "recent: no more than kRecentMax, the oldest out");
+    RecentAdd(&r, L"", 1, 1);
+    Check(r.n == kRecentMax && !wcscmp(r.it[0].name, L"Место 9"), "recent: no name - not kept");
+
+    wchar_t text[1024];
+    RecentClear(&r);
+    RecentAdd(&r, L"Ленина, 1", 55.75, 37.6);
+    RecentAdd(&r, L"Мира, 5", 55.8, 37.65);
+    RecentFormat(&r, text, 1024);
+    Check(!wcscmp(text, L"Мира, 5\t55.800000\t37.650000\nЛенина, 1\t55.750000\t37.600000\n"), "recent: the file's text");
+    Recents g;
+    Check(RecentParse(text, &g) == 2 && !wcscmp(g.it[0].name, L"Мира, 5") && g.it[1].lat == 55.75 && g.it[1].lon == 37.6,
+          "recent: read back as written");
+    Check(RecentParse(L"bad line\nA\t1\t2\r\n\t3\t4\nB\t5\n", &g) == 1 && !wcscmp(g.it[0].name, L"A") &&
+          g.it[0].lat == 1 && g.it[0].lon == 2, "recent: lines without both numbers or a name left out, CRLF too");
+    wchar_t room[30];
+    RecentFormat(&r, room, 30);
+    Check(!wcscmp(room, L"Мира, 5\t55.800000\t37.650000\n"), "recent: whole lines only - the room for one");
+    RecentFormat(&r, room, 20);
+    Check(!room[0], "recent: no room for a line - nothing");
+}
+
+// The lanes before a maneuver (lanes.cpp): a trimmed real OSRM answer (Moscow, 2026-11-22), ' for " here.
+// A: driving on, its intersections: the maneuver's own, one with lanes 2.4 km before B, one 162 m before B;
+// B: a right turn with its own lanes; C: a left turn 86 m on, no lanes of its own.
+static const char* kStepA =
+    "{'maneuver':{'type':'turn','modifier':'straight','location':[37.820168,55.81165]},'intersections':["
+    "{'location':[37.820168,55.81165],'lanes':[{'valid':true,'indications':['left']}]},"
+    "{'lanes':[{'valid':true,'indications':['straight']},{'valid':true,'indications':['straight']},"
+    "{'valid':true,'indications':['straight']},{'valid':true,'indications':['straight']},"
+    "{'valid':false,'indications':['right']}],'location':[37.83422,55.813309]},"
+    "{'lanes':[{'valid':false,'indications':['straight']},{'valid':true,'indications':['straight']},"
+    "{'valid':false,'indications':['right']}],'location':[37.86989,55.822288]},"
+    "{'location':[37.8711,55.8225]}]}";
+static const char* kStepB =
+    "{'maneuver':{'type':'turn','modifier':'right','location':[37.872379,55.82268]},'intersections':["
+    "{'lanes':[{'valid':false,'indications':['straight']},{'valid':false,'indications':['straight']},"
+    "{'valid':true,'indications':['straight','right']}],'location':[37.872379,55.82268]}]}";
+static const char* kStepBBare =   // B without its own lanes
+    "{'maneuver':{'type':'turn','modifier':'right','location':[37.872379,55.82268]},'intersections':["
+    "{'location':[37.872379,55.82268]}]}";
+static const char* kStepAFar =    // A without the near one
+    "{'maneuver':{'type':'turn','location':[37.820168,55.81165]},'intersections':[{'location':[37.820168,55.81165]},"
+    "{'lanes':[{'valid':true,'indications':['straight']}],'location':[37.83422,55.813309]}]}";
+static const char* kStepC =
+    "{'maneuver':{'type':'turn','modifier':'left','location':[37.872784,55.821941]},'intersections':["
+    "{'location':[37.872784,55.821941]}]}";
+static const char* kStepOdd =     // the other arrows; then nine lanes
+    "{'maneuver':{'location':[37,55]},'intersections':[{'location':[37,55],'lanes':["
+    "{'valid':true,'indications':['uturn','sharp left','left','slight left']},"
+    "{'valid':false,'indications':['none']},{'valid':true,'indications':['sharp right','slight right']},"
+    "{'valid':false,'indications':[]}]}]}";
+static const char* kStepNine =
+    "{'maneuver':{'location':[37,55]},'intersections':[{'location':[37,55],'lanes':["
+    "{'valid':true,'indications':['straight']},{'valid':true,'indications':['straight']},"
+    "{'valid':true,'indications':['straight']},{'valid':true,'indications':['straight']},"
+    "{'valid':true,'indications':['straight']},{'valid':true,'indications':['straight']},"
+    "{'valid':true,'indications':['straight']},{'valid':true,'indications':['straight']},"
+    "{'valid':true,'indications':['straight']}]}]}";
+
+static const char* Quoted(const char* s, char* buf)   // ' -> "
+{
+    int i = 0;
+    for (; s[i]; i++)
+        buf[i] = s[i] == '\'' ? '"' : s[i];
+    buf[i] = 0;
+    return buf;
+}
+
+static LaneSet Lanes(const char* step, const char* prev)
+{
+    static char a[2048], b[2048];
+    LaneSet o;
+    memset(&o, 0x55, sizeof(o));
+    LanesOfStep(Quoted(step, a), prev ? Quoted(prev, b) : NULL, &o);
+    return o;
+}
+
+static void TestLanes()
+{
+    LaneSet o = Lanes(kStepB, kStepA);
+    Check(o.n == 3 && o.valid == 4 && o.ind[0] == LANE_STRAIGHT && o.ind[1] == LANE_STRAIGHT &&
+          o.ind[2] == (LANE_STRAIGHT | LANE_RIGHT), "lanes: the maneuver's own, left to right, the valid one");
+    o = Lanes(kStepBBare, kStepA);
+    Check(o.n == 3 && o.valid == 2 && o.ind[0] == LANE_STRAIGHT && o.ind[2] == LANE_RIGHT,
+          "lanes: none of its own - the step before's last ones, 162 m before");
+    o = Lanes(kStepBBare, kStepAFar);
+    Check(o.n == 0, "lanes: the step before's ones 2.4 km before - none");
+    o = Lanes(kStepC, kStepB);
+    Check(o.n == 0, "lanes: the step before's first intersection is its own maneuver's - not taken");
+    o = Lanes(kStepC, NULL);
+    Check(o.n == 0, "lanes: none and no step before");
+    o = Lanes(kStepOdd, NULL);
+    Check(o.n == 4 && o.valid == 5 && o.ind[0] == (LANE_UTURN | LANE_SHARP_LEFT | LANE_LEFT | LANE_SLIGHT_LEFT) &&
+          o.ind[1] == LANE_NONE && o.ind[2] == (LANE_SHARP_RIGHT | LANE_SLIGHT_RIGHT) && o.ind[3] == 0,
+          "lanes: every arrow's name, none, an empty list");
+    o = Lanes(kStepNine, NULL);
+    Check(o.n == 0, "lanes: more than kMaxLanes - none");
+
+    int t[LANE_KINDS];
+    Check(LaneTurns(LANE_STRAIGHT | LANE_RIGHT, t) == 2 && t[0] == 90 && t[1] == 0, "lane turns: right, straight");
+    Check(LaneTurns(LANE_UTURN | LANE_SHARP_LEFT | LANE_LEFT | LANE_SLIGHT_LEFT, t) == 4 && t[0] == -180 &&
+          t[1] == -45 && t[2] == -90 && t[3] == -135, "lane turns: the left ones, a U-turn to the left");
+    Check(LaneTurns(LANE_SHARP_RIGHT | LANE_SLIGHT_RIGHT, t) == 2 && t[0] == 135 && t[1] == 45, "lane turns: sharp, slight");
+    Check(LaneTurns(LANE_NONE, t) == 1 && t[0] == 0, "lane turns: none - straight");
+    Check(LaneTurns(0, t) == 1 && t[0] == 0, "lane turns: nothing - straight");
+    Check(LaneTurns(LANE_NONE | LANE_STRAIGHT, t) == 1 && t[0] == 0, "lane turns: none and straight - one arrow");
+}
+
 int main()
 {
+    TestRecent();
     TestStart();
     TestSegPick();
     TestLang();
+    TestLanes();
     printf("%d checks, %d failed\n", s_checks, s_failed);
     return s_failed;
 }

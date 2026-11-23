@@ -1,4 +1,4 @@
-#include "yamaps.h"
+﻿#include "yamaps.h"
 
 // Offline routing (2026-10-27, the user: a full offline mode; the data on the SD card, regions to choose): a region's
 // road graph (OSMapsData\<region>\route.grf, made by offline/make_graph.py from OSM) and A* over it on the download
@@ -6,6 +6,9 @@
 // OSRM's - the guidance, the line, the stops work unchanged. A route request (OSRM's URL) is answered here when a
 // region holds all its points; else it goes to OSRM. Integer A* (the unit's ARM has no FPU): times in tenths of a
 // second, the estimate a straight line at 110 km/h. Turn restrictions: not yet in the data.
+// The file's parts: make_graph.py's docstring. Its optional ones after the grid ('OSMB' bearings, 'OSMS' speed limits,
+// 'OSML' lanes - a graph made before them has not got them, its routes as before): the lanes (2026-11-22, OSRM's
+// step "intersections" - route.cpp shows them) of the road into a maneuver, only the edges that have them, by edge.
 
 #pragma pack(push, 1)
 struct GHead {
@@ -37,6 +40,9 @@ struct Graph {
     char*   names;
     BYTE*   bear;      // each edge's bearings out of its start and into its end (NULL: a graph made before them)
     BYTE*   limit;     // each edge's posted speed limit, km/h, 0 none (NULL: a graph made before them)
+    DWORD   laneN;     // the edges with lanes (0: none, or a graph made before them)
+    DWORD*  laneRec;   // laneN x (edge, its lanes' place in laneTab), by edge
+    WORD*   laneTab;   // the lanes: n, then each lane's indications' bits (left to right)
     DWORD*  cstart;    // gw * gh + 1
     DWORD*  items;
     OffFile d;         // the parts above; the geometry is read from its file
@@ -61,6 +67,17 @@ static bool ReadHead(const wchar_t* path, GHead* h)
     return ok;
 }
 
+// The lanes at off, if the graph was made with them: 'OSML', count, words, count x (edge, at), words x u16 (one part)
+static void LoadLanes(OffFile* f, DWORD off)
+{
+    DWORD head[3];
+    if (!OffRead(f->file, off, head, sizeof(head)) || memcmp(head, "OSML", 4))
+        return;
+    s_g.laneRec = (DWORD*)OffPart(f, off + 12, head[1] * 8 + head[2] * 2);
+    s_g.laneTab = (WORD*)(s_g.laneRec + head[1] * 2);   // (no memory for them: f->bad, the graph not loaded)
+    s_g.laneN = head[1];
+}
+
 static bool Load(const wchar_t* path)
 {
     if (s_g.nodes && !wcscmp(s_g.path, path))
@@ -82,8 +99,10 @@ static bool Load(const wchar_t* path)
     if (OffRead(f->file, end, tag, 4) && !memcmp(tag, "OSMB", 4)) {
         s_g.bear = (BYTE*)OffPart(f, end + 4, h.edges * 2);
         DWORD lim = end + 4 + ((h.edges * 2 + 3) & ~3);   // the limits after them, 4-byte aligned
-        if (OffRead(f->file, lim, tag, 4) && !memcmp(tag, "OSMS", 4))
+        if (OffRead(f->file, lim, tag, 4) && !memcmp(tag, "OSMS", 4)) {
             s_g.limit = (BYTE*)OffPart(f, lim + 4, h.edges);
+            LoadLanes(f, lim + 4 + ((h.edges + 3) & ~3));   // the lanes after them, 4-byte aligned
+        }
     }
     if (f->bad) {
         Log("offline: cannot load %S (memory?)", path);
@@ -138,17 +157,23 @@ static bool Region(const int* pts, int n)
 
 static double Bearing(int lat0, int lon0, int lat1, int lon1);
 
-static DWORD FromNode(DWORD e)   // the node an edge leaves (binary search in first[])
+// How many of the n keys (each stride DWORDs on, sorted) are below key: binary search
+static DWORD Below(const DWORD* keys, DWORD n, DWORD stride, DWORD key)
 {
-    DWORD lo = 0, hi = s_g.h.nodes;
-    while (hi - lo > 1) {
+    DWORD lo = 0, hi = n;
+    while (lo < hi) {
         DWORD m = (lo + hi) / 2;
-        if (s_g.first[m] <= e)
-            lo = m;
+        if (keys[m * stride] < key)
+            lo = m + 1;
         else
             hi = m;
     }
     return lo;
+}
+
+static DWORD FromNode(DWORD e)   // the node an edge leaves: the last one whose first edge is e or before
+{
+    return Below(s_g.first, s_g.h.nodes, 1, e + 1) - 1;
 }
 
 // An edge's points (lat, lon pairs) from its start node to its end node; returns the count (<= cap).
@@ -799,8 +824,87 @@ static double TurnOf(double before, double after)
     return t;
 }
 
+// The lanes (the user 2026-11-22: as OSRM shows them): each lane's indications as bits in OSRM's order (lanes.h's
+// LANE_*, make_graph.py's kLaneBit), their names in the JSON
+static const char* const kLaneInd[LANE_KINDS] = { "none", "uturn", "sharp right", "right", "slight right", "straight",
+                                                  "slight left", "left", "sharp left" };
+enum { kLaneRights = LANE_SHARP_RIGHT | LANE_RIGHT | LANE_SLIGHT_RIGHT,
+       kLaneLefts = LANE_SLIGHT_LEFT | LANE_LEFT | LANE_SHARP_LEFT, kGraphLanes = 16 };   // (make_graph's kMaxLanes)
+
+static const WORD* LanesOf(DWORD e)   // the edge's lanes in the table (n, then each lane's bits); NULL: none
+{
+    DWORD i = Below(s_g.laneRec, s_g.laneN, 2, e);
+    return i < s_g.laneN && s_g.laneRec[i * 2] == e ? s_g.laneTab + s_g.laneRec[i * 2 + 1] : NULL;
+}
+
+static int LanesWith(const WORD* lanes, int n, int bits)   // the lanes with any of the bits (an unmarked one: straight)
+{
+    int m = 0;
+    for (int i = 0; i < n; i++)
+        if ((lanes[i] | (lanes[i] & LANE_NONE) * LANE_STRAIGHT) & bits)
+            m |= 1 << i;
+    return m;
+}
+
+static int LaneSide(int ind)   // the turn's side's indications (a U-turn: the left's); straight - none
+{
+    return (1 << ind) & kLaneRights ? kLaneRights : (1 << ind) == LANE_STRAIGHT ? 0 : kLaneLefts;
+}
+
+// No lane to the turn's side: the outer lane on it if unmarked, or straight for a slight one (a fork)
+static int OuterLane(const WORD* lanes, int n, int ind)
+{
+    int side = LaneSide(ind);
+    if (!side)
+        return 0;
+    int i = side == kLaneRights ? n - 1 : 0;
+    bool slight = ((1 << ind) & (LANE_SLIGHT_RIGHT | LANE_SLIGHT_LEFT)) != 0;
+    return (lanes[i] & LANE_NONE) || (slight && (lanes[i] & LANE_STRAIGHT)) ? 1 << i : 0;
+}
+
+// The lanes one may take for a maneuver of that modifier: the turn's own arrow, else its side's, else the outer lane
+// (OuterLane); bit i = lane i from the left; 0 = none fits
+int LaneValid(const WORD* lanes, int n, const char* mod)
+{
+    int ind = 1;
+    while (ind < LANE_KINDS && strcmp(kLaneInd[ind], mod))
+        ind++;
+    if (ind == LANE_KINDS || n > kGraphLanes)
+        return 0;
+    int m = LanesWith(lanes, n, 1 << ind);
+    if (!m)
+        m = LanesWith(lanes, n, LaneSide(ind));
+    return m ? m : OuterLane(lanes, n, ind);
+}
+
+static void PutIndications(JBuf& b, int bits)
+{
+    const char* sep = "";
+    for (int k = 0; k < LANE_KINDS; k++)
+        if (bits >> k & 1) {
+            JPutf(b, "%s\"%s\"", sep, kLaneInd[k]);
+            sep = ",";
+        }
+}
+
+// The maneuver's intersection with the lanes of the road in (OSRM's "intersections"): only when a lane fits the turn
+static void PutLanes(JBuf& b, const WORD* lanes, const char* mod, int lat, int lon)
+{
+    int valid = lanes ? LaneValid(lanes + 1, lanes[0], mod) : 0;
+    if (!valid)
+        return;
+    JPutf(b, ",\"intersections\":[{\"location\":[%.6f,%.6f],\"lanes\":[", lon / 1e6, lat / 1e6);
+    for (int i = 0; i < lanes[0]; i++) {
+        JPutf(b, "%s{\"valid\":%s,\"indications\":[", i ? "," : "", valid >> i & 1 ? "true" : "false");
+        PutIndications(b, lanes[1 + i]);
+        JPut(b, "]}");
+    }
+    JPut(b, "]}]");
+}
+
+// A step; lanes: the road in's (LanesOf), NULL none
 static void Step(JBuf& b, bool& firstStep, const char* type, const char* mod, double before, double after, int lat,
-                 int lon, DWORD name, int exit)
+                 int lon, DWORD name, int exit, const WORD* lanes)
 {
     if (!firstStep)
         JPut(b, ",");
@@ -811,7 +915,9 @@ static void Step(JBuf& b, bool& firstStep, const char* type, const char* mod, do
             "\"location\":[%.6f,%.6f]", type, mod, (int)before, (int)after, lon / 1e6, lat / 1e6);
     if (exit > 0)
         JPutf(b, ",\"exit\":%d", exit);
-    JPut(b, "}}");
+    JPut(b, "}");
+    PutLanes(b, lanes, mod, lat, lon);
+    JPut(b, "}");
 }
 
 // A road class's rank for the instructions (make_graph.py's kClasses): 0 motorway, trunk .. 5 service, track; the
@@ -864,6 +970,9 @@ struct Turn {            // a node between two of the way's edges
     double rivalMin;     // the straightest rival's turn (its size)
     double rivalTurn;
     DWORD  rivalName;    // the straightest rival's name
+    int    stays;        // the other ways out at most a class below the edge before (the road we leave, going on)
+    double stayMin;      // the straightest of them: its turn's size, its turn
+    double stayTurn;
 };
 
 // The other ways out of the node (from, the way going on by e) and the rivals among them.
@@ -872,14 +981,24 @@ static void Rivals(DWORD from, DWORD e, const Prev& prev, Turn* t)
     t->alts = t->rivals = 0;
     t->rivalMin = 1e9;
     t->rivalTurn = 0;
+    t->stays = 0;
+    t->stayMin = 1e9;
+    t->stayTurn = 0;
     for (DWORD k = s_g.first[from]; k < s_g.first[from + 1]; k++) {
         const GEdge& o = s_g.edges[k];
         if (k == e || BackWay(o, prev))
             continue;
         t->alts++;
+        double ot = TurnOf(prev.after, FirstBearing(from, k));
+        if (Level(o.cls) <= Level(t->p->cls) + 1) {
+            t->stays++;
+            if (fabs(ot) < t->stayMin) {
+                t->stayMin = fabs(ot);
+                t->stayTurn = ot;
+            }
+        }
         if (Level(o.cls) > Level(t->g->cls))
             continue;
-        double ot = TurnOf(prev.after, FirstBearing(from, k));
         t->rivals++;
         if (fabs(ot) < t->rivalMin) {
             t->rivalMin = fabs(ot);
@@ -921,19 +1040,26 @@ static int RoundaboutExit(const Way& w, int i, int cnt, DWORD* name)
     return exitNo;
 }
 
-static const char* RampKind(const Turn& t, const char** mod)   // onto a link: off a big road, else onto one
+// Onto a link: off a big road, else onto one. Nearly straight off it (the user 2026-11-22, MKAD's exit 105A: 14 degrees,
+// told "straight") - the side of the road we leave, going on beside it, maybe a class lower (Шоссе Энтузиастов's
+// service road: primary, a link back to the big road off it, then secondary - not a rival, told "straight").
+static const char* RampKind(const Turn& t, const char** mod)
 {
     if (!(t.g->flags & 4) || (t.p->flags & 4))
         return NULL;
     *mod = Modifier(t.turn);
+    if (!strcmp(*mod, "straight") && t.stays)
+        *mod = t.turn >= t.stayTurn ? "slight right" : "slight left";
     return t.p->cls <= C_TRUNK ? "off ramp" : "on ramp";
 }
 
-static const char* MergeKind(const Turn& t, const char** mod)   // off a link onto a big road, nearly straight
+// Off a link onto a big road, nearly straight: the driver moves towards the road - a link joining from the right turns
+// right onto it, and moves left (the user 2026-11-22: "keep right" told there).
+static const char* MergeKind(const Turn& t, const char** mod)
 {
     if ((t.g->flags & 4) || !(t.p->flags & 4) || t.g->cls > C_TRUNK || fabs(t.turn) >= 45)
         return NULL;
-    *mod = t.turn > 0 ? "slight right" : "slight left";
+    *mod = t.turn > 0 ? "slight left" : "slight right";
     return "merge";
 }
 
@@ -983,6 +1109,57 @@ static const char* Kind(const Turn& t, const char** mod)
     return k ? k : PlainKind(t, mod);
 }
 
+// A step's name: its edge's; onto unnamed links - the road they lead onto (the user 2026-11-22: "Съезд направо:
+// Щёлковское шоссе", not a nameless exit). The way ends on the links: their own (none).
+static DWORD StepName(const Way& w, int i, int cnt)
+{
+    for (int j = i; j < cnt; j++) {
+        const GEdge& g = s_g.edges[EdgeAt(w, j)];
+        if (!(g.flags & 4) || Named(g))
+            return g.name;
+    }
+    return s_g.edges[EdgeAt(w, i)].name;
+}
+
+// The way's heading kAheadM past the node where its edge i begins (its last when it ends before): the bearing of its
+// segment there. (s_pts reused: the edge i is in the line already.)
+enum { kAheadM = 250, kAheadTurn = 40 };
+static double AheadBearing(const Way& w, int i, int cnt)
+{
+    double left = kAheadM, b = 0;
+    for (int j = i; j < cnt; j++) {
+        Piece pc = PieceAt(w, j, cnt);
+        int n = EdgePts(pc.from, pc.e, s_pts, kPtsCap);
+        if (pc.z && pc.z->seg + 2 < n)
+            n = pc.z->seg + 2;   // (the way ends on its segment seg)
+        for (int k = 1; k < n; k++) {
+            const int* p = s_pts + (k - 1) * 2;
+            double dx = (p[3] - p[1]) * s_kx, dy = (p[2] - p[0]) * 0.111195;
+            b = Bearing(p[0], p[1], p[2], p[3]);
+            if ((left -= sqrt(dx * dx + dy * dy)) <= 0)
+                return b;
+        }
+    }
+    return b;
+}
+
+// A fork or a ramp whose way turns off kAheadTurn+ by kAheadM on is a turn, else a fork - keep to its side (the user
+// 2026-11-22: "keep to a side" is a road that branches and still leads the same way; a crossing with gentle ramps is a
+// turn). The side: the junction's.
+static const char* AheadKind(const char* type, const char** mod, double ahead)
+{
+    bool junction = !strcmp(type, "fork") || !strcmp(type, "off ramp") || !strcmp(type, "on ramp");
+    if (!junction || !strcmp(*mod, "straight"))
+        return type;
+    bool right = strstr(*mod, "right") != NULL;
+    if (fabs(ahead) < kAheadTurn) {
+        *mod = right ? "slight right" : "slight left";
+        return "fork";
+    }
+    *mod = right ? "right" : "left";
+    return "turn";
+}
+
 // The step at the node where the way's edge i (pc) begins, coming by prev; b0: the edge's first bearing.
 static void Maneuver(JBuf& b, bool& first, const Way& w, int i, int cnt, const Piece& pc, const Prev& prev, double b0)
 {
@@ -995,13 +1172,15 @@ static void Maneuver(JBuf& b, bool& first, const Way& w, int i, int cnt, const P
     if ((t.g->flags & 2) && !(t.p->flags & 2)) {   // onto a roundabout
         DWORD name = t.g->name;
         int exitNo = RoundaboutExit(w, i, cnt, &name);
-        Step(b, first, "roundabout", "right", prev.after, b0, la, lo, name, exitNo);
+        Step(b, first, "roundabout", "right", prev.after, b0, la, lo, name, exitNo, NULL);
         return;
     }
     const char* mod;
     const char* type = Kind(t, &mod);
     if (type)
-        Step(b, first, type, mod, prev.after, b0, la, lo, t.g->name, 0);
+        type = AheadKind(type, &mod, TurnOf(prev.after, AheadBearing(w, i, cnt)));
+    if (type)
+        Step(b, first, type, mod, prev.after, b0, la, lo, StepName(w, i, cnt), 0, LanesOf(prev.e));
 }
 
 // One leg's steps: depart, the maneuvers at the nodes between its edges, arrive. The line grows.
@@ -1018,7 +1197,7 @@ static void Steps(JBuf& b, Line& line, const Way& w, bool& first, bool depart, b
         AddEdge(line, pc.from, pc.e, pc.a, pc.z, &b0, &b1);
         if (i == 0 && depart)
             Step(b, first, "depart", "straight", 0, b0, line.p[before * 2], line.p[before * 2 + 1],
-                 s_g.edges[pc.e].name, 0);
+                 s_g.edges[pc.e].name, 0, NULL);
         else if (i > 0)
             Maneuver(b, first, w, i, cnt, pc, prev, b0);
         prev.e = pc.e;
@@ -1027,7 +1206,7 @@ static void Steps(JBuf& b, Line& line, const Way& w, bool& first, bool depart, b
     }
     if (arrive)
         Step(b, first, "arrive", "straight", prev.after, 0, line.p[(line.n - 1) * 2], line.p[(line.n - 1) * 2 + 1],
-             s_g.edges[prev.e].name, 0);
+             s_g.edges[prev.e].name, 0, NULL);
 }
 
 static void FreeWay(Way& w)

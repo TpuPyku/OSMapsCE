@@ -124,12 +124,18 @@ class Maps(unittest.TestCase):
 
     def test_release_store_key(self):
         """The publish job with the own server: the catalog tells its folder as "files" (the disk's link, old
-        OSMapsCE's, kept from the previous catalog); a catalog made after keeps both."""
+        OSMapsCE's, kept from the previous catalog); a catalog made after keeps both. The catalog itself goes up there too
+        (the user 2026-11-22: GitHub's storage out of reach from the unit by TLS 1.2 - OSMapsCE asks the server first)."""
         os.makedirs(self.dist)
         with open(os.path.join(self.dist, 'catalog.json'), 'w', encoding='utf-8') as f:
             json.dump({'regions': [{'name': 'tiny', 'bbox': [49.9, 52.9, 50.1, 53.1]}],
                        'disk': 'https://disk.example/d/x'}, f)
-        store = type('S', (), {'KEY': 'files', 'upload': lambda self, path, file: None,
+        ups = {}
+
+        def upload(self, path, file):
+            with open(file, encoding='utf-8') if path == 'catalog.json' else open(file, 'rb') as f:
+                ups[path] = json.load(f) if path == 'catalog.json' else None
+        store = type('S', (), {'KEY': 'files', 'upload': upload,
                                'publish': lambda self, path: 'http://203.0.113.5/maps/'})()
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, 'w') as z:
@@ -140,6 +146,7 @@ class Maps(unittest.TestCase):
             got = release_regions.publish_disk(self.dist, store, self.planet(), '20261030')
         self.assertEqual((got['files'], got['disk']), ('http://203.0.113.5/maps/', 'https://disk.example/d/x'))
         self.assertIs(got['overview']['files'], True)
+        self.assertEqual(ups.get('catalog.json'), got)   # (the server's catalog = the release's, written whole)
         os.makedirs(os.path.join(self.tmp, 'd2'))
         again = release_regions.catalog(os.path.join(self.tmp, 'd2'), got, {'tiny'})
         self.assertEqual((again['files'], again['disk']), (got['files'], got['disk']))
@@ -151,6 +158,19 @@ class Maps(unittest.TestCase):
                                                 tmp).KEY, 'files')
         self.assertEqual(release_regions.store({'YANDEX_DISK_TOKEN': 'T'}, tmp).KEY, 'disk')
         self.assertIsNone(release_regions.store({}, tmp))
+
+    def test_bundled_roots(self):
+        """HTTPS with its own roots besides Windows' (the user 2026-11-19, a Windows 7 PC: CERTIFICATE_VERIFY_FAILED,
+        unable to get local issuer certificate - its store lacks the roots of GitHub's and Let's Encrypt's chains)."""
+        import ssl
+        import certifi
+        bundled = ssl.create_default_context(cafile=certifi.where()).get_ca_certs()
+        ctx = maps_app.use_bundled_roots()
+        self.assertGreaterEqual(len(ctx.get_ca_certs()), len(bundled))
+        self.assertEqual(ctx.verify_mode, ssl.CERT_REQUIRED)   # (still checked: only more roots)
+        self.assertTrue(ctx.check_hostname)
+        https = [h for h in urllib.request._opener.handlers if isinstance(h, urllib.request.HTTPSHandler)]
+        self.assertEqual([h._context for h in https], [ctx])   # every urlopen of the app (pmextract, yadisk) uses it
 
     def test_secure_first(self):
         """The own server's archives over HTTPS first (the user 2026-11-12: its certificate for its address; Windows 7
@@ -535,7 +555,7 @@ class Maps(unittest.TestCase):
                 self.assertFalse(thread.called)                                     # nothing chosen: nothing
                 app.chosen = {'a_oblast'}
                 app.write_chosen()
-                self.assertEqual(thread.call_args[1]['args'][1:], ([cat['regions'][0]], drive, True, True))   # no
+                self.assertEqual(thread.call_args[1]['args'][1:], ([cat['regions'][0]], drive, True, True, True))   # no
                                                                                    # trunk roads, no overview there: too
                 self.assertEqual(app.go['text'], 'Отменить запись')                 # busy: the button cancels
                 self.assertEqual(str(app.go['style']), 'Busy.TButton')
@@ -549,7 +569,7 @@ class Maps(unittest.TestCase):
                 self.assertFalse(app.stop.is_set())                                 # the next one not stopped
                 app.chosen = {'overview'}                                           # that row alone: both
                 app.write_chosen()
-                self.assertEqual(thread.call_args[1]['args'][1:], ([], drive, True, True))
+                self.assertEqual(thread.call_args[1]['args'][1:], ([], drive, True, True, True))   # (cameras: on)
                 app.on_done(None)
                 self.assertEqual(app.go['text'], 'Собрать выбранные карты')   # (renamed: the user 2026-11-12)
                 self.assertEqual(str(app.go['style']), 'Go.TButton')
@@ -565,7 +585,7 @@ class Maps(unittest.TestCase):
                 app.click(type('E', (), {'x': bx[0] + 5, 'y': bx[1] + 5})())        # its button: that source's zip
                 self.assertEqual(app.chosen, set())                                 # (not picked)
                 self.assertEqual(thread.call_args[1]['args'][1:], ([('a_oblast', app.cat['regions'][0])], 'files',
-                                                                   drive))
+                                                                   drive, True))
                 self.assertEqual(app.go['text'], 'Отменить запись')                 # the bottom button cancels it
                 app.get_ready('a_oblast', 'files')
                 self.assertEqual(thread.call_count, 1)                              # not twice at once

@@ -408,6 +408,9 @@ bool MapsInstall(const char* url, const wchar_t* data, const char* name, int kin
 // the card has none. The regions go where OffWriteDir says (the volume with \OSMapsData already, else the
 // removable one with the most room, else the program's folder).
 static const char kAssets[] = "https://github.com/TpuPyku/OSMapsCE/releases/download/maps/";
+// The catalog first from the maps' own server (the user 2026-11-22: GitHub's storage, some of its addresses, out of
+// reach by TLS 1.2 - "the catalog not got"); asked once (through a modem the server's address is closed: no waits)
+static const char kServerCatalog[] = "http://osmapsce.duckdns.org/maps/catalog.json";
 enum { kMaxRegions = 200 };
 
 static MapRegion        s_reg[kMaxRegions];
@@ -483,8 +486,14 @@ static DWORD WINAPI ListThread(LPVOID)
     _snprintf(url, sizeof(url), "%scatalog.json", kAssets);
     unsigned char* body = NULL;
     int len = 0, status = 0;
-    int err = GetAgain(url, &body, &len, &status);
+    int err = GetUrl(kServerCatalog, NULL, &body, &len, &status);
     bool ok = err == NET_OK && status == 200 && body;
+    if (!ok) {
+        free(body);
+        body = NULL;
+        err = GetAgain(url, &body, &len, &status);
+        ok = err == NET_OK && status == 200 && body;
+    }
     static MapRegion got[kMaxRegions];
     int n = ok ? MapsCatalog((const char*)body, got, kMaxRegions) : 0;
     char disk[256] = "", files[256] = "";

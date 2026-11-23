@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <math.h>
+#include "lanes.h"
 
 #define APP_NAME   L"OSMapsCE"
 #define APP_CLASS  L"OSMapsCE_Wnd"
@@ -39,6 +40,7 @@ struct Config {
     int     parking;        // car parks on the map, in turn with the traffic on one button (layers.h)
     int     layerSignals;   // traffic lights on the map
     int     layerBumps;     // speed bumps on the map, and the warning on the way
+    int     layerDangers;   // ... the dangers (danger.lay): DANGERS_OFF, DANGERS_MAIN, DANGERS_ALL (layers.h)
     int     follow;         // GPS mode: 0 off, 1 north-up, 2 heading-up
     int     night;          // dark map: lightness inverted, dimmed
     int     vector;         // the base map: 0 OSM raster tiles, 1 vector tiles (OpenFreeMap, vtile.cpp)
@@ -288,10 +290,10 @@ struct RouteInfo {
     bool           complex;     // the next maneuver a fork, a ramp, a roundabout, a merge (the junction card)
     int            shape;       // its point on the line (RoutePoints)
     int            man;         // its number on the route (the voice prompts: voice.h)
-    int            act;         // what it asks (VA_*), thenAct - the one after it when close behind (kThenM)
-    int            thenAct;
+    int            act;         // what it asks (VA_*)
     int            serial;      // the route's number: a new one for each answer of the router
     int            vias;        // the stops left on the way
+    LaneSet        lanes;       // the lanes before the next maneuver (n 0: none known)
 };
 void SearchStart(const wchar_t* q, double lon, double lat);
 int  SearchState();

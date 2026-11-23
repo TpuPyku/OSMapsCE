@@ -24,6 +24,7 @@ import zipfile
 
 import pmextract
 import release_regions
+import speedcams
 import yadisk
 from maps_lang import EN
 
@@ -91,6 +92,7 @@ def app_version(build=BUILD):
 
 STAGE = 'OSMapsCE-Maps'   # the PC's temp folder the maps go to first (copy_to: onto the card after)
 STAGE_DAYS = 7            # left longer (a job given up): removed, not gone on with
+CAMS_CACHE = os.path.join(tempfile.gettempdir(), STAGE + '-cams')   # openspeedcam.net's file, once a run (speedcams)
 
 
 http_get = pmextract.http_get
@@ -130,6 +132,21 @@ def download_to(url, path, tell, open_url=urllib.request.urlopen, piece=1 << 20)
 
 
 HTTPS_PORT = 9443   # the own server's HTTPS (2026-11-12: its 443 is another service's)
+
+
+def use_bundled_roots():
+    """HTTPS for every urlopen of the app with certifi's roots besides Windows' (the user 2026-11-19, Windows 7:
+    CERTIFICATE_VERIFY_FAILED - unable to get local issuer certificate: its store lacks the roots of GitHub's and
+    Let's Encrypt's chains; Python 3.8 there takes only what the store holds). Checked as before, only more roots."""
+    import ssl
+    ctx = ssl.create_default_context()
+    try:
+        import certifi
+        ctx.load_verify_locations(cafile=certifi.where())
+    except (ImportError, OSError):   # (no certifi: Windows' roots alone, as before)
+        pass
+    urllib.request.install_opener(urllib.request.build_opener(urllib.request.HTTPSHandler(context=ctx)))
+    return ctx
 
 
 def secure_first(url):
@@ -274,6 +291,14 @@ def install(entry, drive, get_file, get_bytes, maxzoom, progress=None, tiles_dat
                 continue
             with open(os.path.join(dst, f), 'wb') as out:
                 out.write(z.read(f) + (b'tiles=%s\n' % tiles_date.encode() if f == 'region.txt' else b''))
+
+
+def write_cams(cat, drive, names, rows):
+    """The cameras and dangers (speedcams' rows) into the drive's regions of these names, each its catalog bbox's: how
+    many points written."""
+    boxes = {r['name']: r['bbox'] for r in cat['regions']}
+    folders = [(n, os.path.join(drive, 'OSMapsData', n)) for n in names if n in boxes]
+    return sum(speedcams.put(f, speedcams.cut(rows, boxes[n])) for n, f in folders if os.path.isdir(f))
 
 
 def copy_file(src, dst, tell, piece=1 << 20):
@@ -538,6 +563,7 @@ class App:
         self.drive = tk.StringVar(value=(removable_drives() or [''])[0])
         self.find = tk.StringVar()
         self.status = tk.StringVar(value=T('Загрузка списка областей…'))
+        self.cams_on = tk.BooleanVar(value=True)   # the cameras with each region written (the user 2026-11-22)
         self.style()
         self.layout()
         self.find.trace_add('write', lambda *a: self.refresh())
@@ -568,6 +594,8 @@ class App:
         st.configure('Horizontal.TProgressbar', background=ACCENT, troughcolor=PANEL, borderwidth=0)
         st.configure('Dim.TLabel', foreground=DIM)
         st.configure('Cell.TButton', padding=0)
+        st.configure('TCheckbutton', indicatorbackground=ROW, indicatorforeground=ACCENT)
+        st.map('TCheckbutton', background=[('active', INK)], indicatorbackground=[('selected', ROW)])
 
     def layout(self):
         ttk, top = self.ttk, self.ttk.Frame(self.root)
@@ -616,7 +644,10 @@ class App:
         bottom.pack(fill='x', padx=12, pady=(0, 12))
         self.go = ttk.Button(bottom, text=GO, style='Go.TButton', command=self.write_chosen)
         self.go.pack(side='left')
+        ttk.Checkbutton(bottom, text=T('Камеры и опасности (openspeedcam.net)'),
+                        variable=self.cams_on).pack(side='left', padx=12)
         ttk.Button(bottom, text=T('Удалить с флешки'), command=self.remove_chosen).pack(side='right')
+        ttk.Button(bottom, text=T('Обновить камеры'), command=self.update_cams).pack(side='right', padx=6)
 
     def work(self, job, *args):   # (in the thread: an error shown, not lost; then the button back)
         try:
@@ -804,8 +835,8 @@ class App:
             self.go.state(['disabled'])
         elif entries or trunk or overview:
             self.go.configure(text=BUSY, style='Busy.TButton')
-            threading.Thread(target=self.work, args=(self.write_all, entries, drive, trunk, overview),
-                             daemon=True).start()
+            threading.Thread(target=self.work, args=(self.write_all, entries, drive, trunk, overview,
+                                                     self.cams_on.get()), daemon=True).start()
 
     def on_done(self, _):   # the writing over (or failed, or stopped): the button back
         self.stop.clear()
@@ -855,9 +886,34 @@ class App:
             self.status.set(T('Готового архива %s нет') % (T('на сервере') if source == FILES else T('на Я.Диске')))
             return
         self.go.configure(text=BUSY, style='Busy.TButton')
-        threading.Thread(target=self.work, args=(self.fetch_ready, jobs, source, drive), daemon=True).start()
+        threading.Thread(target=self.work, args=(self.fetch_ready, jobs, source, drive, self.cams_on.get()),
+                         daemon=True).start()
 
-    def fetch_ready(self, jobs, source, drive):
+    def update_cams(self):
+        """"Обновить камеры" (the user 2026-11-22): the cameras of the regions on the drive anew, no maps downloaded;
+        the bottom button cancels it as a writing; not while writing."""
+        drive = self.drive.get()
+        if self.go['text'] != GO or not self.have():
+            self.status.set(T('Идёт запись') if self.go['text'] != GO else T('Областей на флешке нет'))
+            return
+        self.go.configure(text=BUSY, style='Busy.TButton')
+        threading.Thread(target=self.work, args=(self.cams_only, drive), daemon=True).start()
+
+    def cams_only(self, drive):
+        self.news.put(('status', T('Камеры обновлены') + self.add_cams(drive, list(installed(drive))) + '.'))
+
+    def add_cams(self, drive, names):
+        """openspeedcam.net's cameras and dangers into the drive's regions (speedcams; the file once a run): what to
+        tell. Not downloaded: told, the maps written all the same."""
+        tell = lambda part, text: self.tell(T('Камеры'), part, text)   # noqa: E731
+        try:
+            raw = speedcams.download(CAMS_CACHE, lambda url: download(url, tell))
+        except (OSError, ValueError) as e:
+            return T(', камеры не скачаны (%s)') % e
+        got = write_cams(self.cat, drive, names, speedcams.parse(raw))
+        return T(', камер и опасностей: %d (данные камер: openspeedcam.net)') % got
+
+    def fetch_ready(self, jobs, source, drive, cams=False):
         """The whole zips into the PC's temp folder, unpacked there, then onto the card at once (copy_to); the bar for
         the whole job - each zip a part of it, the copy the last."""
         stage = os.path.join(stage_dir(), 'ready')
@@ -877,8 +933,10 @@ class App:
         if OVERVIEW in [n for n, _ in jobs]:
             drop_old_trunk(drive)
         shutil.rmtree(stage, ignore_errors=True)
-        self.news.put(('status', T('Готово %s: %s. Флешку — в ГУ (папка OSMapsData в корне).') % (
-            T('с сервера') if source == FILES else T('с Я.Диска'), ', '.join(titles.get(n, n) for n, _ in jobs))))
+        said = T('Готово %s: %s') % (T('с сервера') if source == FILES else T('с Я.Диска'),
+                                     ', '.join(titles.get(n, n) for n, _ in jobs))
+        said += self.add_cams(drive, [n for n, _ in jobs]) if cams else ''
+        self.news.put(('status', said + T('. Флешку — в ГУ (папка OSMapsData в корне).')))
         self.news.put(('catalog', self.cat))
 
     def write_overview(self, stage, get_bytes, day, k, total, drive=None):   # the overview into stage: the bar's part k
@@ -894,9 +952,10 @@ class App:
         self.news.put(('progress', part))
         self.news.put(('status', '%s: %s' % (head, text)))
 
-    def write_all(self, entries, drive, trunk, overview=False):
+    def write_all(self, entries, drive, trunk, overview=False, cams=False):
         """The regions, the overview, the trunk roads into the PC's temp folder, then all onto the card (copy_to); the
-        bar for the whole job (the user 2026-10-29: full before the end) - each a part of it, the copy the last."""
+        bar for the whole job (the user 2026-10-29: full before the end) - each a part of it, the copy the last; then
+        the regions' cameras (cams: the checkbox) straight onto the card."""
         total = len(entries) + (1 if trunk else 0) + (1 if overview else 0) + 1
         stage = stage_dir()
         done = self.write_stage(entries, stage, drive, trunk, total, overview)
@@ -904,6 +963,7 @@ class App:
         if trunk_date(drive):   # the pack holds the graph now
             drop_old_trunk(drive)
         shutil.rmtree(stage, ignore_errors=True)   # (an error before: kept - the next time goes on there)
+        done += self.add_cams(drive, [e['name'] for e in entries]) if cams else ''
         self.news.put(('status', done + T('. Флешку — в ГУ (папка OSMapsData в корне).')))
         self.news.put(('catalog', self.cat))
 
@@ -932,6 +992,7 @@ class App:
 
 
 if __name__ == '__main__':
+    use_bundled_roots()
     import tkinter
     import tkinter.filedialog   # noqa: F401 (App.choose)
     import tkinter.ttk

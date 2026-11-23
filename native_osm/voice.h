@@ -20,9 +20,15 @@ void VoiceReset(VoiceState* s);
 int VoiceDue(VoiceState* s, int man, int nextM, int kmh);
 
 // The clips of a prompt (ids of phrases.tsv) into out, their count: stage VS_FAR / VS_MID with the distance,
-// VS_NOW without; then = the maneuver after it when it comes within kThenM (VA_NONE: none).
-enum { kThenM = 200 };
-int VoiceSay(int stage, int act, int nextM, int then, const char** out, int cap);
+// VS_NOW without; lanes (VoiceLanes' clip, NULL: none) after the action, at the far and mid ones only. The maneuver
+// close behind is never told with it (the user 2026-11-22: "then ..." said before the first was made misled) - its
+// own prompt comes once the first is passed.
+int VoiceSay(int stage, int act, int nextM, const char* lanes, const char** out, int cap);
+
+// The lanes to take, as a clip (the user 2026-11-22): n lanes left to right, valid - bit i: the route's lane i. One
+// block from a side (up to 3) - "keep to the two left lanes"; in the middle - "the middle lane(s)"; all, none, not one
+// block, 4+ from a side - NULL.
+const char* VoiceLanes(int n, unsigned valid);
 
 // The route's own prompt when it changes (an id of phrases.tsv, 0: none): a new route, a new one off the line, the
 // arrival, a stop passed. serial: the route's number (a new one each), vias: the stops left.
@@ -35,10 +41,15 @@ struct VoiceWav { int at, len, rate, channels, bits; };
 bool VoiceWavParse(const unsigned char* b, int n, VoiceWav* w);
 
 // The sound device for a prompt (sheet 29 p. 27: not heard over the radio without the shell): via - who turned the
-// radio down (0 no one, 1 the stock shell, 2 VestaHome), devs - waveOutGetNumDevs(). Without the shell the MCU lets
-// through "Audio Output" 1 only (VestaHome's beep, HU 2026-10-18): 1 there; otherwise -1 (WAVE_MAPPER).
+// radio down (0 no one, 1 the stock shell, 2 VestaHome), devs - waveOutGetNumDevs(). With the radio down the MCU lets
+// through "Audio Output" 1 only (VestaHome's beep, HU 2026-10-18; the stock shell the same - the users 2026-11-21:
+// no prompts over the radio there): 1; no one asked: -1 (WAVE_MAPPER).
 int VoiceDevice(int via, int devs);
 // The voice's volume (the user 2026-11-12: three levels, set in the program): the phrase's PCM scaled in place -
 // level 1 quiet, 2 medium, 3 loud (as recorded); 16-bit signed or 8-bit unsigned samples
 enum { kVoiceQuiet = 1, kVoiceMedium, kVoiceLoud };
 void VoiceGain(char* pcm, int len, int bits, int level);
+// The level a prompt is played at, by who turned the radio down (VoiceDevice's via): "Громко" boosted only without
+// VestaHome (the user 2026-11-21: with it loud enough over the music; the stock shell's and other units' quiet) -
+// with VestaHome 0, as recorded.
+int  VoiceLevelFor(int level, int via);

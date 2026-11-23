@@ -1,4 +1,4 @@
-// The voice prompts: what to say for a maneuver and when (voice.h).
+﻿// The voice prompts: what to say for a maneuver and when (voice.h).
 #include "voice.h"
 #include <string.h>
 
@@ -149,45 +149,86 @@ bool VoiceWavParse(const unsigned char* b, int n, VoiceWav* w)
     return true;
 }
 
+const char* VoiceLanes(int n, unsigned valid)
+{
+    static const char* const kLeft[] = { 0, "lanes_left1", "lanes_left2", "lanes_left3" };
+    static const char* const kRight[] = { 0, "lanes_right1", "lanes_right2", "lanes_right3" };
+    unsigned all = n > 0 && n < 32 ? (1u << n) - 1 : 0;
+    valid &= all;
+    if (!valid || valid == all)
+        return NULL;
+    int first = 0, k = 0;
+    while (!(valid >> first & 1))
+        first++;
+    while (valid >> (first + k) & 1)
+        k++;
+    if (valid >> (first + k))
+        return NULL;   // (not one block)
+    if (first == 0 || first + k == n)
+        return k <= 3 ? (first == 0 ? kLeft : kRight)[k] : NULL;
+    return k == 1 ? "lanes_middle" : "lanes_middles";
+}
+
 static bool Silent(int stage, int act) { return act == VA_NONE || (act == VA_FINISH && stage == VS_NOW); }
 
-int VoiceSay(int stage, int act, int nextM, int then, const char** out, int cap)
+int VoiceSay(int stage, int act, int nextM, const char* lanes, const char** out, int cap)
 {
-    const char* c[4];
+    const char* c[3];
     int n = 0;
     if (stage != VS_NOW)
         c[n++] = Distance(nextM);
     c[n++] = kAct[act];
-    int must = n;   // ("then" and its action: whole or not at all)
-    if (stage == VS_NOW && then != VA_NONE) {
-        c[n++] = "then";
-        c[n++] = kAct[then];
-    }
-    n = n > cap ? must : n;
+    if (stage != VS_NOW && lanes && n < cap)
+        c[n++] = lanes;
     if (Silent(stage, act) || n > cap)
         return 0;
     memcpy(out, c, n * sizeof(c[0]));
     return n;
 }
 
+// "Громко" (the users 2026-11-21: the prompts quieter than the music, on any unit - the clips' RMS -17 dB, music's
+// -9..-12): x 2.5 (+8 dB), and above half the scale a soft limit towards the top - y = K + R * e / (e + R), e the
+// excess over the knee K, R the room above it: as loud as the music, nothing clipped. Integers (ARM without an FPU).
+static int Loud(int x)
+{
+    enum { kKnee = 16384, kRoom = 32767 - kKnee };
+    int v = x * 5 / 2, a = v < 0 ? -v : v;
+    if (a > kKnee) {
+        int e = a - kKnee;
+        a = kKnee + kRoom * e / (e + kRoom);
+    }
+    return v < 0 ? -a : a;
+}
+
+static int Scaled(int x, int level)   // a sample (-32768..32767) at the level, kVoiceQuiet..kVoiceLoud
+{
+    static const int kPct[] = { 30, 55 };   // quiet, medium
+    if (level == kVoiceLoud)
+        return Loud(x);
+    return x * kPct[level - kVoiceQuiet] / 100;   // (VoiceGain: the level in range)
+}
+
 void VoiceGain(char* pcm, int len, int bits, int level)
 {
-    static const int kPct[] = { 30, 55, 100 };   // (by level from quiet; none: as recorded)
-    int pct = level >= kVoiceQuiet && level <= kVoiceLoud ? kPct[level - kVoiceQuiet] : 100;
-    if (pct == 100)
+    if (level < kVoiceQuiet || level > kVoiceLoud)   // (none, or past loud: as recorded)
         return;
     if (bits == 16) {
         short* s = (short*)pcm;
         for (int i = 0; i < len / 2; i++)
-            s[i] = (short)(s[i] * pct / 100);
+            s[i] = (short)Scaled(s[i], level);
     } else {
         unsigned char* b = (unsigned char*)pcm;
         for (int i = 0; i < len; i++)
-            b[i] = (unsigned char)(128 + (b[i] - 128) * pct / 100);
+            b[i] = (unsigned char)(128 + Scaled((b[i] - 128) * 256, level) / 256);
     }
 }
 
 int VoiceDevice(int via, int devs)
 {
-    return via == 2 && devs > 1 ? 1 : -1;
+    return (via == 1 || via == 2) && devs > 1 ? 1 : -1;
+}
+
+int VoiceLevelFor(int level, int via)
+{
+    return level == kVoiceLoud && via == 2 ? 0 : level;
 }

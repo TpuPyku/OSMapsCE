@@ -9,6 +9,7 @@
 #include "vhap.h"      // VestaCore: VestaHome's add-ons' protocol
 #include "lang.h"      // the interface's languages
 #include "startpt.h"   // where a route starts
+#include "recent.h"    // the recent addresses of "Куда едем?"
 #include "vnav.h"      // VestaCore: the next manoeuvre as VestaHome is told it, its sign
 #include "vfont.h"     // VestaCore: the fonts
 static const wchar_t* const kRelease = L"2.1";   // raise by hand: minor - significant changes, major - big releases
@@ -216,7 +217,7 @@ static bool       s_showHits;       // the places found instead of the keyboard
 static VKeys      s_kb;
 static int        s_kbPressed = -1;
 enum { kQueryCap = 120 };   // (SearchStart: 256 bytes of UTF-8 - 120 Russian letters fit)
-enum { K_SHIFT = 100, K_LANG, K_SPACE, K_BS, K_FIND, K_BACK, K_FIELD, K_PANEL, K_HIT = 200, K_FAVDEL = 300 };
+enum { K_SHIFT = 100, K_LANG, K_SPACE, K_BS, K_FIND, K_BACK, K_FIELD, K_PANEL, K_HIT = 200 };
 enum { kKbY = 66, kKbRowH = 81 };
 
 // The route editor (a long press on the map, the user's design 2026-10-26): "from" (the car by default, or an
@@ -227,7 +228,7 @@ enum { kKbY = 66, kKbRowH = 81 };
 enum { P_BACK = 1, P_ROW = 10, P_DEL = 20, P_ADDVIA = 30, P_GO, P_CH_GPS = 40, P_CH_SEARCH, P_CH_FAV, P_CH_MAP,
        P_CH_CANCEL, P_PICK_CANCEL = 50, M_VIA = 60, M_NEW, M_FAV, M_CARD, M_STOP_OUT, M_STOP_UP, M_STOP_CANCEL, M_RESUME_GO,
        M_RESUME_NO, M_RESUME_BOX, P_TRIP_X = 80,
-       P_TRIP, F_GO = 90, F_EDIT, F_CANCEL, E_ICON = 100, E_NAME = E_ICON + VFAV_ICONS, E_DEL, E_DONE, E_BOX, W_FIELD = 120, W_FAV, W_BOX = W_FAV + 3 };
+       P_TRIP, F_GO = 90, F_EDIT, F_CANCEL, F_VIA, E_ICON = 100, E_NAME = E_ICON + VFAV_ICONS, E_DEL, E_DONE, E_BOX, W_FIELD = 120, W_FAV, W_REC, W_BOX = W_REC + kRecentMax };
 static bool       s_plan;
 static int        s_planChoose = -1;   // the slot whose choices are open
 static int        s_planPressed = -1;
@@ -243,7 +244,6 @@ static int        s_lpStop = -1;       // the stop whose sign was held (its menu
 static VFavs      s_favs;
 static bool       s_favName;           // the keyboard names a new favourite (the point s_lpLon / s_lpLat)
 static bool       s_showFavs;          // the list shows the favourites (else the search's hits)
-static int        s_favDel = -1;       // the favourite asked "ТОЧНО?" before it goes
 // Their marks on the map (the user 2026-11-02): a tap on one - its menu (the route there, change, cancel); "change" -
 // its card: the sign, the name (the keyboard), deleted ("ТОЧНО?").
 static int        s_favMenu = -1;      // the mark tapped: its menu
@@ -334,15 +334,17 @@ static int  s_flSign = -1;   // the favourite whose sign is being chosen (the si
 // 2026-10-29: the graphs for the routes and the search without the internet) - the release's catalog by its titles,
 // kMapsRows a page, a row's button downloads it (the trunk roads after the first one), "ОТМЕНА" while it goes;
 // "ЗАГРУЗИТЬ" and "ОК" (the same again) asked "ТОЧНО?"
+// (seven rows, as the main page's: kMainRowH; the user 2026-11-22: the dangers' row)
 enum { M_KIND_PREV, M_KIND_NEXT, M_DETAIL_PREV, M_DETAIL_NEXT, M_TRF_PREV, M_TRF_NEXT, M_SIGNAL_PREV, M_SIGNAL_NEXT, M_BUMP_PREV,
-       M_BUMP_NEXT, M_REGIONS, M_BACK, M_COUNT };
+       M_BUMP_NEXT, M_DANGER_PREV, M_DANGER_NEXT, M_REGIONS, M_BACK, M_COUNT };
 static const RECT kMapsCtl[M_COUNT] = {
-    { 512, 79, 560, 123 }, { 712, 79, 760, 123 },     // the steppers: the kind, the detail
-    { 512, 129, 560, 173 }, { 712, 129, 760, 173 },
-    { 512, 179, 560, 223 }, { 712, 179, 760, 223 },   // the traffic: on the map / on the route alone
-    { 512, 229, 560, 273 }, { 712, 229, 760, 273 },   // the layers of a downloaded region: traffic lights, speed bumps
-    { 512, 279, 560, 323 }, { 712, 279, 760, 323 },
-    { 576, 329, 760, 373 },                            // the regions' page
+    { 512, 78, 560, 118 }, { 712, 78, 760, 118 },     // the steppers: the kind, the detail
+    { 512, 124, 560, 164 }, { 712, 124, 760, 164 },
+    { 512, 170, 560, 210 }, { 712, 170, 760, 210 },   // the traffic: on the map / on the route alone
+    { 512, 216, 560, 256 }, { 712, 216, 760, 256 },   // the layers of a downloaded region: traffic lights, speed bumps,
+    { 512, 262, 560, 302 }, { 712, 262, 760, 302 },   // dangers
+    { 512, 308, 560, 348 }, { 712, 308, 760, 348 },
+    { 576, 354, 760, 394 },                            // the regions' page
     { 8, 412, 80, 480 },                               // back to the settings
 };
 enum { kMapsRows = 6 };
@@ -1360,6 +1362,8 @@ static void OnMapsCtl(int id)
     case M_SIGNAL_NEXT: g_cfg.layerSignals = !g_cfg.layerSignals; ConfigSave(); break;
     case M_BUMP_PREV:
     case M_BUMP_NEXT:   g_cfg.layerBumps = !g_cfg.layerBumps; ConfigSave(); break;
+    case M_DANGER_PREV: g_cfg.layerDangers = (g_cfg.layerDangers + DANGERS_COUNT - 1) % DANGERS_COUNT; ConfigSave(); break;
+    case M_DANGER_NEXT: g_cfg.layerDangers = (g_cfg.layerDangers + 1) % DANGERS_COUNT; ConfigSave(); break;
     case M_BACK:        s_maps = false; break;
     case M_REGIONS:
         s_regions = true;
@@ -3236,8 +3240,8 @@ static void FavSign(HDC dc, int icon, int x, int y, int r, COLORREF fg, COLORREF
 }
 
 // The favourites' marks: a dark disc in a white ring, the sign in the accent, the name under it on a card (from
-// kFavNamesZ: further out they pile up); none further out than kFavMarksZ.
-enum { kFavMarksZ = 12, kFavNamesZ = 14 };
+// kFavNamesZ: further out they pile up); none further out than kFavMarksZ (the user 2026-11-22: seen from z8).
+enum { kFavMarksZ = 8, kFavNamesZ = 14 };
 
 static void DrawFavMarks(HDC dc, double cx, double cy, double vx, double vy, double angle)
 {
@@ -3272,7 +3276,7 @@ static void DrawFavMarks(HDC dc, double cx, double cy, double vx, double vy, dou
     }
 }
 
-// ---- the layers of a downloaded region (layers.h): traffic lights, speed bumps, car parks
+// ---- the layers of a downloaded region (layers.h): traffic lights, speed bumps, car parks, dangers
 
 enum { kParkPriceZ = 16, kParkPriceMinPx = 48, kParkCullPx = 480 };
 enum { kLayerZ = 15, kParkingZ = 14, kLayerViewPx = 900, kLayerCarDeg = 4000, kWarnKmh = 15, kWarnMinM = 100, kWarnSec = 10 };
@@ -3280,10 +3284,16 @@ static const LayerPoint* s_layer;
 static int s_layerN, s_layerParks, s_parkLines;
 static const COLORREF kParkPaid = RGB(205, 60, 50), kParkFree = RGB(40, 150, 75);
 
+static unsigned WarnWanted()   // the points warned of on the way: bumps, dangers
+{
+    return LayersWanted(0, g_cfg.layerBumps, g_cfg.layerDangers);
+}
+
 // What is wanted of the region now: the view's points when they are shown; else, for the warning, those around the car
 static bool LayerBox(int* box, double vx, double vy)
 {
-    bool shown = (g_cfg.parking && !g_cfg.traffic && g_cfg.z >= kParkingZ) || ((g_cfg.layerSignals || g_cfg.layerBumps) && g_cfg.z >= kLayerZ);
+    bool shown = (g_cfg.parking && !g_cfg.traffic && g_cfg.z >= kParkingZ) ||
+                 ((g_cfg.layerSignals || g_cfg.layerBumps || g_cfg.layerDangers) && g_cfg.z >= kLayerZ);
     if (shown) {
         double lon0, lat0, lon1, lat1;
         WorldToGeo(vx - kLayerViewPx, vy - kLayerViewPx, g_cfg.z, &lon0, &lat1);
@@ -3294,7 +3304,7 @@ static bool LayerBox(int* box, double vx, double vy)
         box[3] = (int)(lon1 * 1e6);
         return true;
     }
-    if (!g_cfg.layerBumps || !s_gps.valid)
+    if (!WarnWanted() || !s_gps.valid)
         return false;
     int lat = (int)(s_gps.lat * 1e6), lon = (int)(s_gps.lon * 1e6);
     box[0] = lat - kLayerCarDeg;
@@ -3323,7 +3333,8 @@ static void SignalMark(HDC dc, int x, int y)   // a dark box of three lights
     DeleteObject(box);
 }
 
-static void BumpSign(HDC dc, int x, int y)   // the road sign's look: a warning triangle with the bump in it
+// The road sign's look: a warning triangle with the bump in it, or (a danger: the user 2026-11-22) a "!"
+static void WarnSign(HDC dc, int x, int y, bool bump)
 {
     POINT tri[3] = { { x, y - 12 }, { x + 13, y + 10 }, { x - 13, y + 10 } };
     POINT hump[5] = { { x - 7, y + 7 }, { x - 3, y + 1 }, { x + 3, y + 1 }, { x + 7, y + 7 }, { x - 7, y + 7 } };
@@ -3333,7 +3344,12 @@ static void BumpSign(HDC dc, int x, int y)   // the road sign's look: a warning 
     Polygon(dc, tri, 3);
     SelectObject(dc, ink);
     SelectObject(dc, GetStockObject(NULL_PEN));
-    Polygon(dc, hump, 5);
+    if (bump) {
+        Polygon(dc, hump, 5);
+    } else {
+        Rectangle(dc, x - 1, y - 5, x + 2, y + 4);   // (no pen: the right and bottom edges not drawn)
+        Rectangle(dc, x - 1, y + 5, x + 2, y + 8);
+    }
     SelectObject(dc, op);
     SelectObject(dc, ob);
     DeleteObject(pen);
@@ -3357,8 +3373,8 @@ static void LayerMark(HDC dc, const LayerPoint& p, int x, int y)
 {
     if (p.kind == LAY_PARKING)
         ParkingMark(dc, x, y, p.fee);
-    else if (p.kind == LAY_BUMP)
-        BumpSign(dc, x, y);
+    else if (p.kind == LAY_BUMP || p.kind == LAY_DANGER)
+        WarnSign(dc, x, y, p.kind == LAY_BUMP);
     else
         SignalMark(dc, x, y);
 }
@@ -3367,7 +3383,7 @@ static bool LayerShown(const LayerPoint& p)
 {
     if (p.kind == LAY_PARKING)
         return g_cfg.parking && !g_cfg.traffic && g_cfg.z >= kParkingZ;
-    return (p.kind == LAY_BUMP ? g_cfg.layerBumps : g_cfg.layerSignals) && g_cfg.z >= kLayerZ;
+    return LayerWanted(p, LayersWanted(g_cfg.layerSignals, g_cfg.layerBumps, g_cfg.layerDangers)) && g_cfg.z >= kLayerZ;
 }
 
 static void ParkPriceTag(HDC dc, int x, int y, int rub)
@@ -3486,6 +3502,27 @@ static void LayerStamp(HDC dc, const LayerPoint& p, int x, int y)
     StampDraw(dc, key, x - kMarkR, y - kMarkR, 2 * kMarkR + 1, 2 * kMarkR + 1, MarkPaint, (void*)&p, kMarkR, kMarkR);
 }
 
+// The shown points on the screen (lat, lon: y, x), car parks', bumps' and dangers' signs over one another merged into one
+// at their middle (the user 2026-11-16; LayersMergeOnScreen); s_layerParks counted
+enum { kMarkGap = 24 };   // (a car park's, a bump's or a danger's sign: 23 - 26 px wide)
+static LayerPoint s_marks[LAYERS_MAX];
+
+static int LayerMarks(const ParkView& v)
+{
+    int k = 0;
+    for (int i = 0; i < s_layerN && k < (int)(sizeof(s_marks) / sizeof(s_marks[0])); i++) {
+        const LayerPoint& p = s_layer[i];
+        s_layerParks += p.kind == LAY_PARKING;
+        double sx, sy;
+        if (!LayerShown(p) || !ViewPoint(v, p.lat, p.lon, &sx, &sy))
+            continue;
+        s_marks[k] = p;
+        s_marks[k].lat = Round(sy);
+        s_marks[k++].lon = Round(sx);
+    }
+    return LayersMergeOnScreen(s_marks, k, kMarkGap);
+}
+
 static void DrawLayers(HDC dc, double cx, double cy, double vx, double vy, double angle)
 {
     int box[4];
@@ -3497,30 +3534,52 @@ static void DrawLayers(HDC dc, double cx, double cy, double vx, double vy, doubl
     s_layer = LayersIn(box, &s_layerN);
     ParkView v;
     ParkViewOf(&v, box, cx, cy, vx, vy, angle);
-    for (int i = 0; i < s_layerN; i++) {
-        const LayerPoint& p = s_layer[i];
-        s_layerParks += p.kind == LAY_PARKING;
-        double sx, sy;
-        if (LayerShown(p) && ViewPoint(v, p.lat, p.lon, &sx, &sy) && MarkSeen(sx, sy, s_cw, s_ch, kMarkR) &&
-            (!s_dockShown || sy + 16 <= kDockY + s_dockOff))
-            LayerStamp(dc, p, Round(sx), Round(sy));
+    int n = LayerMarks(v);
+    for (int i = 0; i < n; i++) {
+        const LayerPoint& q = s_marks[i];
+        if (MarkSeen(q.lon, q.lat, s_cw, s_ch, kMarkR) && (!s_dockShown || q.lat + 16 <= kDockY + s_dockOff))
+            LayerStamp(dc, q, q.lon, q.lat);
     }
 }
 
-// A speed bump on the way ahead (the user 2026-11-06: with a warning): at 10 s of the speed, at least 100 m
-static void DrawBumpWarning(HDC dc)
+static const wchar_t* DangerName(int type)   // DANGER_*: the warning's words
+{
+    switch (type) {
+    case DANGER_CROSSING:   return L"Пешеходный переход";
+    case DANGER_BAD_ROAD:   return L"Плохая дорога";
+    case DANGER_TURN:       return L"Опасный поворот";
+    case DANGER_CROSSROADS: return L"Опасный перекрёсток";
+    default:                return L"Опасность";
+    }
+}
+
+// A speed bump or a danger on the way ahead, the nearest (the user 2026-11-06: with a warning; 2026-11-22: the dangers
+// as the bumps): at 10 s of the speed, at least 100 m. The card as wide as its words
+static void DrawLayerWarning(HDC dc)
 {
     double m = s_gps.speedKmh / 3.6 * kWarnSec;
-    int d;
-    if (!g_cfg.layerBumps || !s_gps.valid || s_gps.speedKmh < kWarnKmh ||
-        !LayerAhead(s_layer, s_layerN, LAY_BUMP, (int)(s_gps.lat * 1e6), (int)(s_gps.lon * 1e6), s_gps.course, m > kWarnMinM ? (int)m : kWarnMinM, &d))
+    int d, at;
+    if (!WarnWanted() || !s_gps.valid || s_gps.speedKmh < kWarnKmh)
         return;
+    at = LayerAhead(s_layer, s_layerN, WarnWanted(), (int)(s_gps.lat * 1e6), (int)(s_gps.lon * 1e6), s_gps.course,
+                    m > kWarnMinM ? (int)m : kWarnMinM, &d);
+    if (at < 0)
+        return;
+    bool bump = s_layer[at].kind == LAY_BUMP;
+    wchar_t s[64];
+    if (bump)
+        _snwprintf(s, 64, Tr(L"Неровность · %d м"), d);
+    else
+        _snwprintf(s, 64, Tr(L"%s · %d м"), Tr(DangerName(s_layer[at].fee)), d);
+    s[63] = 0;
+    SIZE sz;
+    SelectObject(dc, s_fontLabel);
+    GetTextExtentPoint32(dc, s, (int)wcslen(s), &sz);
     RECT r = { 470, 56, 712, 104 };
+    if (r.right - 58 - sz.cx < r.left)
+        r.left = r.right - 58 - sz.cx;
     Card(dc, r, 16);
-    BumpSign(dc, r.left + 26, r.top + 24);
-    wchar_t s[48];
-    _snwprintf(s, 48, Tr(L"Неровность · %d м"), d);
-    s[47] = 0;
+    WarnSign(dc, r.left + 26, r.top + 24, bump);
     Text(dc, s_fontLabel, kText, r.left + 46, r.top, r.right - 8, r.bottom, DT_LEFT, s);
 }
 
@@ -4099,25 +4158,28 @@ static void MapsLine(HDC dc)   // the job's line, with the download's progress w
 static void MapsLook(HDC dc)
 {
     wchar_t s[64];
-    SetRow(dc, kSetRow0, L"Вид", g_cfg.vector ? L"векторная, OpenFreeMap" : L"растровая, тайлы OSM", true);
+    MainRow(dc, 0, L"Вид", g_cfg.vector ? L"векторная, OpenFreeMap" : L"растровая, тайлы OSM", true);
     StepperAt(dc, kMapsCtl[M_KIND_PREV], kMapsCtl[M_KIND_NEXT], s_mapsPressed - M_KIND_PREV,
               g_cfg.vector ? L"Вектор" : L"Растр");
     if (g_cfg.detail)
         wcscpy(s, L"меньше деталей — быстрее рисуется");
     else
         _snwprintf(s, 64, Tr(L"по скорости устройства: сейчас %s"), Tr(kDetailLow[VTileDetail()]));
-    SetRow(dc, kSetRow0 + kSetRowH, L"Детализация", s, true);
+    MainRow(dc, 1, L"Детализация", s, true);
     StepperAt(dc, kMapsCtl[M_DETAIL_PREV], kMapsCtl[M_DETAIL_NEXT], s_mapsPressed - M_DETAIL_PREV,
               kDetailNames[g_cfg.detail]);
-    SetRow(dc, kSetRow0 + 2 * kSetRowH, L"Пробки", g_cfg.trafficRoute ? L"только на проложенном маршруте"
-                                                                   : L"на карте и на маршруте", true);
+    MainRow(dc, 2, L"Пробки", g_cfg.trafficRoute ? L"только на проложенном маршруте" : L"на карте и на маршруте", true);
     StepperAt(dc, kMapsCtl[M_TRF_PREV], kMapsCtl[M_TRF_NEXT], s_mapsPressed - M_TRF_PREV,
               g_cfg.trafficRoute ? L"Маршрут" : L"Везде");
-    SetRow(dc, kSetRow0 + 3 * kSetRowH, L"Светофоры", L"значки на карте, из скачанной области", true);
+    MainRow(dc, 3, L"Светофоры", L"значки на карте, из скачанной области", true);
     StepperAt(dc, kMapsCtl[M_SIGNAL_PREV], kMapsCtl[M_SIGNAL_NEXT], s_mapsPressed - M_SIGNAL_PREV, g_cfg.layerSignals ? L"Вкл" : L"Выкл");
-    SetRow(dc, kSetRow0 + 4 * kSetRowH, L"Неровности", L"значки и предупреждение в пути", true);
+    MainRow(dc, 4, L"Неровности", L"значки и предупреждение в пути", true);
     StepperAt(dc, kMapsCtl[M_BUMP_PREV], kMapsCtl[M_BUMP_NEXT], s_mapsPressed - M_BUMP_PREV, g_cfg.layerBumps ? L"Вкл" : L"Выкл");
-    SetRow(dc, kSetRow0 + 5 * kSetRowH, L"Карты областей", L"маршрут и поиск без интернета", false);
+    static const wchar_t* kDangerSet[DANGERS_COUNT] = { L"Выкл", L"Основные", L"Все" };
+    MainRow(dc, 5, L"Опасности", L"значки и предупреждение, openspeedcam.net", true);
+    StepperAt(dc, kMapsCtl[M_DANGER_PREV], kMapsCtl[M_DANGER_NEXT], s_mapsPressed - M_DANGER_PREV,
+              kDangerSet[g_cfg.layerDangers]);
+    MainRow(dc, 6, L"Карты областей", L"маршрут и поиск без интернета", false);
     DrawCtl(dc, kMapsCtl[M_REGIONS], s_mapsPressed == M_REGIONS, s_fontLabel, L"СКАЧАТЬ");
 }
 
@@ -4153,7 +4215,7 @@ static void DrawRegions(HDC dc)
 static void DrawMaps(HDC dc)
 {
     PageTop(dc, s_regions ? L"Карты областей" : L"Карта", s_mapsPressed == (s_regions ? R_BACK : M_BACK),
-            s_regions ? 412 : 376);
+            s_regions ? 412 : 400);
     if (s_regions)
         DrawRegions(dc);
     else
@@ -4390,6 +4452,31 @@ static void DrawGuideCard(HDC dc, int dx, int dy, const RouteInfo& ri)
     }
 }
 
+// The lanes before the maneuver (the user 2026-11-22), a strip beside the big card (under it: no room for the junction
+// card above the speed): a sign per lane left to right, a lane's arrows from one stem; the route's lanes in the accent,
+// the rest dim. Not before the destination or a stop.
+static void DrawLanes(HDC dc, const RouteInfo& ri)
+{
+    const LaneSet& l = ri.lanes;
+    if (!l.n || ri.turn >= 997)
+        return;
+    enum { kCell = 36 };
+    RECT c = { 274, 56, 274 + l.n * kCell + 16, 56 + kCell + 20 };
+    Card(dc, c, 18);
+    HBRUSH sep = CreateSolidBrush(kLine);
+    for (int i = 0; i < l.n; i++) {
+        RECT r = { c.left + 8 + i * kCell, c.top + 8, c.left + 8 + (i + 1) * kCell, c.bottom - 8 };
+        if (i) {   // the lanes' line
+            RECT s = { r.left, r.top + 4, r.left + 2, r.bottom - 4 };
+            FillRect(dc, &s, sep);
+        }
+        int t[LANE_KINDS], k = LaneTurns(l.ind[i], t);
+        for (int j = 0; j < k; j++)
+            DrawTurn(dc, r, t[j], l.valid & 1u << i ? kOrange : kTextDim);
+    }
+    DeleteObject(sep);
+}
+
 static void DrawGuide(HDC dc)
 {
     RouteInfo ri;
@@ -4422,6 +4509,7 @@ static void DrawGuide(HDC dc)
     }
     DrawJunction(dc, (ri.thenText ? 222 : 188) + 8);   // (under the card: its own pixels first, the card's GDI after)
     DrawGuideCard(dc, 0, 0, ri);
+    DrawLanes(dc, ri);
 }
 
 // The trip at the bottom (design v3): the arrival, the minutes (with the range by the traffic seen), the km, and
@@ -4554,10 +4642,28 @@ enum { kFieldX = 92, kFieldR = 800 - 24 };   // the query's text on the field (f
 // Where control id of the search screen is; false if it is not there now.
 enum { kHitRows = 5 };   // (the panel beside the map: design v3)
 
-static int ListCount()   // the list's rows: the favourites or the search's hits, kHitRows at most
+// The favourites the query names (the user 2026-11-21: the search finds them too) - the list's first rows.
+static int FavFound(int* idx)
 {
-    int n = s_showFavs ? s_favs.n : SearchCount();
-    return n < kHitRows ? n : kHitRows;
+    return s_showFavs ? 0 : VFavsFind(&s_favs, s_kb.text, idx, VFAV_MAX);
+}
+
+// The list scrolls (the user 2026-11-21: favourites past the fifth could not be chosen): s_listTop - the first row
+// shown; a finger moved up / down the rows moves it a row each kHitRowH px (s_listY: where it was put down, -1 none).
+enum { kHitRowH = 66 };
+static int  s_listTop, s_listY = -1, s_listTop0;
+static bool s_listMoved;
+
+static int ListTotal()   // all the rows: the favourites, or the ones found and the search's hits
+{
+    int f[VFAV_MAX];
+    return s_showFavs ? s_favs.n : FavFound(f) + SearchCount();
+}
+
+static int ListCount()   // the rows shown from s_listTop, kHitRows at most
+{
+    int n = ListTotal() - s_listTop;
+    return n < 0 ? 0 : n < kHitRows ? n : kHitRows;
 }
 
 static bool FavHit(int i, SearchHit* h)   // a favourite as a search's hit
@@ -4571,10 +4677,14 @@ static bool FavHit(int i, SearchHit* h)   // a favourite as a search's hit
     return true;
 }
 
-static bool ListHit(int i, SearchHit* h)   // a row of the list, as a search's hit
+static bool ListHit(int i, SearchHit* h)   // a row shown (from s_listTop), as a search's hit
 {
+    int f[VFAV_MAX], nf = FavFound(f);
+    i += s_listTop;
+    if (i < nf)
+        return FavHit(f[i], h);
     if (!s_showFavs) {
-        const SearchHit* s = SearchGet(i);
+        const SearchHit* s = SearchGet(i - nf);
         if (s)
             *h = *s;
         return s != NULL;
@@ -4591,17 +4701,14 @@ static void FavsSave()
 }
 
 // The found places' panel over the map (design v3, the user 2026-11-02): the query's field (a tap - the keyboard
-// again), the rows (a favourite's "x" at its right), the panel itself (a tap beside it closes the search)
-static bool HitRowRect(int id, RECT* r)   // a row (K_HIT + i) or a favourite's "x" (K_FAVDEL + i)
+// again), the rows, the panel itself (a tap beside it closes the search). A favourite is not deleted here (the user
+// 2026-11-22: deleted and edited only in its card - the mark's "Изменить")
+static bool HitRowRect(int id, RECT* r)   // a row (K_HIT + i)
 {
-    bool del = id >= K_FAVDEL;
-    int i = id - (del ? K_FAVDEL : K_HIT), y = 124 + i * 66;
-    if (i >= ListCount() || (del && !s_showFavs))
+    int i = id - K_HIT, y = 124 + i * 66;
+    if (i >= ListCount())
         return false;
-    if (del)
-        SetRect(r, 278, y + 10, 320, y + 52);
-    else
-        SetRect(r, 28, y, s_showFavs ? 272 : 324, y + 62);
+    SetRect(r, 28, y, 324, y + 62);
     return true;
 }
 
@@ -4648,7 +4755,7 @@ static int HitSearch(int x, int y)   // (the panel last: under its rows)
 {
     RECT r;
     POINT pt = { x, y };
-    for (int id = 0; id < K_FAVDEL + kHitRows; id++)
+    for (int id = 0; id < K_HIT + kHitRows; id++)
         if (id != K_PANEL && SearchRect(id, &r) && PtInRect(&r, pt))
             return id;
     return SearchRect(K_PANEL, &r) && PtInRect(&r, pt) ? K_PANEL : -1;
@@ -4720,8 +4827,11 @@ static void SearchFrom(double* lon, double* lat)
 // The route to a place: from StartNow() (without a fix the map shows where it goes)
 static void FitBack(bool restore);
 
+static void RecentKeep(const SearchHit* h);   // (below: "Куда едем?")
+
 static void RouteToHit(const SearchHit* h)
 {
+    RecentKeep(h);
     FitBack(false);
     StartPoint st = StartNow();
     RouteTo(h, st.lon, st.lat, st.source == START_CENTER ? -2 : st.source == START_CAR && s_gps.speedKmh > 10 ? s_gps.course : -1);
@@ -4741,6 +4851,40 @@ static void FavRenameDone(int i)   // the keyboard closed: the favourite's card 
     s_favRename = -1;
 }
 
+static RoutePlace MapPlace(double lon, double lat);
+
+static bool FavAddrOf(int i)   // the address named for favourite i's very point into it (and the file); false: none
+{
+    SearchHit h;
+    if (!PlaceNamed(s_favs.f[i].lon, s_favs.f[i].lat, &h))
+        return false;
+    wchar_t a[VFAV_ADDR];
+    _snwprintf(a, VFAV_ADDR, h.sub[0] ? L"%s, %s" : L"%s", h.name, h.sub);
+    a[VFAV_ADDR - 1] = 0;
+    VFavsSetAddr(&s_favs, i, a);
+    FavsSave();
+    return true;
+}
+
+static int   s_favAsk = -1;    // the favourite whose address is asked now
+static DWORD s_favAskTick;
+static DWORD s_favAsked;       // the favourites asked this run (a bit each; moved or deleted - asked again at worst)
+
+static void FavAddrTick()   // each second: the next favourite without its address asked (an answer - kept)
+{
+    if (s_favAsk >= 0 && s_favAsk < s_favs.n && !FavAddrOf(s_favAsk) && GetTickCount() - s_favAskTick < 15000)
+        return;   // (the answer awaited)
+    s_favAsk = -1;
+    for (int i = 0; i < s_favs.n; i++)
+        if (!s_favs.f[i].addr[0] && !(s_favAsked & (1u << i))) {
+            s_favAsked |= 1u << i;
+            s_favAsk = i;
+            s_favAskTick = GetTickCount();
+            PlaceLookup(MapPlace(s_favs.f[i].lon, s_favs.f[i].lat));
+            return;
+        }
+}
+
 static void FavNamed()   // the keyboard's name for the new favourite (or the card's one): kept
 {
     char u[VFAV_NAME * 3];
@@ -4753,7 +4897,8 @@ static void FavNamed()   // the keyboard's name for the new favourite (or the ca
             Log("favs: renamed \"%s\"", u);
         }
     } else if (s_kb.text[0] && (s_favEdit = VFavsAdd(&s_favs, s_kb.text, s_lpLat, s_lpLon)) >= 0) {
-        FavsSave();   // (its card at once: the sign chosen there - the user 2026-11-03: not by the name)
+        if (!FavAddrOf(s_favEdit))   // (the card's address: the point's own)
+            FavsSave();   // (its card at once: the sign chosen there - the user 2026-11-03: not by the name)
         Log("favs: \"%s\" %.5f, %.5f", u, s_lpLat, s_lpLon);
     }
     s_favName = false;
@@ -4764,8 +4909,6 @@ static void FavNamed()   // the keyboard's name for the new favourite (or the ca
 static void OnSearchKey(int id)
 {
     int n = (int)wcslen(s_kb.text), c = s_kb.cur < n ? s_kb.cur : n;
-    if (id != K_FAVDEL + s_favDel)
-        s_favDel = -1;
     if (id == K_BACK && s_favName) {   // no name: no favourite (renaming: the name kept, its card again)
         FavRenameDone(s_favRename);
         s_favName = false;
@@ -4795,22 +4938,14 @@ static void OnSearchKey(int id)
         VKeysBack(&s_kb);
     } else if (id == K_FIND && s_favName) {
         FavNamed();
-    } else if (id == K_FIND) {
+    } else if (id == K_FIND && n) {
         double lon, lat;
         SearchFrom(&lon, &lat);
-        s_showFavs = !n;   // the query empty: the favourites
+        s_showFavs = false;
+        s_listTop = 0;
         s_showHits = true;
         s_fitDone = false;
-        if (n)
-            SearchStart(s_kb.text, lon, lat);   // (the query is in the log as the request's URL)
-    } else if (id >= K_FAVDEL) {   // a favourite's "x": "ТОЧНО?", then gone
-        if (s_favDel == id - K_FAVDEL) {
-            VFavsDel(&s_favs, s_favDel);
-            FavsSave();
-            s_favDel = -1;
-        } else {
-            s_favDel = id - K_FAVDEL;
-        }
+        SearchStart(s_kb.text, lon, lat);   // (the query is in the log as the request's URL)
     } else if (id >= K_HIT) {
         SearchHit hit;
         const SearchHit* h = ListHit(id - K_HIT, &hit) ? &hit : NULL;
@@ -4878,8 +5013,8 @@ static bool GeoScreen(double lon, double lat, int* x, int* y)   // a place on th
 static bool HitsMessage(HDC dc)   // nothing to list: why, in the panel; true: shown
 {
     int st = SearchState(), n = ListCount();
-    const wchar_t* msg = s_showFavs ? (n ? NULL : L"Избранного нет") : st == SEARCH_BUSY ? L"Поиск…"
-                       : st == SEARCH_FAIL ? L"Нет связи с сервером поиска" : !n ? L"Ничего не найдено" : NULL;
+    const wchar_t* msg = s_showFavs ? (n ? NULL : L"Избранного нет") : n ? NULL : st == SEARCH_BUSY ? L"Поиск…"
+                       : st == SEARCH_FAIL ? L"Нет связи с сервером поиска" : L"Ничего не найдено";
     if (!msg)
         return false;
     Text(dc, s_fontLabel, st == SEARCH_FAIL ? kTextErr : kTextDim, 28, 130, 324, 160, DT_CENTER, msg);
@@ -4891,42 +5026,27 @@ static bool HitsMessage(HDC dc)   // nothing to list: why, in the panel; true: s
 static void HitSign(HDC dc, int i, int x, int y)   // a row's number (its mark on the map's) or a favourite's sign
 {
     wchar_t num[4];
-    _snwprintf(num, 4, L"%d", i + 1);
-    if (s_showFavs)
-        FavSign(dc, s_favs.f[i].icon, x, y, 11, kOrange, kInk);
+    int j = s_listTop + i, f[VFAV_MAX], nf = FavFound(f);   // (its number in the whole list)
+    _snwprintf(num, 4, L"%d", j + 1);
+    if (s_showFavs || j < nf)   // (a favourite the search found: its sign too)
+        FavSign(dc, s_favs.f[s_showFavs ? j : f[j]].icon, x, y, 11, kOrange, kInk);
     else
-        RouteMarker(dc, x, y, i == 0 || s_kbPressed == K_HIT + i ? kOrange : kInk, num);
-}
-
-static void HitDel(HDC dc, int i, bool sure)   // a favourite's "x" ("ТОЧНО?" - red)
-{
-    RECT r;
-    if (!HitsRect(K_FAVDEL + i, &r))
-        return;
-    Tile(dc, r, sure ? kTextErr : kPanel2, sure ? kTextErr : kPanel2, 16);
-    Text(dc, s_fontLabel, sure ? kInk : kText, r.left, r.top, r.right, r.bottom, DT_CENTER, L"✕");
+        RouteMarker(dc, x, y, j == 0 || s_kbPressed == K_HIT + i ? kOrange : kInk, num);
 }
 
 static void DrawHitRow(HDC dc, int i, const SearchHit& h, double lon, double lat)
 {
     RECT r;
     HitsRect(K_HIT + i, &r);
-    bool sure = s_showFavs && s_favDel == i;
     if (s_kbPressed == K_HIT + i)
         Tile(dc, r, kPanel2, kPanel2, 16);
     HitSign(dc, i, r.left + 20, (r.top + r.bottom) / 2);
     double dx = (h.lon - lon) * 111320 * cos(lat * M_PI / 180), dy = (h.lat - lat) * 110540;
-    wchar_t d[32], name[100];
+    wchar_t d[32];
     FmtDist(d, 32, (int)sqrt(dx * dx + dy * dy));
-    _snwprintf(name, 100, sure ? Tr(L"Удалить «%s»?") : L"%s", h.name);
-    name[99] = 0;
-    int right = sure ? r.right - 4 : r.right - 64;   // (asked "delete?": the whole row, no distance)
-    Text(dc, s_fontLabel, sure ? kTextErr : kText, r.left + 44, r.top + 6, right, r.top + 34, DT_LEFT, name);
-    Text(dc, s_fontSmall, kTextDim, r.left + 44, r.top + 34, right, r.bottom - 6, DT_LEFT,
-         sure ? L"ещё раз ✕ — удалить" : h.sub);
-    if (!sure)
-        Text(dc, s_fontSmall, kTextDim, r.right - 70, r.top, r.right - 8, r.bottom, DT_RIGHT, d);
-    HitDel(dc, i, sure);
+    Text(dc, s_fontLabel, kText, r.left + 44, r.top + 6, r.right - 64, r.top + 34, DT_LEFT, h.name);
+    Text(dc, s_fontSmall, kTextDim, r.left + 44, r.top + 34, r.right - 64, r.bottom - 6, DT_LEFT, h.sub);
+    Text(dc, s_fontSmall, kTextDim, r.right - 70, r.top, r.right - 8, r.bottom, DT_RIGHT, d);
 }
 
 static void DrawStatus(HDC dc);
@@ -4947,7 +5067,8 @@ static void DrawHits(HDC dc)   // the found places beside the map (design v3), n
     DrawStatus(dc);
     RECT box, r;
     HitsRect(K_PANEL, &box);
-    Card(dc, box, 20);
+    Darken(dc, box, 20, 3);   // (darker than a card's: the user 2026-11-22 - the map's names showed through the list)
+    Hairline(dc, box, 20);
     HitsRect(K_FIELD, &r);
     Tile(dc, r, kPanel2, kOrange, 22);
     Text(dc, s_fontBig, kText, r.left + 16, r.top, r.right - 12, r.bottom, DT_LEFT, s_showFavs ? L"Избранное" : s_kb.text);
@@ -4956,6 +5077,14 @@ static void DrawHits(HDC dc)   // the found places beside the map (design v3), n
     double lon, lat;
     SearchFrom(&lon, &lat);
     DrawHitMarks(dc, box.right);
+    int total = ListTotal();
+    if (total > kHitRows) {   // the scroll's bar: where the rows shown are in all of them
+        int top = 124, h = kHitRows * kHitRowH - 4, y0 = top + h * s_listTop / total;
+        RECT t = { box.right - 8, top, box.right - 4, top + h }, b = { box.right - 8, y0, box.right - 4,
+                   y0 + h * kHitRows / total };
+        Tile(dc, t, kPanel2, kPanel2, 2);
+        Tile(dc, b, kOrange, kOrange, 2);
+    }
     for (int i = 0; i < ListCount(); i++) {
         SearchHit h;
         if (ListHit(i, &h))
@@ -5001,12 +5130,6 @@ static void DrawSearch(HDC dc)
             if (!ListHit(i, &hit))
                 continue;
             const SearchHit* h = &hit;
-            if (SearchRect(K_FAVDEL + i, &r)) {
-                bool sure = s_favDel == i;
-                Tile(dc, r, sure ? kTextErr : kPanel2, sure ? kTextErr : kPanel2, 16);
-                Text(dc, s_fontLabel, sure ? kInk : kText, r.left, r.top, r.right, r.bottom, DT_CENTER,
-                     sure ? L"ТОЧНО?" : L"✕");
-            }
             SearchRect(K_HIT + i, &r);
             Tile(dc, r, s_kbPressed == K_HIT + i ? kOrange : kPanel, s_kbPressed == K_HIT + i ? kOrange : kPanel, 16);
             COLORREF c = s_kbPressed == K_HIT + i ? kInk : kText;
@@ -5021,13 +5144,13 @@ static void DrawSearch(HDC dc)
         return;
     }
     static const wchar_t* kBottom[5] = { L"Aa", NULL, L"ПРОБЕЛ", L"СТЕРЕТЬ", L"НАЙТИ" };
-    const wchar_t* find = s_favName ? L"СОХРАНИТЬ" : s_kb.text[0] ? L"НАЙТИ" : L"ИЗБРАННОЕ";
+    const wchar_t* find = s_favName ? L"СОХРАНИТЬ" : L"НАЙТИ";
     for (int id = 0; id <= K_FIND; id++) {
         if (!SearchRect(id, &r))
             continue;
-        bool lit = s_kbPressed == id || (id == K_FIND && (s_kb.text[0] || (!s_favName && s_favs.n))) ||
+        bool lit = s_kbPressed == id || (id == K_FIND && s_kb.text[0]) ||
                    (id == K_SHIFT && s_kb.shift);
-        wchar_t cap[16] = { 0 };   // (СОХРАНИТЬ, ИЗБРАННОЕ: 9 letters - 8 overran it)
+        wchar_t cap[16] = { 0 };   // (СОХРАНИТЬ: 9 letters - 8 overran it)
         if (id < K_SHIFT)
             cap[0] = VKeysChar(&s_kb, id / 16, id % 16);
         else
@@ -5293,6 +5416,7 @@ static void OnPlanCtl(int id)
         s_plan = false;
         s_search = true;
         s_showHits = s_showFavs = id == P_CH_FAV;
+        s_listTop = 0;
         s_fitDone = false;
     } else if (id == P_CH_MAP) {
         s_pickSlot = s_planChoose;
@@ -5490,12 +5614,23 @@ static bool FavBox(RECT* r)   // the mark's menu's card or the favourite's; fals
 }
 
 // The mark's menu (three rows) and the favourite's card (E_BOX: the card itself - a tap between its controls).
+static bool FavVia()   // "Заехать" in the mark's menu: a route on, room for a stop (the user 2026-11-21)
+{
+    RouteInfo ri;
+    RouteGet(&ri);
+    return (ri.state == ROUTE_ON || ri.state == ROUTE_BUSY) && RoutePlanGet()->nvia < kMaxVia;
+}
+
 static bool FavRect(int id, RECT* r)
 {
-    bool menu = s_favMenu >= 0 && id >= F_GO && id <= F_EDIT, card = s_favEdit >= 0 && id >= E_ICON && id < E_BOX;
+    bool via = FavVia();
+    bool menu = s_favMenu >= 0 && ((id >= F_GO && id <= F_EDIT) || (id == F_VIA && via)),
+         card = s_favEdit >= 0 && id >= E_ICON && id < E_BOX;
     if (id == E_BOX)
         return FavBox(r);
-    if (menu)   // "Маршрут сюда" in the accent, "Изменить" (no "Отмена": a tap beside)
+    if (menu && via)   // "Маршрут сюда" in the accent, "Заехать", "Изменить"
+        SetRect(r, id == F_GO ? 180 : id == F_VIA ? 348 : 496, 384, id == F_GO ? 340 : id == F_VIA ? 488 : 620, 446);
+    else if (menu)   // "Маршрут сюда" in the accent, "Изменить" (no "Отмена": a tap beside)
         SetRect(r, id == F_GO ? 180 : 412, 384, id == F_GO ? 400 : 620, 446);
     else if (card)
         FavCardRect(id, r);
@@ -5696,16 +5831,74 @@ static bool WhereShown()
            s_pickSlot < 0;
 }
 
+static Recents s_recent;   // the recent addresses (recent.txt beside the exe; the user 2026-11-21, design v3)
+
+static void RecentLoad()
+{
+    wchar_t path[MAX_PATH];
+    PathInDir(path, L"recent.txt");
+    HANDLE f = CreateFile(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    RecentClear(&s_recent);
+    if (f == INVALID_HANDLE_VALUE)
+        return;
+    char b[4096];
+    DWORD got = 0;
+    ReadFile(f, b, sizeof(b) - 1, &got, NULL);
+    CloseHandle(f);
+    b[got] = 0;
+    wchar_t w[4096];
+    int n = MultiByteToWideChar(CP_UTF8, 0, b, -1, w, 4096);
+    w[n > 0 ? n - 1 : 0] = 0;
+    RecentParse(w, &s_recent);
+}
+
+static void RecentKeep(const SearchHit* h)   // a place routed to from the search: first among the recent ones
+{
+    if (!wcscmp(h->sub, L"Избранное"))   // (a favourite has its own row)
+        return;
+    RecentAdd(&s_recent, h->name, h->lat, h->lon);
+    wchar_t w[kRecentMax * (kRecentName + 48)], path[MAX_PATH];
+    RecentFormat(&s_recent, w, kRecentMax * (kRecentName + 48));
+    char b[4096 * 2];
+    int n = WideCharToMultiByte(CP_UTF8, 0, w, -1, b, sizeof(b), NULL, NULL);
+    PathInDir(path, L"recent.txt");
+    HANDLE f = CreateFile(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
+    DWORD put = 0;
+    if (f != INVALID_HANDLE_VALUE) {
+        WriteFile(f, b, n > 0 ? n - 1 : 0, &put, NULL);
+        CloseHandle(f);
+    }
+}
+
+static bool RecentHit(int i, SearchHit* h)   // a recent address as a search's hit
+{
+    if (i < 0 || i >= s_recent.n)
+        return false;
+    wcscpy(h->name, s_recent.it[i].name);
+    wcscpy(h->sub, L"Недавнее");
+    h->lat = s_recent.it[i].lat;
+    h->lon = s_recent.it[i].lon;
+    return true;
+}
+
+static int WhereRecent()   // the recent addresses it shows (three at most)
+{
+    return s_recent.n < 3 ? s_recent.n : 3;
+}
+
 static bool WhereRect(int id, RECT* r)
 {
-    if (!WhereShown() || (id >= W_FAV && id < W_BOX && id - W_FAV >= s_favs.n))
+    if (!WhereShown() || (id == W_FAV && !s_favs.n) || (id >= W_REC && id < W_BOX && id - W_REC >= WhereRecent()))
         return false;
+    int y0 = s_favs.n ? 168 : 122;   // the recent ones' first row (under "Избранное")
     if (id == W_BOX)
-        SetRect(r, 16, 56, 380, s_favs.n ? 190 : 124);
+        SetRect(r, 16, 56, 380, WhereRecent() ? y0 + WhereRecent() * 46 + 4 : s_favs.n ? 170 : 124);
     else if (id == W_FIELD)
         SetRect(r, 28, 68, 368, 112);
+    else if (id >= W_REC)
+        SetRect(r, 28, y0 + (id - W_REC) * 46, 368, y0 + (id - W_REC) * 46 + 40);
     else
-        SetRect(r, 28 + (id - W_FAV) * 116, 122, 28 + (id - W_FAV) * 116 + 108, 178);
+        SetRect(r, 28, 122, 368, 162);
     return true;
 }
 
@@ -5737,16 +5930,25 @@ static int HitOverMap(int x, int y)
 static void OnFavMenu(int id)   // the mark's menu
 {
     SearchHit h;
-    if (id == F_GO && FavHit(s_favMenu, &h))
+    if (id == F_GO && FavHit(s_favMenu, &h)) {
         RouteToHit(&h);
-    else if (id == F_EDIT)
+    } else if (id == F_VIA) {   // a stop on the way, named as the favourite
+        const VFav& f = s_favs.f[s_favMenu];
+        RoutePlace p = MapPlace(f.lon, f.lat);
+        wcsncpy(p.name, f.name, 79);
+        p.name[79] = 0;
+        double lon, lat, course;
+        PlanStart(RoutePlanGet(), &lon, &lat, &course);
+        RouteAddVia(p, lon, lat, course, true);
+    } else if (id == F_EDIT) {
         s_favEdit = s_favMenu;
+    }
     s_favMenu = -1;
 }
 
 static void OnFavCtl(int id)   // the mark's menu, the favourite's card
 {
-    if (id <= F_CANCEL)
+    if (id <= F_VIA)
         OnFavMenu(id);
     else if (id < E_NAME) {
         s_favs.f[s_favEdit].icon = id - E_ICON;
@@ -5764,12 +5966,17 @@ static void OnFavCtl(int id)   // the mark's menu, the favourite's card
     s_favSure = id == E_DEL && !s_favSure;
 }
 
-static void OnWhere(int id)   // "Куда едем?": the field - the search; a favourite - the route there
+static void OnWhere(int id)   // "Куда едем?": the field - the search; "Избранное" - their list; a recent - the route
 {
     SearchHit h;
     if (id == W_FIELD) {
         OnButton(B_SEARCH);
-    } else if (id < W_BOX && FavHit(id - W_FAV, &h)) {
+    } else if (id == W_FAV) {
+        OnButton(B_SEARCH);
+        s_showHits = s_showFavs = true;
+        s_listTop = 0;
+        s_fitDone = false;
+    } else if (RecentHit(id - W_REC, &h)) {
         RouteToHit(&h);
         DockShow(false);
     }
@@ -5864,6 +6071,8 @@ static void DrawFavMenu(HDC dc)
     DrawMainCtl(dc, r, s_planPressed == F_GO, L"Маршрут сюда");
     FavRect(F_EDIT, &r);
     DrawCtl(dc, r, s_planPressed == F_EDIT, s_fontLabel, L"Изменить");
+    if (FavRect(F_VIA, &r))
+        DrawCtl(dc, r, s_planPressed == F_VIA, s_fontLabel, L"Заехать");
 }
 
 static void DrawFavSigns(HDC dc)   // the card's row of signs: its own in the accent's frame
@@ -5946,15 +6155,24 @@ static void DrawWhere(HDC dc)
     Text(dc, s_fontBig, kTextDim, r.left + 48, r.top, r.right - 12, r.bottom, DT_LEFT, L"Куда едем?");
     double lon, lat;
     SearchFrom(&lon, &lat);
-    for (int id = W_FAV; id < W_BOX && WhereRect(id, &r); id++) {
-        const VFav& f = s_favs.f[id - W_FAV];
+    for (int id = W_REC; id < W_BOX && WhereRect(id, &r); id++) {   // the recent addresses: a row each
+        const RecentItem& it = s_recent.it[id - W_REC];
         bool down = s_planPressed == id;
-        Tile(dc, r, down ? kOrange : kPanel2, down ? kOrange : kPanel2, 16);
-        Text(dc, s_fontLabel, down ? kInk : kText, r.left + 12, r.top + 4, r.right - 6, r.top + 30, DT_LEFT, f.name);
-        double dx = (f.lon - lon) * 111320 * cos(lat * M_PI / 180), dy = (f.lat - lat) * 110540;
+        Tile(dc, r, down ? kOrange : kPanel2, down ? kOrange : kPanel2, 14);
+        double dx = (it.lon - lon) * 111320 * cos(lat * M_PI / 180), dy = (it.lat - lat) * 110540;
         wchar_t d[32];
         FmtDist(d, 32, (int)sqrt(dx * dx + dy * dy));
-        Text(dc, s_fontSmall, down ? kInk : kTextDim, r.left + 12, r.top + 30, r.right - 6, r.bottom - 4, DT_LEFT, d);
+        Text(dc, s_fontLabel, down ? kInk : kText, r.left + 12, r.top, r.right - 80, r.bottom, DT_LEFT, it.name);
+        Text(dc, s_fontSmall, down ? kInk : kTextDim, r.right - 80, r.top, r.right - 10, r.bottom, DT_RIGHT, d);
+    }
+    if (WhereRect(W_FAV, &r)) {   // "Избранное": its sign, the name, how many
+        bool down = s_planPressed == W_FAV;
+        Tile(dc, r, down ? kOrange : kPanel2, down ? kOrange : kPanel2, 14);
+        FavSign(dc, VFAV_STAR, r.left + 22, (r.top + r.bottom) / 2, 11, down ? kInk : kOrange, kPanel2);
+        Text(dc, s_fontLabel, down ? kInk : kText, r.left + 44, r.top, r.right - 60, r.bottom, DT_LEFT, Tr(L"Избранное"));
+        wchar_t n[8];
+        _snwprintf(n, 8, L"%d", s_favs.n);
+        Text(dc, s_fontSmall, down ? kInk : kTextDim, r.right - 60, r.top, r.right - 12, r.bottom, DT_RIGHT, n);
     }
 }
 
@@ -6283,7 +6501,7 @@ static void Paint(HDC hdc)
         DrawStatus(dc);
         if (s_pickSlot < 0 && RouteAlts() < 2)   // (not over the alternatives' panel)
             DrawGuide(dc);
-        DrawBumpWarning(dc);
+        DrawLayerWarning(dc);
         AltFit();
         DrawTrip(dc);
         DrawButtons(dc);
@@ -6399,6 +6617,7 @@ static void OnCreate(HWND hwnd)
         wchar_t path[MAX_PATH];
         PathInDir(path, L"favorites.txt");
         VFavsLoad(&s_favs, path);
+        RecentLoad();
     }
     if ((s_resume = RouteKept(&s_resumePlan)) != false)
         Log("route: one on when closed - asked to go on");
@@ -6815,6 +7034,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 InvalidateRect(hwnd, NULL, FALSE);   // the download's progress
             VhTick();   // VestaHome's map widget
             RouteAsked();
+            FavAddrTick();
             int sharedNight = NightShared();   // switched in VestaHome: follow it
             if (sharedNight >= 0 && (sharedNight != 0) != (g_cfg.night != 0))
                 NightSet(sharedNight != 0);
@@ -6906,6 +7126,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 VKeysCursorAt(&s_kb, x - kFieldX, kFieldR - kFieldX);
             if (s_kbPressed < 0 && s_showHits)   // beside the found places' panel: the search closed
                 SearchClose();
+            if (s_showHits && s_kbPressed >= K_HIT && y >= 120) {   // on the rows: maybe a scroll
+                s_listY = y;
+                s_listTop0 = s_listTop;
+                s_listMoved = false;
+            }
         } else if (s_plan) {
             s_planPressed = HitPlan(x, y);
         } else if ((s_planPressed = HitOverMap(x, y)) >= 0) {
@@ -6935,6 +7160,21 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 
     case WM_MOUSEMOVE: {
         int x = (short)LOWORD(lp), y = (short)HIWORD(lp);
+        if (s_search && s_showHits && s_listY >= 0) {   // the rows follow the finger
+            int d = s_listY - y, most = ListTotal() - kHitRows;
+            if (!s_listMoved && (d > 16 || d < -16)) {
+                s_listMoved = true;
+                s_kbPressed = -1;   // (a scroll, not a tap)
+            }
+            int top = s_listTop0 + (d >= 0 ? d + kHitRowH / 2 : d - kHitRowH / 2) / kHitRowH;
+            top = top > most ? most : top;
+            top = top < 0 ? 0 : top;
+            if (s_listMoved && top != s_listTop) {
+                s_listTop = top;
+                InvalidateRect(hwnd, NULL, FALSE);
+            }
+            return 0;
+        }
         if (s_search && s_kbPressed == K_FIELD && !s_showHits) {   // the cursor follows the finger
             VKeysCursorAt(&s_kb, x - kFieldX, kFieldR - kFieldX);
             InvalidateRect(hwnd, NULL, FALSE);
@@ -6968,6 +7208,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_LBUTTONUP: {
         int x = (short)LOWORD(lp), y = (short)HIWORD(lp);
         ReleaseCapture();
+        s_listY = -1;   // (the rows' scroll ends)
         if (s_pressed >= 0) {
             int b = s_pressed;
             bool inside = HitButton(x, y) == b;

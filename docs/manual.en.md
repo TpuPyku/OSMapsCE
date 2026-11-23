@@ -47,14 +47,14 @@ With the English interface ([section 11](#11-languages)) the screen shows the En
 - **Traffic** from Yandex or 2GIS: on the map or only on the route line. Travel time with traffic.
 - **Routes:** your own starting point, up to three stops, several alternatives to choose from, avoiding toll roads.
   → [section 7](#7-routes)
-- **Guidance:** a maneuver card, a diagram of complex junctions, the arrival time, rerouting when you leave the route.
+- **Guidance:** a maneuver card with the lanes, a diagram of complex junctions, the arrival time, rerouting when you leave the route.
   In a tunnel without GPS the marker moves on along the route. After a restart the app offers to continue the route.
   → [section 8](#8-guidance-on-the-way)
 - **Voice prompts** in Russian or English, without internet access. On the Lada Vesta they play over the radio.
   → [section 12](#12-voice-prompts)
 - **Favorites:** up to 12 places, each with its own sign. → [section 9](#9-favorites)
-- **Layers of a downloaded region:** traffic lights, speed bumps with a warning on the way, car parks, Moscow's paid
-  street parking with prices. The road's speed limit sign.
+- **Layers of a downloaded region:** traffic lights, speed bumps and road dangers with a warning on the way, car parks,
+  Moscow's paid street parking with prices. The road's speed limit sign.
 - **Interface languages:** Russian and English. A new language is one text file. → [section 11](#11-languages)
 - **With VestaHome:** the "Карта OSM" (OSM map) widget on the home screen, the theme color, a shared day / night
   mode, the maneuver in VestaHome's top bar, zoom with the steering wheel buttons.
@@ -103,7 +103,7 @@ other programs.
 - the region's vector map (the "Вектор" (Vector) map type, [section 10](#map));
 - address and place search;
 - routes, including avoiding toll roads;
-- layers: traffic lights, speed bumps, car parks, Moscow's paid street parking;
+- layers: traffic lights, speed bumps, road dangers, car parks, Moscow's paid street parking;
 - the speed limit sign of the road you are on;
 - the car marker kept on the road.
 
@@ -181,6 +181,13 @@ deletes the ticked regions from the drive. While writing, the main button reads 
 What has been downloaded stays on the computer, and the next writing continues from it. The "RU / EN" button switches
 the program's language.
 
+**Cameras and dangers.** With "Камеры и опасности (openspeedcam.net)" (Cameras and dangers, on by default) ticked, each
+region gets the speed cameras and road dangers of the [openspeedcam.net](https://openspeedcam.net) database along with
+its maps: `speedcam.txt` (the cameras) and `danger.lay` (speed bumps, pedestrian crossings, bad road, dangerous turns
+and crossroads) in the region's folder. The database is downloaded once per run of the program. "Обновить камеры"
+(Update cameras) refreshes them for all regions on the drive without downloading the maps again. If the database
+cannot be downloaded, the maps are still written and the status line says "cameras not downloaded".
+
 ---
 
 ## 4. The screen
@@ -240,15 +247,19 @@ Without a route, the "Куда едем?" (Where to?) card appears over the rais
 **Speed.** When there is a position, the speed in km/h is shown in the bottom left corner. Next to it is the road's
 speed limit sign. The sign comes from a downloaded region when the limit is tagged in OSM.
 
-**A speed bump ahead.** When "Неровности" (Speed bumps) is on, at 15 km/h and faster the caption
+**A speed bump or a danger ahead.** When "Неровности" (Speed bumps) is on, at 15 km/h and faster the caption
 "Неровность · 120 м" (Speed bump · 120 m) appears at the top. It shows 10 seconds of driving before the bump, but not
-closer than 100 m.
+closer than 100 m. Road dangers warn the same way when "Опасности" (Dangers) is on: "Плохая дорога" (Bad road),
+"Опасный поворот" (Dangerous turn), "Опасный перекрёсток" (Dangerous crossroads), and with the setting "Все" (All)
+also "Пешеходный переход" (Pedestrian crossing) and "Опасность" (Danger, the other ones). One caption shows: the
+nearest ahead.
 
 **What the map shows.**
 
-- Favorite places: signs from zoom 12, their names from zoom 14.
+- Favorite places: signs from zoom 8, their names from zoom 14.
 - Car parks: from zoom 14; red is paid, green is free, grey means the fee is not known.
-- Traffic lights and speed bumps: from zoom 15, when they are on in the map settings.
+- Traffic lights, speed bumps and road dangers: from zoom 15, when they are on in the map settings. A danger is a
+  yellow triangle with a red edge and a "!", a speed bump the same triangle with a bump in it.
 - Moscow's paid street parking: lines along the streets from zoom 15. The color follows the price for the current day
   and hour by the device's clock: red is paid, green is free right now. From zoom 16 the lines show the price for a car
   in rubles per hour. The app does not recognize public holidays and shows the usual price. Data:
@@ -256,6 +267,10 @@ closer than 100 m.
   changed, so check the signs.
 
 Car parks, traffic lights and speed bumps come from a downloaded region. It must be a region built with these layers.
+Road dangers and more speed bumps come from the [openspeedcam.net](https://openspeedcam.net) database: the computer
+program OSMapsCE-Maps writes them into the region's folder (the file `danger.lay`,
+[section 3](#downloading-regions-on-a-computer)). No such file: no dangers, the rest works as before. Speed bumps of
+both sources close together (up to 40 m) show as one sign; so do dangers of one kind.
 
 **Raster and vector map.** The raster map is OpenStreetMap tiles from the internet. Without a network you see what is
 already in the cache. When a tile is missing, a coarser one is stretched in its place. The app draws the vector map
@@ -295,9 +310,9 @@ the device have nothing, the app asks the Photon server over the internet. In do
 words such as "улица", "ул", "проспект", "шоссе" (street, avenue, highway), and you may write the town before the
 street: "Жигулёвск Ткачёва 71".
 
-**Favorites in the search.** The "ИЗБРАННОЕ" key with an empty field shows your favorite places. A tap on a place lays
-a route. The ✕ button on the right deletes the place: the first tap asks "Удалить «…»?" (Delete "…"?), the second
-deletes it.
+**Favorites in the search.** The search finds your favorite places too: those with every typed word in their name
+or address (say, "дом" or the place's street) come first, with their signs. OSMapsCE learns a place's address when
+you save it, for older places by itself, one at a time, when there is internet. A list longer than five rows scrolls with a finger up and down, a bar on the right shows where you are.
 
 ---
 
@@ -306,7 +321,10 @@ deletes it.
 When there is no route, tap the map: the "Куда едем?" card appears above the bottom bar.
 
 - The "Куда едем?" field opens the search.
-- Under it are the first three favorite places with the distance to them. A tap lays a route to the place.
+- Under it the "Избранное" (Favorites) button with the number of places opens the list of all of them. A tap on a
+  place lays a route. Places are deleted and changed only in the place's card (its sign on the map → "Изменить") or in
+  the settings.
+- Below are the last three addresses routed to from the search (`recent.txt` next to the app). A tap lays the route again.
 
 ---
 
@@ -401,6 +419,11 @@ The next maneuver is shown in the top left.
   ("Поверните направо" (Turn right), "Держитесь левее" (Keep left), "На кольце 2-й съезд" (At the roundabout, exit
   2)…), the road's name. Below it the line "затем — …" (then: …) with the maneuver after it.
 
+**Lanes.** When the lanes before the maneuver are known, a strip appears beside the big card: an arrow for each lane,
+left to right, as on a sign over the road. The lanes the route takes are in the accent color, the others gray. The
+lanes come from the router's answer (OpenStreetMap data), so not every junction has them. For now they are shown on
+online routes; on offline routes, after the regions' maps are rebuilt with lanes.
+
 **Junction diagram.** When it is on ("Настройки → Маршрут", Settings → Route), before a fork, an exit, an entry, a
 roundabout or a merge a piece of the map around the maneuver appears under the big card. The map is turned so that the
 way in points up. The route on it is a line in the accent color with an arrow. The diagram shows 300 m before the
@@ -460,7 +483,8 @@ cottage, block of flats, shop, hospital, school, car park.
 
 **The sign on the map.** A tap on a place's sign opens its menu: the name, the distance "Избранное · … от вас"
 (Favorites · … from you), the buttons "Маршрут сюда" (Route here) and "Изменить" (Edit). "Маршрут сюда" lays the route
-at once. "Изменить" opens the place's card:
+at once. During a route there is "Заехать" (Stop) too: the place becomes a stop on the way (up to three). "Изменить"
+opens the place's card:
 
 - twelve signs: a tap chooses a sign;
 - "Имя" (Name): opens the keyboard;
@@ -477,10 +501,10 @@ right:
 
 A tap on the sign or the name opens the "Значок: …" (Sign: …) page to choose a sign.
 
-The order matters. "Куда едем?" shows the first three places, the VestaHome widget the first two.
+The order matters: the "Избранное" list follows it, the VestaHome widget shows the first two.
 
-**Where else.** Favorites are in the search (the "ИЗБРАННОЕ" key with an empty field) and in the route editor
-("Избранное" in a row's choices).
+**Where else.** Favorites are in "Куда едем?" (the "Избранное" button), in the search (by name and address) and in the
+route editor ("Избранное" in a row's choices).
 
 ---
 
@@ -503,6 +527,9 @@ Under the row's name is the map type. The "КАРТЫ" (Maps) button opens the "
   laid).
 - **Светофоры** (Traffic lights): traffic light signs from a downloaded region. Off after installation.
 - **Неровности** (Speed bumps): speed bump signs and the warning on the way. On after installation.
+- **Опасности** (Dangers): road danger signs and the warning on the way: "Выкл" (Off), "Основные" (Main: bad road,
+  dangerous turns and crossroads), "Все" (All: also pedestrian crossings and other dangers). "Основные" after
+  installation.
 - **Карты областей** (Region maps): the "СКАЧАТЬ" (Download maps) button ([section 3](#downloading-regions-on-the-device)).
 
 ### Route
@@ -582,6 +609,7 @@ Almost everything can be changed on the screen. Edit the file while the app is c
 | `junction` | 0 | 1: junction diagram |
 | `no_toll` | 0 | 1: avoid toll roads |
 | `layer_signals`, `layer_bumps` | 0, 1 | traffic lights, speed bumps |
+| `layer_dangers` | 1 | road dangers: 0 off, 1 main, 2 all |
 | `cache_mb` | 500 | cache limit, MB |
 | `cache_days` | 7 | days before a tile is checked against the server (0: never) |
 | `gps`, `gps_port@<device>`, `gps_baud@<device>` | 1, COM4:, 115200 | GPS on/off, port, speed (0: keep) |
@@ -629,7 +657,8 @@ A prompt that comes too late is skipped. Off the route there are no prompts.
 
 **Volume and turning off.** "Настройки → Маршрут → Голосовые подсказки" (Settings → Route → Voice prompts): "Выкл"
 (Off), "Тихо" (Quiet), "Средне" (Medium), "Громко" (Loud). The sound button on the right of the map during a route
-turns the voice off and on at the chosen volume.
+turns the voice off and on at the chosen volume. Without VestaHome (the stock shell, other devices) "Громко" (Loud) also
+compresses the speech to the music's loudness, so that the prompt is heard over it too.
 
 **On the Lada Vesta** a prompt plays over the radio and the music, as with the stock navigators. The sound is turned
 down a second before the phrase and comes back after it. With the stock shell the shell does this, without it
@@ -678,6 +707,8 @@ together with it.
   the "НАЙТИ" (Find) key. The app asks for a point's address on a long press and when you pick a point on the map.
 - **Routes:** downloaded regions, otherwise OSRM on the [FOSSGIS](https://routing.openstreetmap.de) servers, without
   traffic.
+- **Cameras and dangers:** the [openspeedcam.net](https://openspeedcam.net) database (its export for Navitel), written
+  by the `OSMapsCE-Maps` program together with the regions.
 
 **Limits.** Traffic is limited by the number of requests per day: Yandex 900, 2GIS 2000. The app keeps the last 100
 requests before the limit for refreshes caused by your actions: moving the map, zooming, tapping the map. Search,

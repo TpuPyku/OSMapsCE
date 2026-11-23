@@ -69,6 +69,34 @@ def limits(path):
     return out
 
 
+def lanes(path):
+    """The 'OSML' part after 'OSMS' (4-byte aligned): {(from node, to node): [each lane's indication bits]}; None: no
+    such part."""
+    d = read(path)
+    h = struct.unpack_from(make_graph.HEADER, d, 0)
+    n_nodes, n_edges, off = h[2], h[3], h[-6:]
+    end = off[5] + (h[10] * h[11] + 1 + h[13]) * 4 + 4 + (n_edges * 2 + 3) // 4 * 4
+    assert d[end:end + 4] == b'OSMS'
+    end += 4 + (n_edges + 3) // 4 * 4
+    if d[end:end + 4] != b'OSML':
+        return None
+    count, words = struct.unpack_from('<II', d, end + 4)
+    table = end + 12 + count * 8
+    assert len(d) == table + (words * 2 + 3) // 4 * 4
+    nodes = [struct.unpack_from('<ii', d, off[0] + i * 8) for i in range(n_nodes)]
+    first = struct.unpack_from('<%dI' % (n_nodes + 1), d, off[1])
+    start = {e: a for a in range(n_nodes) for e in range(first[a], first[a + 1])}
+    out, last = {}, -1
+    for r in range(count):
+        e, at = struct.unpack_from('<II', d, end + 12 + r * 8)
+        assert e > last   # (by edge: looked up by halves)
+        last = e
+        n = struct.unpack_from('<H', d, table + at * 2)[0]
+        to = struct.unpack_from('<I', d, off[2] + e * 24)[0]
+        out[(nodes[start[e]], nodes[to])] = list(struct.unpack_from('<%dH' % n, d, table + at * 2 + 2))
+    return out
+
+
 def pack_tiles(path):
     """{(z, x, y): data} as the unit reads tiles.vtp: the header, the sorted index, the blobs."""
     d = read(path)
@@ -579,6 +607,54 @@ class Tools(unittest.TestCase):
         self.assertIsNone(make_graph.turn_rule({'type': 'restriction', 'restriction': 'no_entry'}))   # (not a turn)
         self.assertIsNone(make_graph.turn_rule({'type': 'multipolygon'}))
 
+    def test_lane_masks(self):
+        """turn:lanes (the user 2026-11-22: the lanes as OSRM shows them): each lane's indications as bits in OSRM's
+        order - none 1, uturn 2, sharp right 4, right 8, slight right 16, straight 32, slight left 64, left 128,
+        sharp left 256 - left to right; a way whose lanes all tell nothing: none."""
+        m = make_graph.lane_masks
+        self.assertEqual(m('left|through;right|'), [128, 32 | 8, 1])
+        self.assertEqual(m('reverse;left|slight_left|sharp_right|slight_right|sharp_left|none'),
+                         [2 | 128, 64, 4, 16, 256, 1])
+        self.assertEqual(m('merge_to_left|merge_to_right|bus'), [32, 32, 1])   # a merging lane goes on; unknown - none
+        self.assertEqual(m(' left ; through |right'), [128 | 32, 8])          # (spaces as mappers type them)
+        self.assertIsNone(m('none||none'))
+        self.assertIsNone(m(''))
+        self.assertEqual(len(m('|'.join(['through'] * 20))), 16)              # (at most 16: the router's mask)
+
+    def test_lanes_of_way(self):
+        """A way's turn:lanes by direction: (along it, against it); a one-way's plain turn:lanes its flow's, a two-way
+        road's plain one (no direction) - none."""
+        f = make_graph.lanes_of
+        self.assertEqual(f({'turn:lanes': 'left|through'}, 1), ('left|through', ''))
+        self.assertEqual(f({'turn:lanes': 'left|through'}, -1), ('', 'left|through'))
+        self.assertEqual(f({'turn:lanes': 'left|through'}, 0), ('', ''))
+        self.assertEqual(f({'turn:lanes:forward': 'left', 'turn:lanes:backward': 'right'}, 0), ('left', 'right'))
+        self.assertEqual(f({'turn:lanes:forward': 'left'}, 1), ('left', ''))
+        self.assertEqual(f({}, 1), ('', ''))
+
+    def test_graph_lanes(self):
+        """The lanes (the user 2026-11-22): appended after the speed limits ('OSML'), only for the edges that have
+        them - a way's forward lanes on its last piece (they are the junction's at its end), its backward ones on its first;
+        a region without turn:lanes - no part at all (the file as before)."""
+        import make_test_ramp
+        osm, out = os.path.join(self.tmp, 'ramp.osm'), os.path.join(self.tmp, 'ramp.grf')
+        with open(osm, 'w', encoding='utf-8') as f:
+            f.write(make_test_ramp.osm())
+        make_graph.build(osm, out)
+        got = lanes(out)
+
+        def at(name):
+            la, lo = make_test_ramp.lat_lon(name)
+            return round(round(la, 7) * 1e6), round(round(lo, 7) * 1e6)
+        self.assertEqual(got[(at('J'), at('K'))], [32, 32, 32 | 16])         # МКАД north: its last piece (the exit)
+        self.assertEqual(got[(at('J'), at('S0'))], [128, 32])                # south: its first one, backwards
+        self.assertEqual(got[(at('D0'), at('D1'))], [128, 1])                # a one-way's plain turn:lanes
+        self.assertEqual(len(got), 3)                                 # (S0 -> J, K -> J, Улица Въезд: none)
+        self.assertEqual(make_test_ramp.osm(70.0).count('lat="70.0000000"'), 2)   # (J, D1: the old graph's copy, 70 N)
+        tiny = os.path.join(self.tmp, 'tiny.grf')
+        make_graph.build(TINY, tiny)
+        self.assertIsNone(lanes(tiny))
+
     def test_trunk_graph(self):
         """4b (the user 2026-10-29): the trunk roads of the whole country - only the classes asked, the shapes
         simplified (the lengths still the true ones), the grid's cell coarse."""
@@ -613,6 +689,14 @@ class Tools(unittest.TestCase):
         self.assertEqual((p.length, p.signals, p.gates, p.name, p.oneway), (300, 2, 2, 1, 0))
         self.assertEqual((make_graph.end_wid(p, p.a), make_graph.end_wid(p, p.b)), (1, 3))
         self.assertEqual(len(got_nodes), 2)                                       # the joints' nodes gone
+        # the lanes (turn:lanes into each end): the ends' pieces' - into 0 the first one's, into 2 the last one's
+        # (drawn either way)
+        for last, into2 in ((road(1, 2, 2)._replace(lanes=('f2', 'b2')), 'f2'),
+                            (road(2, 1, 2)._replace(lanes=('f2', 'b2')), 'b2')):
+            got_nodes, got = make_graph.contract(nodes, [road(0, 1, 1)._replace(lanes=('f1', 'b1')), last])
+            p = got[0]
+            ends = {got_nodes[p.b]: p.lanes[0], got_nodes[p.a]: p.lanes[1]}
+            self.assertEqual(ends, {(0, 2000): into2, (0, 0): 'b1'})
         # another name, another limit, a junction (three pieces): not joined
         _, got = make_graph.contract(nodes, [road(0, 1, 1), road(1, 2, 2, name=2)])
         self.assertEqual(len(got), 2)

@@ -2,10 +2,10 @@
 #include "layers.h"
 #include <math.h>
 
-// See layers.h. The file: offline/make_layers.py.
+// See layers.h. The file: offline/make_layers.py (danger.lay: the PC loader, the same format).
 
 static const DWORD kMagicPoints = 0x4C4D534F, kMagicLines = 0x504D534F;   // 'OSML', 'OSMP'
-enum { kVersion = 1, kHeadBytes = 16, kCellDeg = 10000, kMaxPoints = 3000, kLayerWideM = 25 };
+enum { kVersion = 1, kHeadBytes = 16, kCellDeg = 10000, kLayerWideM = 25 };
 enum { kMaxLines = 5000 };   // (Moscow's centre, the widest box of the map at z15: 4542)
 
 struct Cell { DWORD key, first; };
@@ -101,18 +101,30 @@ int ParkLinesRead(const wchar_t* path, const int* box, ParkLine* out, int cap)
 
 static const double kDegM = 0.111195;   // (metres in 1e-6 degree of latitude)
 
-static int ByKindLat(const void* a, const void* b)
+// What merges with what: points of one kind; a danger with one of its type alone (the user 2026-11-22)
+static int Group(const LayerPoint& p)
+{
+    return p.kind << 8 | (p.kind == LAY_DANGER ? p.fee : 0);
+}
+
+static int ByGroupLat(const void* a, const void* b)
 {
     const LayerPoint* x = (const LayerPoint*)a;
     const LayerPoint* y = (const LayerPoint*)b;
-    if (x->kind != y->kind)
-        return x->kind - y->kind;
+    if (Group(*x) != Group(*y))
+        return Group(*x) - Group(*y);
     return x->lat < y->lat ? -1 : x->lat > y->lat ? 1 : 0;
 }
 
-static int MergeM(int kind)   // how near one thing's points are; 0 - never merged
+// How near the points of one kind are merged: by kind (LAY_*); 0 - never. In metres on the ground, or on the screen in
+// pixels across and along (lat, lon: y, x)
+struct Nearness { int reach[LAY_KINDS]; double unit; bool screen; };
+// lights 40 m, bumps 40 m (the user 2026-11-16), dangers 40 m (2026-11-22)
+static const Nearness kGround = { { 0, 40, 40, 0, 40 }, kDegM, false };
+
+static int Reach(const Nearness& by, int kind)   // a kind not known: never merged
 {
-    return kind == LAY_SIGNAL ? 40 : kind == LAY_BUMP ? 20 : 0;
+    return kind < LAY_KINDS ? by.reach[kind] : 0;
 }
 
 static int Root(int* up, int i)
@@ -129,14 +141,19 @@ static bool Near(const LayerPoint& a, const LayerPoint& b, int m)
 }
 
 // Each pair near enough joined (sorted by kind and latitude: only the next ones up to m north looked at)
-static void Join(const LayerPoint* p, int n, int* up)
+static void Join(const LayerPoint* p, int n, int* up, const Nearness& by)
 {
     for (int i = 0; i < n; i++) {
-        int m = MergeM(p[i].kind);
-        for (int j = i + 1; m && j < n && p[j].kind == p[i].kind && (p[j].lat - p[i].lat) * kDegM <= m; j++)
-            if (Near(p[i], p[j], m))
+        int m = Reach(by, p[i].kind);
+        for (int j = i + 1; m && j < n && Group(p[j]) == Group(p[i]) && (p[j].lat - p[i].lat) * by.unit <= m; j++)
+            if (by.screen ? abs(p[j].lon - p[i].lon) <= m : Near(p[i], p[j], m))
                 up[Root(up, j)] = Root(up, i);
     }
+}
+
+static int FeeJoin(int a, int b)   // car parks merged: free when both are, paid when one is, else not told
+{
+    return a == b ? a : a == FEE_PAID || b == FEE_PAID ? FEE_PAID : FEE_UNKNOWN;
 }
 
 static int Mean(int sum, int count)   // rounded
@@ -144,23 +161,24 @@ static int Mean(int sum, int count)   // rounded
     return (sum + (sum >= 0 ? count / 2 : -count / 2)) / count;
 }
 
-int LayersMerge(LayerPoint* p, int n)
+static int Merge(LayerPoint* p, int n, const Nearness& by)
 {
     int* up = (int*)malloc(n * 4 * sizeof(int) + sizeof(int));   // a group's root; its sums from it, its points
     if (!up)
         return n;
     int *dLat = up + n, *dLon = dLat + n, *count = dLon + n;
-    qsort(p, n, sizeof(LayerPoint), ByKindLat);
+    qsort(p, n, sizeof(LayerPoint), ByGroupLat);
     for (int i = 0; i < n; i++) {
         up[i] = i;
         dLat[i] = dLon[i] = count[i] = 0;
     }
-    Join(p, n, up);
+    Join(p, n, up, by);
     for (int i = 0; i < n; i++) {
         int r = Root(up, i);
         dLat[r] += p[i].lat - p[r].lat;
         dLon[r] += p[i].lon - p[r].lon;
         count[r]++;
+        p[r].fee = (unsigned char)FeeJoin(p[r].fee, p[i].fee);
     }
     int k = 0;
     for (int i = 0; i < n; i++) {
@@ -175,27 +193,39 @@ int LayersMerge(LayerPoint* p, int n)
     return k;
 }
 
+int LayersMerge(LayerPoint* p, int n)
+{
+    return Merge(p, n, kGround);
+}
+
+int LayersMergeOnScreen(LayerPoint* p, int n, int px)
+{
+    Nearness by = { { 0, 0, px, px, px }, 1.0, true };   // bumps, car parks, dangers
+    return Merge(p, n, by);
+}
+
 // ---------------------------------------------------------------- the points in hand
 
 struct Held {
-    const wchar_t* name;
+    const wchar_t* names[2];   // the region's files, the second's after the first's (NULL: none)
     DWORD magic;
-    int size, cap;
+    int size, caps[2];         // ... each its own room
     void* items;
     int (*tidy)(void* items, int n);   // after a read: the points merged
     int n;
     int cells[4];        // the cells they were read for; 0 0 0 0: none yet
     volatile LONG stale;
 };
-static LayerPoint   s_pts[kMaxPoints];
+static LayerPoint   s_pts[LAYERS_MAX];
 static ParkLine     s_lines[kMaxLines];
 static int MergeItems(void* p, int n)
 {
     return LayersMerge((LayerPoint*)p, n);
 }
 
-static Held         s_points = { L"layers.lay", kMagicPoints, sizeof(LayerPoint), kMaxPoints, s_pts, MergeItems },
-                    s_parks = { L"parking.lay", kMagicLines, sizeof(ParkLine), kMaxLines, s_lines, NULL };
+static Held         s_points = { { L"layers.lay", L"danger.lay" }, kMagicPoints, sizeof(LayerPoint),
+                                 { LAYERS_MAX_POINTS, LAYERS_MAX_DANGERS }, s_pts, MergeItems },
+                    s_parks = { { L"parking.lay", NULL }, kMagicLines, sizeof(ParkLine), { kMaxLines, 0 }, s_lines, NULL };
 static volatile LONG s_paused;
 
 static int ReadRegion(const Held& h, const int* box)
@@ -204,10 +234,14 @@ static int ReadRegion(const Held& h, const int* box)
     wchar_t dir[MAX_PATH], path[MAX_PATH];
     if (!OfflineDir(mid, 1, dir))
         return 0;
-    _snwprintf(path, MAX_PATH, L"%s\\%s", dir, h.name);
-    path[MAX_PATH - 1] = 0;
-    int got = FileRead(path, h.magic, h.size, box, h.items, h.cap);
-    return got < 0 ? 0 : got;
+    int got = 0;
+    for (int i = 0; i < 2 && h.names[i]; i++) {
+        _snwprintf(path, MAX_PATH, L"%s\\%s", dir, h.names[i]);
+        path[MAX_PATH - 1] = 0;
+        int k = FileRead(path, h.magic, h.size, box, (char*)h.items + got * h.size, h.caps[i]);
+        got += k < 0 ? 0 : k;
+    }
+    return got;
 }
 
 static void* HeldIn(Held& h, const int* box, int* n)
@@ -262,25 +296,52 @@ int ParkPrice(const ParkLine& l, int weekday, int hour)
     return l.price[(weekday == 0 || weekday == 6 ? 3 : 0) + part] * 10;
 }
 
+// ---------------------------------------------------------------- wanted
+
+enum { kTypeBit0 = 8 };   // a kind's bit: its number; a danger's type's: from here
+
+static unsigned TypeBit(int type)
+{
+    return 1u << (kTypeBit0 + type);
+}
+
+unsigned LayersWanted(int signals, int bumps, int dangers)
+{
+    unsigned major = TypeBit(DANGER_BAD_ROAD) | TypeBit(DANGER_TURN) | TypeBit(DANGER_CROSSROADS);
+    unsigned rest = TypeBit(DANGER_CROSSING) | TypeBit(DANGER_OTHER);
+    return (signals ? 1u << LAY_SIGNAL : 0) | (bumps ? 1u << LAY_BUMP : 0) | (dangers >= DANGERS_MAIN ? major : 0) |
+           (dangers >= DANGERS_ALL ? rest : 0);
+}
+
+bool LayerWanted(const LayerPoint& p, unsigned wanted)
+{
+    if (p.kind == LAY_DANGER)
+        return p.fee <= DANGER_OTHER && (TypeBit(p.fee) & wanted) != 0;
+    return p.kind < kTypeBit0 && ((1u << p.kind) & wanted) != 0;
+}
+
 // ---------------------------------------------------------------- ahead
 
-bool LayerAhead(const LayerPoint* p, int n, int kind, int lat, int lon, double course, int maxM, int* dist)
+int LayerAhead(const LayerPoint* p, int n, unsigned wanted, int lat, int lon, double course, int maxM, int* dist)
 {
     const double rad = course * 3.14159265358979 / 180;
     const double kx = cos(lat * 1e-6 * 3.14159265358979 / 180), dirE = sin(rad), dirN = cos(rad);
     double best = maxM + 1.0;
+    int at = -1;
     for (int i = 0; i < n; i++) {
-        if (p[i].kind != kind)
+        if (!LayerWanted(p[i], wanted))
             continue;
         double e = (p[i].lon - lon) * kDegM * kx, nn = (p[i].lat - lat) * kDegM;
         double along = e * dirE + nn * dirN, off = e * dirN - nn * dirE;
-        if (along >= 0 && along < best && fabs(off) <= kLayerWideM)
+        if (along >= 0 && along < best && fabs(off) <= kLayerWideM) {
             best = along;
+            at = i;
+        }
     }
-    if (best > maxM)
-        return false;
+    if (at < 0)
+        return -1;
     *dist = (int)(best + 0.5);
-    return true;
+    return at;
 }
 
 // ---------------------------------------------------------------- the button

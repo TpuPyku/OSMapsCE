@@ -1,5 +1,5 @@
 # The voice prompts' clips: id <tab> Russian <tab> English. A prompt is glued from them (native_osm voice.cpp):
-# [distance] action [then action2]. Numbers are written as words: the synthesizer reads them better.
+# [distance] action [lanes]. Numbers are written as words: the synthesizer reads them better.
 # distance: one clip each, so the phrase keeps its tune
 d100	Через сто метров	In one hundred meters
 d150	Через сто пятьдесят метров	In one hundred fifty meters
@@ -36,8 +36,15 @@ round6	на кольце шестой съезд.	at the roundabout, take the si
 round	въезд на кольцо.	enter the roundabout.
 via	промежуточная точка.	waypoint ahead.
 finish	цель маршрута.	you will reach your destination.
-# "then": the next maneuver close behind
-then	Затем	Then
+# the lanes to take (after the action, at the far and mid prompts): counted from the side they keep to
+lanes_left1	Держитесь левой полосы.	Use the left lane.
+lanes_left2	Держитесь двух левых полос.	Use the two left lanes.
+lanes_left3	Держитесь трёх левых полос.	Use the three left lanes.
+lanes_right1	Держитесь правой полосы.	Use the right lane.
+lanes_right2	Держитесь двух правых полос.	Use the two right lanes.
+lanes_right3	Держитесь трёх правых полос.	Use the three right lanes.
+lanes_middle	Держитесь средней полосы.	Use the middle lane.
+lanes_middles	Держитесь средних полос.	Use the middle lanes.
 # whole phrases
 arrived	Вы приехали!	You have arrived!
 via_reached	Промежуточная точка пройдена.	Waypoint reached.
