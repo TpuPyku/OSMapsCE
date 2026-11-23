@@ -12,6 +12,7 @@
 #include "recent.h"    // the recent addresses of "Куда едем?"
 #include "vnav.h"      // VestaCore: the next manoeuvre as VestaHome is told it, its sign
 #include "vfont.h"     // VestaCore: the fonts
+#include "vtouch.h"    // VestaCore: the finger on the resistive panel, filtered
 static const wchar_t* const kRelease = L"2.1";   // raise by hand: minor - significant changes, major - big releases
 
 // ---------------------------------------------------------------- UI layout
@@ -185,12 +186,14 @@ enum { kFlingMs = 30 };
 static Fling      s_fling;
 static bool       s_flinging;
 static DWORD      s_flingTick;
+// The finger on the map (VestaCore vtouch.h: the panel's wander and strays filtered; a drag past 20 px after the press
+// settles, from where it began)
+static VTouch     s_touch;
 
 static bool MapHeld()   // a finger on the map, or the map still going after it
 {
     return s_dragging || s_flinging;
 }
-static POINT      s_dragStart;
 static double     s_dragWx, s_dragWy;
 static bool       s_dragTilt;           // the drag began in the third person's view: it stays on
 static double     s_dragFx, s_dragFy;   // ... the flat point under the finger then (from the view's centre, turned)
@@ -1443,6 +1446,24 @@ static void DragTilted(int x, int y)
     double dx = s_dragFx - fx, dy = s_dragFy - fy, a = ViewAngle() * M_PI / 180.0, c = cos(a), sn = sin(a);
     WorldToGeo(s_dragWx + c * dx - sn * dy, s_dragWy + sn * dx + c * dy, g_cfg.z, &g_cfg.lon, &g_cfg.lat);
     s_freeTick = GetTickCount();
+}
+
+// The finger's filtered way (s_touch, a drag) moves the map: from where the drag began, without a jump
+static void DragMove()
+{
+    if (!s_dragMoved) {
+        s_dragMoved = true;
+        KillTimer(s_wnd, TIMER_LONG);
+        ViewWorld(&s_dragWx, &s_dragWy);
+        s_dragTilt = FlatAt(s_touch.x, s_touch.y, &s_dragFx, &s_dragFy);
+    }
+    if (s_dragTilt) {
+        DragTilted(s_touch.x, s_touch.y);
+    } else {
+        WorldToGeo(s_dragWx - s_touch.dx, s_dragWy - s_touch.dy, g_cfg.z, &g_cfg.lon, &g_cfg.lat);
+        g_cfg.follow = FOLLOW_OFF;
+    }
+    InvalidateRect(s_wnd, NULL, FALSE);
 }
 
 // The zoom's change shown smoothly (the user 2026-11-05; zoomanim.cpp): the map's last frame (kept by DrawMap) scaled
@@ -7013,9 +7034,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             if (s_dragging && !s_dragMoved) {
                 s_longDone = true;
                 if (s_pickSlot >= 0)
-                    PickAt(s_dragStart.x, s_dragStart.y);
+                    PickAt(s_touch.px, s_touch.py);
                 else
-                    OnLongPress(s_dragStart.x, s_dragStart.y);
+                    OnLongPress(s_touch.px, s_touch.py);
                 InvalidateRect(hwnd, NULL, FALSE);
             }
             return 0;
@@ -7130,6 +7151,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 s_listY = y;
                 s_listTop0 = s_listTop;
                 s_listMoved = false;
+                VTouchDown(&s_touch, GetTickCount(), x, y);
             }
         } else if (s_plan) {
             s_planPressed = HitPlan(x, y);
@@ -7146,13 +7168,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             s_downTick = GetTickCount();
             s_dragging = true;
             DiskSteps();   // (the drafts of where it goes)
-            s_dragMoved = false;
-            s_dragStart.x = x;
-            s_dragStart.y = y;
-            FlingReset(&s_fling);
-            FlingAdd(&s_fling, s_downTick, x, y);
-            ViewWorld(&s_dragWx, &s_dragWy);
-            s_dragTilt = FlatAt(x, y, &s_dragFx, &s_dragFy);
+            s_dragMoved = s_dragTilt = false;
+            VTouchDown(&s_touch, s_downTick, x, y);
         }
         InvalidateRect(hwnd, NULL, FALSE);
         return 0;
@@ -7160,9 +7177,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 
     case WM_MOUSEMOVE: {
         int x = (short)LOWORD(lp), y = (short)HIWORD(lp);
-        if (s_search && s_showHits && s_listY >= 0) {   // the rows follow the finger
-            int d = s_listY - y, most = ListTotal() - kHitRows;
-            if (!s_listMoved && (d > 16 || d < -16)) {
+        if (s_search && s_showHits && s_listY >= 0) {   // the rows follow the finger (from where the drag began)
+            if (VTouchMove(&s_touch, GetTickCount(), x, y) != VT_DRAG)
+                return 0;
+            int d = -s_touch.dy, most = ListTotal() - kHitRows;
+            if (!s_listMoved) {
                 s_listMoved = true;
                 s_kbPressed = -1;   // (a scroll, not a tap)
             }
@@ -7186,21 +7205,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 s_pressedInside = inside;
                 InvalidateRect(hwnd, NULL, FALSE);
             }
-        } else if (s_dragging) {
-            int dx = x - s_dragStart.x, dy = y - s_dragStart.y;
-            if (!s_dragMoved && (abs(dx) > 6 || abs(dy) > 6)) {
-                s_dragMoved = true;
-                KillTimer(hwnd, TIMER_LONG);
-            }
-            if (s_dragMoved && s_dragTilt) {
-                DragTilted(x, y);
-                InvalidateRect(hwnd, NULL, FALSE);
-            } else if (s_dragMoved) {
-                WorldToGeo(s_dragWx - dx, s_dragWy - dy, g_cfg.z, &g_cfg.lon, &g_cfg.lat);
-                g_cfg.follow = FOLLOW_OFF;
-                FlingAdd(&s_fling, GetTickCount(), x, y);
-                InvalidateRect(hwnd, NULL, FALSE);
-            }
+        } else if (s_dragging && VTouchMove(&s_touch, GetTickCount(), x, y) == VT_DRAG) {
+            DragMove();
         }
         return 0;
     }
@@ -7249,13 +7255,15 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         } else if (s_dragging) {
             s_dragging = false;
             KillTimer(hwnd, TIMER_LONG);
+            double vx, vy;   // (the pen-up point not used: a stray on the panel - the press's, the last shown one)
+            VTouchUp(&s_touch, GetTickCount(), &vx, &vy);
+            int px = s_touch.px, py = s_touch.py;
             if (s_longDone) {
                 s_longDone = false;   // done when it fired
             } else if (s_dragMoved) {
                 DWORD now = GetTickCount();
-                FlingAdd(&s_fling, now, x, y);
-                if (!s_dragTilt && FlingStart(&s_fling, now)) {   // (the tilted view: not - its drag is the flat
-                    s_flinging = true;                               // point's, the way would not match the finger)
+                if (!s_dragTilt && FlingStart(&s_fling, vx, vy)) {   // (the tilted view: not - its drag is the flat
+                    s_flinging = true;                                 // point's, the way would not match the finger)
                     s_flingTick = now;
                     SetTimer(hwnd, TIMER_FLING, kFlingMs, NULL);
                 } else {
@@ -7264,16 +7272,16 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             } else if (GetTickCount() - s_downTick >= (DWORD)kLongMs) {
                 // held long, but the timer did not come in time (the thread was busy: input goes before timers)
                 if (s_pickSlot >= 0)
-                    PickAt(s_dragStart.x, s_dragStart.y);
+                    PickAt(px, py);
                 else
-                    OnLongPress(s_dragStart.x, s_dragStart.y);
+                    OnLongPress(px, py);
             } else if (s_pickSlot >= 0) {
-                PickAt(x, y);
+                PickAt(px, py);
             } else if (RouteAlts() >= 2) {
                 RouteAltsDone();
-            } else if ((s_favMenu = FavAt(x, y)) >= 0) {   // a favourite's mark: its menu
+            } else if ((s_favMenu = FavAt(px, py)) >= 0) {   // a favourite's mark: its menu
                 // (the user 2026-11-08, a Shturmann: "any tap at z16-z17 opens a favourite" - where it was, where the mark)
-                Log("ui: tap %d,%d - favourite %d, its mark at %d,%d, z%d", x, y, s_favMenu, s_favPt[s_favMenu].x,
+                Log("ui: tap %d,%d - favourite %d, its mark at %d,%d, z%d", px, py, s_favMenu, s_favPt[s_favMenu].x,
                     s_favPt[s_favMenu].y, g_cfg.z);
             } else {   // a tap on the map raises (and refreshes the traffic) / lowers the bottom bar
                 bool up = !DockUp();
