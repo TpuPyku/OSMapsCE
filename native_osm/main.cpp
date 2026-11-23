@@ -85,7 +85,7 @@ static COLORREF       kOrange  = RGB(0xff, 0x6b, 0x1a);
 static const COLORREF kHair    = RGB(64, 68, 77);         // night: a card's 1 px edge over the dark map
 
 enum { TIMER_TICK = 1, TIMER_USER = 2, TIMER_DOCK = 3, TIMER_LONG = 4, TIMER_DISK = 5, TIMER_GLIDE = 6, TIMER_FLING = 7, TIMER_ZOOM = 8,
-       TIMER_TILT = 10, kTiltFrameMs = 60 };   // (9: say.cpp's TIMER_VOICE)
+       TIMER_TILT = 10, TIMER_REST = 11, kTiltFrameMs = 60 };   // (9: say.cpp's TIMER_VOICE)
 static const UINT kUserDelayMs = 900;    // wait for the user to stop pressing buttons
 
 // GPS button modes (g_cfg.follow)
@@ -187,8 +187,27 @@ static Fling      s_fling;
 static bool       s_flinging;
 static DWORD      s_flingTick;
 // The finger on the map (VestaCore vtouch.h: the panel's wander and strays filtered; a drag past 20 px after the press
-// settles, from where it began)
+// settles, from where it began). The map moved by it or by the fling: the last full frame shown shifted (the user
+// 2026-11-23: "the map jumps under the finger" - every move drew it anew, 130-215 ms on the unit); drawn anew when the
+// finger rests kRestMs (moving within kRestPx), at the release, at the fling's end and when a quarter of the map would
+// be uncovered (zoomanim.h FrameShift)
+enum { kRestMs = 150, kRestPx = 2 };
 static VTouch     s_touch;
+static bool       s_shift;              // the next frames: the kept one shifted (if it can be)
+static int        s_restDx, s_restDy;   // the drag's offset when TIMER_REST was set
+static DWORD      s_moveN[2], s_moveMs[2], s_moveMax[2];   // the frames while it moved: drawn anew [0], shifted [1]
+
+static void MoveLog()   // the frames' times while the map moved (once it stops)
+{
+    if (!s_moveN[0] && !s_moveN[1])
+        return;
+    Log("ui: the map moved - %u frames shifted (%u ms each, %u most), %u drawn anew (%u ms each, %u most)", s_moveN[1],
+        s_moveN[1] ? s_moveMs[1] / s_moveN[1] : 0, s_moveMax[1], s_moveN[0], s_moveN[0] ? s_moveMs[0] / s_moveN[0] : 0,
+        s_moveMax[0]);
+    memset(s_moveN, 0, sizeof(s_moveN));
+    memset(s_moveMs, 0, sizeof(s_moveMs));
+    memset(s_moveMax, 0, sizeof(s_moveMax));
+}
 
 static bool MapHeld()   // a finger on the map, or the map still going after it
 {
@@ -1120,11 +1139,13 @@ static void OnMapResult(MapResult* res)
 static void FlingStop()
 {
     s_flinging = false;
+    s_shift = false;   // (its callers draw the frame anew)
     KillTimer(s_wnd, TIMER_FLING);
 }
 
 static void UserChanged()
 {
+    MoveLog();
     MapRequest keys[kMaxKeys];
     LoadFromDisk(keys, NeededKeys(SRC_OSM, keys, kMaxKeys), 6, true);
     ConfigSave();
@@ -1456,12 +1477,20 @@ static void DragMove()
         KillTimer(s_wnd, TIMER_LONG);
         ViewWorld(&s_dragWx, &s_dragWy);
         s_dragTilt = FlatAt(s_touch.x, s_touch.y, &s_dragFx, &s_dragFy);
+        s_restDx = s_restDy = 0;
     }
-    if (s_dragTilt) {
+    if (s_dragTilt) {   // (the third person's view: drawn anew each time)
         DragTilted(s_touch.x, s_touch.y);
-    } else {
-        WorldToGeo(s_dragWx - s_touch.dx, s_dragWy - s_touch.dy, g_cfg.z, &g_cfg.lon, &g_cfg.lat);
-        g_cfg.follow = FOLLOW_OFF;
+        InvalidateRect(s_wnd, NULL, FALSE);
+        return;
+    }
+    WorldToGeo(s_dragWx - s_touch.dx, s_dragWy - s_touch.dy, g_cfg.z, &g_cfg.lon, &g_cfg.lat);
+    g_cfg.follow = FOLLOW_OFF;
+    s_shift = true;
+    if (abs(s_touch.dx - s_restDx) > kRestPx || abs(s_touch.dy - s_restDy) > kRestPx) {   // moving: not resting yet
+        s_restDx = s_touch.dx;
+        s_restDy = s_touch.dy;
+        SetTimer(s_wnd, TIMER_REST, kRestMs, NULL);
     }
     InvalidateRect(s_wnd, NULL, FALSE);
 }
@@ -1472,6 +1501,19 @@ static ZoomAnim       s_zoom;
 static Image          s_zoomImg;          // the map's last frame (768 KB at 800 x 480: kept while the map is drawn)
 static unsigned short* s_zoomBits;
 static double         s_zoomAx, s_zoomAy;  // the anchor on the screen
+static double         s_keepVx, s_keepVy;  // the kept frame's view (world px at s_keepZ; s_keepFlat: north up, flat)
+static int            s_keepZ;
+static bool           s_keepFlat;
+static bool           s_shifted;           // the frame on the screen: the kept one shifted (not to be scaled)
+
+static void MoveLap(DWORD ms)   // a frame while the map moved
+{
+    int k = s_shifted ? 1 : 0;
+    s_moveN[k]++;
+    s_moveMs[k] += ms;
+    if (ms > s_moveMax[k])
+        s_moveMax[k] = ms;
+}
 enum { kZoomFrameMs = 30 };
 
 static void ZoomAnchor(double* ax, double* ay)   // where the zoom keeps the map: the car while following
@@ -1491,7 +1533,7 @@ static void ZoomAnchor(double* ax, double* ay)   // where the zoom keeps the map
 
 static void ZoomAnimate(int dz)   // (before the zoom changes: the anchor by the old one)
 {
-    if (!s_zoomBits)
+    if (!s_zoomBits || s_shifted)
         return;
     DWORD now = GetTickCount();
     if (!s_zoom.on || now - s_zoom.t0 >= (DWORD)kZoomMs)   // a new one (more meanwhile: the same anchor)
@@ -3618,10 +3660,16 @@ static void PartLap(int part)
     s_ptAt = now;
 }
 
-static void ZoomKeep(HDC dc, const RECT& mr)   // the map's frame (without the car) kept for a zoom's change
+// The map's frame (without the car) kept for a zoom's change and for the map moved by the finger; its view
+static void ZoomKeep(HDC dc, const RECT& mr, double vx, double vy, bool flat)
 {
+    s_shifted = false;
     if (!s_zoomBits && !(s_zoomBits = ImageCreate(mr.right - mr.left, mr.bottom - mr.top, &s_zoomImg)))
         return;
+    s_keepVx = vx;
+    s_keepVy = vy;
+    s_keepZ = g_cfg.z;
+    s_keepFlat = flat;
     HDC k = CreateCompatibleDC(dc);
     HGDIOBJ old = SelectObject(k, s_zoomImg.bmp);
     BitBlt(k, 0, 0, mr.right - mr.left, mr.bottom - mr.top, dc, mr.left, mr.top, SRCCOPY);
@@ -3642,6 +3690,28 @@ static void ZoomFrame(HDC dc, const RECT& mr, double scale)   // that frame scal
                SRCCOPY);
     SelectObject(k, old);
     DeleteDC(k);
+}
+
+// The map moved by the finger or the fling (s_shift): the kept frame shifted to the view, the uncovered edge the
+// ground's colour; false - it cannot be (turned, tilted, another zoom, too far): drawn anew
+static bool ShiftDraw(HDC dc, const RECT& mr, double vx, double vy, bool flat)
+{
+    int ox, oy, w = mr.right - mr.left, h = mr.bottom - mr.top;
+    if (!s_shift || !s_zoomBits || !flat || !s_keepFlat || s_keepZ != g_cfg.z ||
+        !FrameShift(s_keepVx, s_keepVy, vx, vy, w, h, &ox, &oy))
+        return false;
+    RECT u[2];
+    HBRUSH bg = CreateSolidBrush(MapBg());
+    for (int i = FrameUncovered(mr, ox, oy, u); i-- > 0;)
+        FillRect(dc, &u[i], bg);
+    DeleteObject(bg);
+    HDC k = CreateCompatibleDC(dc);
+    HGDIOBJ old = SelectObject(k, s_zoomImg.bmp);
+    BitBlt(dc, mr.left + ox, mr.top + oy, w, h, k, 0, 0, SRCCOPY);   // (the map's clip cuts the rest)
+    SelectObject(k, old);
+    DeleteDC(k);
+    s_shifted = true;
+    return true;
 }
 
 static void DrawMap(HDC dc)
@@ -3692,6 +3762,15 @@ static void DrawMap(HDC dc)
     } else if (!tilt && s_far.bits) {
         ImageFree(&s_far.img);
         s_far.bits = NULL;
+    }
+
+    if (ShiftDraw(dc, mr, vx, vy, !tilt && angle == 0)) {
+        PartLap(PT_FRAME);
+        DrawGpsMarker(dc, cx, cy, vx, vy, angle);
+        PartLap(PT_MARKS);
+        SelectClipRgn(dc, NULL);
+        DeleteObject(rgn);
+        return;
     }
 
     int drawn = 0;
@@ -3747,7 +3826,7 @@ static void DrawMap(HDC dc)
     PartLap(PT_LABELS);
     DrawAttribution(dc, mr);
     DrawFavMarks(dc, cx, cy, vx, vy, angle);
-    ZoomKeep(dc, mr);
+    ZoomKeep(dc, mr, vx, vy, !tilt && angle == 0);
     DrawGpsMarker(dc, cx, cy, vx, vy, angle);
     PartLap(PT_MARKS);
 
@@ -6907,6 +6986,7 @@ static void VhTick()
     HGDIOBJ ob = SelectObject(dc, s_back);
     SetBkMode(dc, TRANSPARENT);
     DrawMap(dc);   // (the next paint of our own window draws its frame anew)
+    s_keepZ = -1;   // (its frame kept is not our window's: not to be shifted)
     int x0 = g_cfg.mapX + (g_cfg.mapW - s_vhW) / 2, y0 = g_cfg.mapY + (g_cfg.mapH - s_vhH) / 2, stride = BackStride();
     if (guide) {
         y0 += (int)(g_cfg.mapH * kCarAhead) + 90 - s_vhH / 2;   // the car 90 px above the picture's bottom, over the trip
@@ -6967,6 +7047,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         s_paintSig = FrameSig();
         s_lastPaintTick = GetTickCount();
         s_paintMs = s_lastPaintTick - t0;
+        if (s_flinging || (s_dragging && s_dragMoved))
+            MoveLap(s_paintMs);
         s_statPaints++;
         if (s_lastPaintTick - t0 > s_statPaintMax)
             s_statPaintMax = s_lastPaintTick - t0;
@@ -7027,6 +7109,14 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 KillTimer(hwnd, TIMER_DISK);
             if (view)
                 InvalidateRect(hwnd, NULL, FALSE);
+            return 0;
+        }
+        if (wp == TIMER_REST) {   // the finger rests on the map (dragged): its frame drawn anew
+            KillTimer(hwnd, TIMER_REST);
+            if (s_dragging && s_shift) {
+                s_shift = false;
+                InvalidateRect(hwnd, NULL, FALSE);
+            }
             return 0;
         }
         if (wp == TIMER_LONG) {   // the finger stayed on the map: a point for a route
@@ -7255,6 +7345,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         } else if (s_dragging) {
             s_dragging = false;
             KillTimer(hwnd, TIMER_LONG);
+            KillTimer(hwnd, TIMER_REST);
             double vx, vy;   // (the pen-up point not used: a stray on the panel - the press's, the last shown one)
             VTouchUp(&s_touch, GetTickCount(), &vx, &vy);
             int px = s_touch.px, py = s_touch.py;
@@ -7263,10 +7354,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             } else if (s_dragMoved) {
                 DWORD now = GetTickCount();
                 if (!s_dragTilt && FlingStart(&s_fling, vx, vy)) {   // (the tilted view: not - its drag is the flat
-                    s_flinging = true;                                 // point's, the way would not match the finger)
+                    s_flinging = s_shift = true;                       // point's, the way would not match the finger)
                     s_flingTick = now;
                     SetTimer(hwnd, TIMER_FLING, kFlingMs, NULL);
                 } else {
+                    s_shift = false;
                     UserChanged();
                 }
             } else if (GetTickCount() - s_downTick >= (DWORD)kLongMs) {

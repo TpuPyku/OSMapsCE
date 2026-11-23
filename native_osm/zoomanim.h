@@ -18,3 +18,11 @@ bool ZoomAnimScale(ZoomAnim* a, DWORD now, double* scale);
 double ZoomAnimNew(const ZoomAnim* a, double scale);
 // Where the kept frame (the map's rect) goes at that scale around the anchor (ax, ay)
 void ZoomAnimRect(double scale, double ax, double ay, const RECT& map, RECT* dst);
+
+// The map moved by the finger or the fling (the user 2026-11-23: "the map jumps under the finger" - every move drew it
+// anew, 130-215 ms on the unit): the last full frame (the one kept above) shifted instead. The kept frame's view and
+// the view now (world px, the same zoom, north up) -> its shift on the screen (rounded); false - more than a quarter of
+// the map's w or h would be uncovered: draw it anew
+bool FrameShift(double keepX, double keepY, double vx, double vy, int w, int h, int* ox, int* oy);
+// The map's parts the frame shifted by ox, oy leaves uncovered (the ground's colour there): their count (0..2)
+int FrameUncovered(const RECT& map, int ox, int oy, RECT* out);

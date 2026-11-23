@@ -942,6 +942,39 @@ static void ZoomChecks()   // the zoom's change shown smoothly (zoomanim.cpp)
     Check(r.left == 100 && r.top == 50 && r.right == 700 && r.bottom == 450, "zoom: scale 1 - the map's own rect", NULL);
 }
 
+// The map moved by the finger or the fling (the user 2026-11-23: "the map jumps under the finger"): the last full frame
+// shifted (zoomanim.cpp FrameShift, FrameUncovered)
+static bool SameRect(const RECT& r, int l, int t, int rr, int bb)
+{
+    return r.left == l && r.top == t && r.right == rr && r.bottom == bb;
+}
+
+static void ShiftChecks()
+{
+    int ox = 9, oy = 9;
+    Check(FrameShift(1000, 2000, 1000, 2000, 800, 480, &ox, &oy) && ox == 0 && oy == 0, "shift: the same view - none",
+          NULL);
+    Check(FrameShift(1000, 2000, 1010.4, 1989.4, 800, 480, &ox, &oy) && ox == -10 && oy == 11,
+          "shift: the view east and north - the frame west and south, rounded", NULL);
+    Check(FrameShift(1000, 2000, 1200, 1880, 800, 480, &ox, &oy) && ox == -200 && oy == 120,
+          "shift: a quarter of the map's width and height - still shifted", NULL);
+    Check(!FrameShift(1000, 2000, 1201, 2000, 800, 480, &ox, &oy), "shift: past a quarter of its width - drawn anew",
+          NULL);
+    Check(!FrameShift(1000, 2000, 1000, 2121, 800, 480, &ox, &oy), "shift: past a quarter of its height - drawn anew",
+          NULL);
+
+    RECT map = { 0, 40, 800, 520 }, u[2];
+    Check(FrameUncovered(map, 0, 0, u) == 0, "shift: none - nothing uncovered", NULL);
+    Check(FrameUncovered(map, 10, 0, u) == 1 && SameRect(u[0], 0, 40, 10, 520), "shift: east - the left strip", NULL);
+    Check(FrameUncovered(map, -10, 0, u) == 1 && SameRect(u[0], 790, 40, 800, 520), "shift: west - the right strip",
+          NULL);
+    Check(FrameUncovered(map, 0, 5, u) == 1 && SameRect(u[0], 0, 40, 800, 45), "shift: south - the top strip", NULL);
+    Check(FrameUncovered(map, -10, -5, u) == 2 && SameRect(u[0], 790, 40, 800, 520) && SameRect(u[1], 0, 515, 790, 520),
+          "shift: north-west - the right strip, the bottom one beside it", NULL);
+    Check(FrameUncovered(map, 1, 1, u) == 2 && SameRect(u[0], 0, 40, 1, 520) && SameRect(u[1], 1, 40, 800, 41),
+          "shift: 1 px east and south - the 1 px strips", NULL);
+}
+
 static void DropChecks()
 {
     char* r = Route("50.000,53.000;50.006,53.000");
@@ -1548,6 +1581,7 @@ int main()
     DownloadChecks();
     DropChecks();
     FlingChecks();
+    ShiftChecks();
     ZoomChecks();
     TrafficLookChecks();
     LayerFileChecks();
