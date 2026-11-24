@@ -27,7 +27,7 @@ OpenFreeMap © OpenMapTiles © OSM, пробки © 2ГИС	OpenFreeMap © OpenM
 пробок на пути не видно	no traffic seen on the way
 с пробками ~%s	with traffic ~%s
 с пробками %d–%d мин	with traffic %d–%d min
-с пробками %s – %s	with traffic %s – %s
+с пробками %d:%02d–%d:%02d	with traffic %d:%02d–%d:%02d
 пробка %s · видно %d%% пути	jam %s · %d%% of the way seen
 пробка %s	jam %s
 без сильных пробок · видно %d%% пути	no heavy traffic · %d%% of the way seen

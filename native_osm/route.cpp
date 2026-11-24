@@ -553,6 +553,21 @@ static const char* RouteN(const char* body, int k)
     return r;
 }
 
+// A route's time: the server's (OSRM or the region's graph), the city's traffic lights added - UrbanDelayS of each
+// step (OSRM's); the region's graph gives the steps no times - then of the whole route by its average speed
+static double RouteTime(const char* route)
+{
+    double t = JNum(JKey(route, "duration"), 0), add = 0;
+    bool timed = false;
+    for (const char* lg = JFirst(JKey(route, "legs")); lg; lg = JNext(lg))
+        for (const char* st = JFirst(JKey(lg, "steps")); st; st = JNext(st)) {
+            double ds = JNum(JKey(st, "duration"), 0);
+            timed = timed || ds > 0;
+            add += UrbanDelayS(JNum(JKey(st, "distance"), 0), ds);
+        }
+    return t + (timed ? add : UrbanDelayS(JNum(JKey(route, "distance"), 0), t));
+}
+
 static void OnRoute(const char* body, int k)
 {
     char code[32];
@@ -630,7 +645,7 @@ static void OnRoute(const char* body, int k)
                 s_viaShape[s_nViaShape++] = at;
         }
     }
-    s_timeS = JNum(JKey(route, "duration"), 0);
+    s_timeS = RouteTime(route);
     s_seg = 0;
     s_along = 0;
     s_off = false;
@@ -666,7 +681,7 @@ bool OnApiResult(ApiResult* r)
             int n = 0;
             for (const char* rt = RouteN(r->body, 0); rt && n < 3; rt = JNext(rt)) {
                 s_altNp[n] = Line(rt, &s_altPts[n]);
-                s_altTime[n] = JNum(JKey(rt, "duration"), 0);
+                s_altTime[n] = RouteTime(rt);
                 s_altDist[n] = JNum(JKey(rt, "distance"), 0);
                 n++;
             }

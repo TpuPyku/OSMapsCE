@@ -2723,8 +2723,9 @@ static COLORREF TrafficAt(double lon, double lat, double nx, double ny)
 }
 
 // ---- the alternatives: each one's time "from - to" by the traffic on it (an estimate, the user's wish
-// 2026-10-26: the choice stays the driver's). A segment's share of the server's time, times a factor of its colour:
-// free 1, slow 1.5..2.5, jam 2.5..5, standing 4..10; no traffic seen there - 1 (and the share seen is told).
+// 2026-10-26: the choice stays the driver's). A segment's share of the route's time, times a factor of its colour:
+// free 1, slow 1.8..2.5, jam 3..5.5, standing 5..10; no traffic seen there - 1..1.2 (and the share seen is told).
+// (The user 2026-11-24: "with traffic 35 min", really 45-50 - stronger, as the base time got the traffic lights.)
 static void Tile(HDC dc, const RECT& r, COLORREF fill, COLORREF border, int radius);
 static void FmtDist(wchar_t* s, int cap, int m);
 static void RouteMarker(HDC dc, int x, int y, COLORREF fill, const wchar_t* t);
@@ -2757,21 +2758,23 @@ static void EstimateLine(const double* ll, int np, double timeS, AltEst& e)
     double mn = 0, mx = 0, seen = 0, jam = 0;
     for (int i = 1; i < np && total > 0; i++) {
         double dx = (ll[i * 2] - ll[i * 2 - 2]) * kx, dy = (ll[i * 2 + 1] - ll[i * 2 - 1]) * 110540;
-        double len = sqrt(dx * dx + dy * dy), t = timeS * len / total, f0 = 1, f1 = 1;
+        double len = sqrt(dx * dx + dy * dy), t = timeS * len / total, f0 = 1, f1 = 1.2;
         if (len > 0 && g_cfg.traffic) {
             // the right of the way in world pixels: north is -y
             COLORREF c = TrafficAt(ll[i * 2 - 2], ll[i * 2 - 1], -dy / len, -dx / len);
-            if (c != kRouteBlue)
+            if (c != kRouteBlue) {   // (seen: free is 1 - 1, the others by their colour)
                 seen += len;
+                f1 = 1;
+            }
             if (c == kTfSlow) {
-                f0 = 1.5;
+                f0 = 1.8;
                 f1 = 2.5;
             } else if (c == kTfJam) {
-                f0 = 2.5;
-                f1 = 5;
+                f0 = 3;
+                f1 = 5.5;
                 jam += len;
             } else if (c == kTfStand) {
-                f0 = 4;
+                f0 = 5;
                 f1 = 10;
                 jam += len;
             }
@@ -2876,15 +2879,15 @@ static COLORREF AltRange(const AltEst& e, double timeS, wchar_t* line)   // the 
         wcscpy(line, L"пробок на пути не видно");
         return kTextDim;
     }
-    wchar_t a[24], b[24];
+    wchar_t a[24];
     FmtMin(a, 24, e.minS);
-    FmtMin(b, 24, e.maxS);
+    int m0 = (e.minS + 59) / 60, m1 = (e.maxS + 59) / 60;
     if (e.maxS - e.minS < 120)
         _snwprintf(line, 96, Tr(L"с пробками ~%s"), a);
     else if (e.maxS < 3600)
-        _snwprintf(line, 96, Tr(L"с пробками %d–%d мин"), (e.minS + 59) / 60, (e.maxS + 59) / 60);
-    else
-        _snwprintf(line, 96, Tr(L"с пробками %s – %s"), a, b);
+        _snwprintf(line, 96, Tr(L"с пробками %d–%d мин"), m0, m1);
+    else   // (the card's width: "1:22–1:45", not "1 ч 22 мин – 1 ч 45 мин" - cut off, 2026-11-24)
+        _snwprintf(line, 96, Tr(L"с пробками %d:%02d–%d:%02d"), m0 / 60, m0 % 60, m1 / 60, m1 % 60);
     line[95] = 0;
     return e.jamM > 300 ? kTextErr : e.maxS > timeS * 1.3 ? kOrange : RGB(120, 220, 120);
 }

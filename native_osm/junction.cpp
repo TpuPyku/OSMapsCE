@@ -232,6 +232,14 @@ bool FixJumps(double lon0, double lat0, double kmh0, DWORD ms, double lon, doubl
     return Dist(a, b) > v / 3.6 * ms / 1000 * 1.5 + 30;
 }
 
+// The city's traffic lights (the user 2026-11-24: Balashikha, Koltsevaya 5 -> Moscow, Egerskaya 4, 13.5 km: the
+// server's "16 min", really 25 at least - about 20 lights at 25-30 s each). OSRM's and the graph's free-flow times
+// barely count them: a step slower than 65 km/h on them (a city street) gets 40 s a km more.
+double UrbanDelayS(double distM, double durS)
+{
+    return distM / durS * 3.6 < 65 ? distM / 1000 * 40 : 0;   // (no time: infinitely fast; no length: 0 either way)
+}
+
 // HU 2026-11-24: in Moscow the fixes leapt 7 km, then 20 km away (jamming or spoofing; the speed shown stayed right) and
 // the 4th far fix in a row was trusted. A far fix is trusted only when the far ones have agreed for kFixTrustMs.
 bool FixTrust(FixTrack* t, double gLon, double gLat, double gKmh, DWORD gTick, double lon, double lat, double kmh,

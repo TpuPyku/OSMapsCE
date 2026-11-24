@@ -437,6 +437,7 @@ int  RouteCut(const double* ll, int np, int from, int to, double lon, double lat
 // (degrees); its segment (past the end: the end), -1: no line
 int  RouteAhead(const double* ll, int np, int seg, const double* at, double m, double* out);
 bool FixJumps(double lon0, double lat0, double kmh0, DWORD ms, double lon, double lat, double kmh);   // too far for the speed
+double UrbanDelayS(double distM, double durS);   // the traffic lights' time over a route step's free-flow time
 struct FixTrack { bool on; double lon, lat, kmh; DWORD tick, since; };   // far fixes in a row agreeing with each other
 enum { kFixTrustMs = 15000 };
 // A new fix (tick ms) against the last trusted one (g*): trusted if near it, or if the far fixes have agreed for

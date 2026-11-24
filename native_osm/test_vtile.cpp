@@ -1281,6 +1281,13 @@ static void RouteAheadChecks()
     Check(!FixJumps(37.0, 55.0, 0, 10000, 37.0, 55.0 + 440 / 110540.0, 100), "fix jumps: the faster of the two speeds, the time between");
     Check(!FixJumps(37.0, 55.0, 100, 10000, 37.0, 55.0 + 446.5 / 110540.0, 100) &&
           FixJumps(37.0, 55.0, 100, 10000, 37.0, 55.0 + 446.8 / 110540.0, 100), "fix jumps: 10 s at 100 km/h - 446.7 m allowed");
+    // the city's traffic lights over the server's free-flow time (the user 2026-11-24: Balashikha - Egerskaya 13.5 km,
+    // "16 min", really 25 at least): a step slower than 65 km/h - 40 s a km more
+    Check(fabs(UrbanDelayS(1000, 72) - 40) < 1e-9, "urban delay: 1 km at 50 km/h - 40 s");
+    Check(fabs(UrbanDelayS(2500, 180) - 100) < 1e-9, "urban delay: by the length");
+    Check(UrbanDelayS(1000, 1000 / (65 / 3.6)) == 0 && UrbanDelayS(1000, 36) == 0, "urban delay: 65 km/h and faster - none");
+    Check(UrbanDelayS(1000, 1000 / (64.9 / 3.6)) > 0, "urban delay: just under 65 km/h - counted");
+    Check(UrbanDelayS(0, 10) == 0 && UrbanDelayS(100, 0) == 0, "urban delay: no length or no time - none");
     // a far fix trusted only when the fixes after it agree with each other for kFixTrustMs (HU 2026-11-24: in Moscow
     // the fixes leapt 7 km to Novokosino, then 20 km south - the 4th far fix was trusted; the speed was right)
     FixTrack t;
