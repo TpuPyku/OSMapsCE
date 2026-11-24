@@ -1,5 +1,6 @@
 @echo off
-rem The PC app (maps_app.py) for users without Python: app\OSMapsCE-Maps.zip (the folder OSMapsCE-Maps with the exe).
+rem The PC app (maps_app.py) for users without Python: app\OSMCE-PC-Downloader.zip (the folder OSMCE-PC-Downloader with the exe;
+rem was OSMapsCE-Maps - renamed by the user 2026-11-24).
 rem A folder, not one file: a one-file exe unpacks itself to %TEMP% at each start - what Windows Defender takes for
 rem malware (the user 2026-10-28: blocked); no UPX for the same reason. The icon: make_icon.py.
 rem Needs: pip install pyinstaller pmtiles osmium pillow
@@ -8,7 +9,7 @@ cd /d "%~dp0"
 python make_icon.py >nul || exit /b 1
 rem the date of the build for its number (maps_app.py: app_version)
 python -c "import time; open('app_build.py', 'w').write('BUILD = %%r\n' %% time.strftime('%%y%%m%%d'))" || exit /b 1
-python -m PyInstaller --noconfirm --onedir --windowed --noupx --icon "%~dp0app.ico" --name OSMapsCE-Maps ^
+python -m PyInstaller --noconfirm --onedir --windowed --noupx --icon "%~dp0app.ico" --name OSMCE-PC-Downloader ^
   --distpath app --workpath work\pyinstaller --specpath work\pyinstaller --hidden-import tkinter.filedialog ^
   maps_app.py || exit /b 1
-python -c "import shutil; shutil.make_archive('app/OSMapsCE-Maps', 'zip', 'app', 'OSMapsCE-Maps')" || exit /b 1
+python -c "import shutil; shutil.make_archive('app/OSMCE-PC-Downloader', 'zip', 'app', 'OSMCE-PC-Downloader')" || exit /b 1

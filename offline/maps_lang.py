@@ -21,7 +21,6 @@ EN = {
     'Собрать выбранные карты': 'Build the chosen maps',
     'Отменить запись': 'Stop writing',
     'Отмена…': 'Stopping…',
-    'Карты OSMapsCE ': 'OSMapsCE maps ',
     'Загрузка списка областей…': 'Loading the list of regions…',
     'Флешка / карта:': 'Drive / card:',
     'Папка…': 'Folder…',

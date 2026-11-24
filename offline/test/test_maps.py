@@ -521,7 +521,7 @@ class Maps(unittest.TestCase):
             app.root.geometry('+-3000+-3000')   # (shown - its rows laid out - but off the screen)
             app.on_catalog(cat)
             app.root.update()
-            self.assertEqual(app.root.title(), 'Карты OSMapsCE ' + maps_app.app_version())   # its own number shown
+            self.assertEqual(app.root.title(), 'OSMCE-PC-Downloader ' + maps_app.app_version())   # its own number shown
             self.assertEqual(app.tree.get_children(), ('overview', 'a_oblast', 'b_oblast'))   # the overview and
                                                                                    # the trunk roads: one row, first
             self.assertEqual(app.tree.item('b_oblast', 'tags'), ('update',))       # newer in the catalog
@@ -871,7 +871,7 @@ class Maps(unittest.TestCase):
         news, stages, copied, target = self.staged_job(stop=True)
         self.assertTrue(any(k == 'status' and v.startswith('Остановлено') for k, v in news), news)
         self.assertEqual(copied, [])
-        self.assertTrue(os.path.isdir(os.path.join(self.tmp, 'T', 'OSMapsCE-Maps')))   # kept
+        self.assertTrue(os.path.isdir(os.path.join(self.tmp, 'T', 'OSMCE-PC-Downloader')))   # kept
 
     def test_copy_cancelled_never_looks_whole(self):
         """Stopped in the middle of a region's copy over an older one: its old region.txt gone first - the card's
@@ -961,16 +961,16 @@ class Maps(unittest.TestCase):
         news, stages, copied, target = self.staged_job()
         self.assertEqual(stages, [])                                         # none downloaded again
         self.assertEqual(sorted(maps_app.installed(target)), ['a', 'b'])     # copied
-        self.assertFalse(os.path.exists(os.path.join(self.tmp, 'T', 'OSMapsCE-Maps')))   # gone after
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, 'T', 'OSMCE-PC-Downloader')))   # gone after
 
     def test_app_old_temp_folder_removed(self):
         """A temp folder left over a week: not gone on with (its maps old), removed first."""
-        old = os.path.join(self.tmp, 'T', 'OSMapsCE-Maps', 'OSMapsData', 'z')
+        old = os.path.join(self.tmp, 'T', 'OSMCE-PC-Downloader', 'OSMapsData', 'z')
         os.makedirs(old)
         with open(os.path.join(old, 'region.txt'), 'w') as f:
             f.write('date=old\n')
         stamp = __import__('time').time() - 8 * 86400
-        os.utime(os.path.join(self.tmp, 'T', 'OSMapsCE-Maps'), (stamp, stamp))
+        os.utime(os.path.join(self.tmp, 'T', 'OSMCE-PC-Downloader'), (stamp, stamp))
         self.installs = []
         news, stages, copied, target = self.staged_job()
         self.assertNotIn('z', maps_app.installed(target))

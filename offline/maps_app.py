@@ -28,7 +28,14 @@ import speedcams
 import yadisk
 from maps_lang import EN
 
-LANG_FILE = os.path.join(os.environ.get('APPDATA') or tempfile.gettempdir(), 'OSMapsCE-Maps.lang')   # the choice kept
+APP = 'OSMCE-PC-Downloader'   # the program's name (the user 2026-11-24; was OSMapsCE-Maps)
+LANG_FILE = os.path.join(os.environ.get('APPDATA') or tempfile.gettempdir(), APP + '.lang')   # the choice kept
+_OLD_LANG = os.path.join(os.path.dirname(LANG_FILE), 'OSMapsCE-Maps.lang')   # (the old name's: taken over once)
+if not os.path.exists(LANG_FILE) and os.path.exists(_OLD_LANG):
+    try:
+        os.replace(_OLD_LANG, LANG_FILE)
+    except OSError:
+        pass
 
 
 def ui_lang():
@@ -90,7 +97,7 @@ def app_version(build=BUILD):
     return '%s.%s' % (RELEASE, build) if build else RELEASE
 
 
-STAGE = 'OSMapsCE-Maps'   # the PC's temp folder the maps go to first (copy_to: onto the card after)
+STAGE = APP   # the PC's temp folder the maps go to first (copy_to: onto the card after)
 STAGE_DAYS = 7            # left longer (a job given up): removed, not gone on with
 CAMS_CACHE = os.path.join(tempfile.gettempdir(), STAGE + '-cams')   # openspeedcam.net's file, once a run (speedcams)
 
@@ -558,7 +565,7 @@ class App:
         self.chosen = set()
         self.press = None
         self.root = tk.Tk()
-        self.root.title(T('Карты OSMapsCE ') + app_version())
+        self.root.title(APP + ' ' + app_version())
         self.root.configure(bg=INK)
         self.drive = tk.StringVar(value=(removable_drives() or [''])[0])
         self.find = tk.StringVar()

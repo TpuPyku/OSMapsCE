@@ -160,7 +160,7 @@ The bottom bar of the screen:
 
 ### Downloading regions on a computer
 
-The `OSMapsCE-Maps` program for Windows writes regions to a flash drive or a memory card. It is in the
+The `OSMCE-PC-Downloader` program for Windows writes regions to a flash drive or a memory card. It is in the
 [maps-app](https://github.com/TpuPyku/OSMapsCE/releases/tag/maps-app) release.
 
 1. In the "Флешка / карта:" (Drive / card) line, choose the drive or a folder ("Папка…", Folder). "Обновить" (Refresh)
@@ -268,7 +268,7 @@ nearest ahead.
 
 Car parks, traffic lights and speed bumps come from a downloaded region. It must be a region built with these layers.
 Road dangers and more speed bumps come from the [openspeedcam.net](https://openspeedcam.net) database: the computer
-program OSMapsCE-Maps writes them into the region's folder (the file `danger.lay`,
+program OSMCE-PC-Downloader writes them into the region's folder (the file `danger.lay`,
 [section 3](#downloading-regions-on-a-computer)). No such file: no dangers, the rest works as before. Speed bumps of
 both sources close together (up to 40 m) show as one sign; so do dangers of one kind.
 
@@ -708,7 +708,7 @@ together with it.
 - **Routes:** downloaded regions, otherwise OSRM on the [FOSSGIS](https://routing.openstreetmap.de) servers, without
   traffic.
 - **Cameras and dangers:** the [openspeedcam.net](https://openspeedcam.net) database (its export for Navitel), written
-  by the `OSMapsCE-Maps` program together with the regions.
+  by the `OSMCE-PC-Downloader` program together with the regions.
 
 **Limits.** Traffic is limited by the number of requests per day: Yandex 900, 2GIS 2000. The app keeps the last 100
 requests before the limit for refreshes caused by your actions: moving the map, zooming, tapping the map. Search,

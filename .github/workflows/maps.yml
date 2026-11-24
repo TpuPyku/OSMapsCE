@@ -157,8 +157,8 @@ jobs:
       - name: The app's release (once)
         shell: bash
         run: |
-          gh release view maps-app >/dev/null 2>&1 || gh release create maps-app --latest=false --title "Карты OSMapsCE — программа для ПК"             --notes "Записывает карты областей для OSMapsCE на флешку или SD-карту: распакуйте архив, запустите OSMapsCE-Maps.exe, отметьте области щелчком, нажмите «Записать выбранные». Карты — в релизе maps. Данные © участники OpenStreetMap, ODbL."
-      - run: gh release upload maps-app offline/app/OSMapsCE-Maps.zip --clobber
+          gh release view maps-app >/dev/null 2>&1 || gh release create maps-app --latest=false --title "OSMCE-PC-Downloader — загрузчик карт OSMapsCE для ПК"             --notes "Записывает карты областей для OSMapsCE на флешку или SD-карту: распакуйте архив, запустите OSMapsCE-Maps.exe, отметьте области щелчком, нажмите «Записать выбранные». Карты — в релизе maps. Данные © участники OpenStreetMap, ODbL."
+      - run: gh release upload maps-app offline/app/OSMCE-PC-Downloader.zip --clobber
         shell: bash
 
   trunk:   # 4b (the user 2026-10-29; the new countries 2026-11-16): the trunk roads - motorway / trunk / primary with their
