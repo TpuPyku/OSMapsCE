@@ -25,6 +25,13 @@ int VoiceDue(VoiceState* s, int man, int nextM, int kmh);
 // own prompt comes once the first is passed.
 int VoiceSay(int stage, int act, int nextM, const char* lanes, const char** out, int cap);
 
+// The prompt in the turn (the user 2026-11-24, sheet 44 p. 41: at the turn itself "turn right, then turn left"):
+// once, at the maneuver man within kTurnM, when then - the one after it within kThenM (route.cpp; VA_NONE: none) - is
+// a turn to tell (not the end, not a stop). It stands for the now prompt if that was not said yet.
+enum { VS_TURN = 8, kThenM = 200, kTurnM = 20 };
+bool VoiceTurnDue(VoiceState* s, int man, int nextM, int then);
+int  VoiceSayTurn(int act, int then, const char** out, int cap);   // act, "then", then's act (3 clips; 0: no room)
+
 // The lanes to take, as a clip (the user 2026-11-22): n lanes left to right, valid - bit i: the route's lane i. One
 // block from a side (up to 3) - "keep to the two left lanes"; in the middle - "the middle lane(s)"; all, none, not one
 // block, 4+ from a side - NULL.

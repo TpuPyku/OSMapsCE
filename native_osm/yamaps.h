@@ -290,7 +290,8 @@ struct RouteInfo {
     bool           complex;     // the next maneuver a fork, a ramp, a roundabout, a merge (the junction card)
     int            shape;       // its point on the line (RoutePoints)
     int            man;         // its number on the route (the voice prompts: voice.h)
-    int            act;         // what it asks (VA_*)
+    int            act;         // what it asks (VA_*), thenAct - the one after it when close behind (voice.h kThenM)
+    int            thenAct;
     int            serial;      // the route's number: a new one for each answer of the router
     int            vias;        // the stops left on the way
     LaneSet        lanes;       // the lanes before the next maneuver (n 0: none known)

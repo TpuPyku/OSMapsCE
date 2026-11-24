@@ -848,6 +848,8 @@ void RouteGet(RouteInfo* o)
                 o->nextM = 0;
             if (i + 1 < s_nm)
                 o->thenText = s_man[i + 1].text;
+            if (i + 1 < s_nm && s_cum[s_man[i + 1].shape] - s_cum[s_man[i].shape] <= kThenM)
+                o->thenAct = s_man[i + 1].act;   // (the voice's turn prompt: "..., then ...")
             o->man = i;
             o->act = s_man[i].act;
             break;

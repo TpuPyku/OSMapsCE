@@ -69,12 +69,17 @@ static int Threshold(int stage, int kmh)
     return now > 40 ? now : 40;
 }
 
-int VoiceDue(VoiceState* s, int man, int nextM, int kmh)
+static void Track(VoiceState* s, int man)   // another maneuver: none of its prompts said yet
 {
     if (man != s->man) {
         s->man = man;
         s->said = 0;
     }
+}
+
+int VoiceDue(VoiceState* s, int man, int nextM, int kmh)
+{
+    Track(s, man);
     for (int stage = VS_FAR; stage <= VS_NOW; stage <<= 1) {
         if ((s->said & stage) || nextM > Threshold(stage, kmh))
             continue;
@@ -231,4 +236,23 @@ int VoiceDevice(int via, int devs)
 int VoiceLevelFor(int level, int via)
 {
     return level == kVoiceLoud && via == 2 ? 0 : level;
+}
+
+bool VoiceTurnDue(VoiceState* s, int man, int nextM, int then)
+{
+    Track(s, man);
+    if (then == VA_NONE || then == VA_FINISH || then == VA_VIA || (s->said & VS_TURN) || nextM > kTurnM)
+        return false;
+    s->said |= VS_FAR | VS_MID | VS_NOW | VS_TURN;   // (the now prompt, if still due, is this one)
+    return true;
+}
+
+int VoiceSayTurn(int act, int then, const char** out, int cap)
+{
+    if (act == VA_NONE || cap < 3)
+        return 0;
+    out[0] = kAct[act];
+    out[1] = "then";
+    out[2] = kAct[then];
+    return 3;
 }

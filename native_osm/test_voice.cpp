@@ -94,6 +94,34 @@ static int Due(int nextM, int kmh)   // the first prompt due for a new maneuver
     return VoiceDue(&s, 0, nextM, kmh);
 }
 
+// The prompt in the turn (the user 2026-11-24, sheet 44 p. 41): once, at the first of two close maneuvers, 20..0 m
+// before it - "turn right, then turn left"
+static void TestTurn()
+{
+    VoiceState s;
+    VoiceReset(&s);
+    Check(VoiceDue(&s, 2, 90, 50) == VS_NOW, "turn: the now prompt as before");
+    Check(!VoiceTurnDue(&s, 2, 21, VA_LEFT), "turn: not before 20 m");
+    Check(VoiceTurnDue(&s, 2, 20, VA_LEFT), "turn: at 20 m, the next one close behind");
+    Check(!VoiceTurnDue(&s, 2, 5, VA_LEFT), "turn: said once");
+    Check(VoiceDue(&s, 2, 5, 50) == 0, "turn: nothing else for it");
+    VoiceReset(&s);
+    Check(!VoiceTurnDue(&s, 3, 10, VA_NONE), "turn: none close behind - not said");
+    Check(VoiceDue(&s, 3, 10, 50) == VS_NOW, "turn: (its now prompt, late, as before)");
+    Check(!VoiceTurnDue(&s, 3, 10, VA_FINISH) && !VoiceTurnDue(&s, 3, 10, VA_VIA),
+          "turn: the end or a stop behind - not a turn to tell");
+    VoiceReset(&s);
+    Check(VoiceTurnDue(&s, 4, 15, VA_RIGHT), "turn: come fast, the now one unsaid - the turn one");
+    Check(VoiceDue(&s, 4, 10, 50) == 0, "turn: and the now one not after it");
+    Check(VoiceTurnDue(&s, 5, 18, VA_RIGHT), "turn: the next maneuver - its own");
+    const char* c[8];
+    Check(VoiceSayTurn(VA_RIGHT, VA_LEFT, c, 8) == 3 && !strcmp(c[0], "right") && !strcmp(c[1], "then") &&
+          !strcmp(c[2], "left"), "say turn: right, then, left");
+    Check(VoiceSayTurn(VA_RIGHT, VA_LEFT, c, 2) == 0, "say turn: no room - nothing");
+    Check(VoiceSayTurn(VA_RIGHT, VA_LEFT, c, 3) == 3, "say turn: room for just the three");
+    Check(VoiceSayTurn(VA_NONE, VA_LEFT, c, 8) == 0, "say turn: no action - nothing");
+}
+
 static void TestThresholds()
 {
     // the far one: 2 km from 80 km/h, 1 km from 50, else 500 m - just at it, not a metre farther
@@ -315,6 +343,7 @@ int main()
     TestEvent();
     TestAct();
     TestDue();
+    TestTurn();
     TestThresholds();
     TestSay();
     TestLanes();

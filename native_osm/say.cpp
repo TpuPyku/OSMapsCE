@@ -190,9 +190,13 @@ void SayTick(int kmh)
     if (ev) {
         ids[n++] = ev;
     } else if (now.on && !ri.off) {
-        int stage = VoiceDue(&s_vs, ri.man, ri.nextM, kmh);
-        if (stage)
-            n = VoiceSay(stage, ri.act, ri.nextM, VoiceLanes(ri.lanes.n, ri.lanes.valid), ids, kMaxClips);
+        if (VoiceTurnDue(&s_vs, ri.man, ri.nextM, ri.thenAct)) {   // at the turn: "..., then ..." (sheet 44 p. 41)
+            n = VoiceSayTurn(ri.act, ri.thenAct, ids, kMaxClips);
+        } else {
+            int stage = VoiceDue(&s_vs, ri.man, ri.nextM, kmh);
+            if (stage)
+                n = VoiceSay(stage, ri.act, ri.nextM, VoiceLanes(ri.lanes.n, ri.lanes.valid), ids, kMaxClips);
+        }
     }
     if (n && g_cfg.voice)
         Say(ids, n);
