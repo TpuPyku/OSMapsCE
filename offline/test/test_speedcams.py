@@ -74,6 +74,18 @@ class Speedcams(unittest.TestCase):
         self.assertFalse(os.path.exists(path))
         self.assertEqual(speedcams.write_speedcam(path, []), 0)   # (and none there)
 
+    def test_speedcam_fillers(self):
+        """openspeedcam.net's fillers are no limits (HU 2026-11-24: red-light cameras "5 km/h", beeping all the
+        way): its red-light cameras' 5, any speed under 10 or of 160 and above - written as 0, unknown; a red-light
+        camera with a real limit keeps it."""
+        path = os.path.join(self.tmp, 'speedcam.txt')
+        rows = [(1, 37.6, 55.7, 3, 5, 1, 90), (2, 37.6, 55.7, 1, 160, 1, 90), (3, 37.6, 55.7, 1, 9, 0, 0),
+                (4, 37.6, 55.7, 1, 10, 0, 0), (5, 37.6, 55.7, 4, 159, 0, 0), (6, 37.6, 55.7, 3, 60, 0, 0)]
+        speedcams.write_speedcam(path, rows)
+        with open(path, 'rb') as f:
+            speeds = [line.split(b',')[4] for line in f.read().split(b'\r\n')[1:] if line]
+        self.assertEqual(speeds, [b'0', b'0', b'0', b'10', b'159', b'60'])
+
     def test_danger_lay(self):
         """The bumps (kind 2) and dangers (kind 4, fee = the danger's kind) as layers.lay's points."""
         path = os.path.join(self.tmp, 'danger.lay')

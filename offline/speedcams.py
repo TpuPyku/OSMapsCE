@@ -15,6 +15,12 @@ import make_layers
 URL = 'https://drive.google.com/uc?export=download&id=1h1H9k4t4mbnKy1WKs5Y9VBApGuW6qwFV'
 HEADER = 'IDX,X,Y,TYPE,SPEED,DirType,Direction'
 CAMS = (1, 3, 4, 5)
+LIMIT_MIN, LIMIT_MAX = 10, 160   # openspeedcam.net's fillers, no limits: its red-light cameras' 5, the "no limit" 160
+
+
+def limit(speed):
+    """The camera's limit as VestaHome takes it: a filler is 0, unknown (VestaHome reads old files the same way)."""
+    return speed if LIMIT_MIN <= speed < LIMIT_MAX else 0
 BUMP = 102
 DANGERS = (100, 103, 104, 105, 106)   # danger.lay: kind DANGER, fee = TYPE - 100
 LAY_BUMP, LAY_DANGER = make_layers.BUMP, 4
@@ -46,7 +52,8 @@ def drop(path):
 
 
 def write_speedcam(path, rows):
-    """The cameras as the source has them (ASCII, CRLF, its header); none: no file (an old one off). Their count."""
+    """The cameras as the source has them (ASCII, CRLF, its header), the fillers' limits 0; none: no file (an old one
+    off). Their count."""
     cams = [r for r in rows if r[3] in CAMS]
     if not cams:
         drop(path)
@@ -54,7 +61,7 @@ def write_speedcam(path, rows):
     with open(path, 'w', newline='\r\n') as f:
         f.write(HEADER + '\n')
         for r in cams:
-            f.write('%d,%r,%r,%d,%d,%d,%d\n' % r)
+            f.write('%d,%r,%r,%d,%d,%d,%d\n' % (r[:4] + (limit(r[4]),) + r[5:]))
     return len(cams)
 
 
