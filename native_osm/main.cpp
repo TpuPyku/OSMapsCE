@@ -411,13 +411,13 @@ static double ViewAngle()
 // North-up: the car is in the center. Heading-up: the car is near the bottom edge,
 // the view center is ahead of it along the course.
 // The magnet with no route (the user 2026-11-11; off the route's line too): the fix onto the road of the region's
-// graph it is on - as MagnetSnap: 30 m to catch, 40 to leave, its way within 60 degrees above 10 km/h (slower: any road)
+// graph it is on - as MagnetSnap: within MagnetReach, its way within 60 degrees above 10 km/h (slower: any road)
 static void RoadMagnet(GpsState* f)
 {
     static bool was;
     int lat = (int)(f->lat * 1e6), lon = (int)(f->lon * 1e6);
     double c = f->course;
-    int r = OfflineSnapFix(&lat, &lon, &c, was ? 40 : 30, f->speedKmh > 10 ? 60 : -1);
+    int r = OfflineSnapFix(&lat, &lon, &c, MagnetReach(was, f->speedKmh), f->speedKmh > 10 ? 60 : -1);
     if (r < 0)   // (the graph busy with a route: as it came)
         return;
     was = r == 1;
@@ -437,10 +437,10 @@ static void RoadMagnet(GpsState* f)
 // there), not into the route's last kDeadEndM (no "arrived" by a guess). The mark grey meanwhile; a trusted fix - as before.
 static const DWORD  kLostMs = 2500, kDeadMs = 180000;
 static const double kDeadM = 5000, kDeadMinKmh = 10, kDeadEndM = 100;
-enum { kJumpsMax = 3 };              // fixes not trusted in a row at most (the next one is: the car is there)
 static GpsState s_good;              // the last fix trusted
 static DWORD    s_seen;              // the last fix looked at (its tick)
-static int      s_jumps;
+static int      s_jumps;             // fixes not trusted in a row
+static FixTrack s_track;             // the far ones agreeing with each other (junction.cpp FixTrust)
 static bool     s_dead;              // the car shown is led along the route's line
 static int      s_deadSerial, s_deadSeg;   // the route and the segment it is led from, its point there
 static double   s_deadAt[2], s_deadMax;
@@ -465,28 +465,21 @@ static double TunnelAhead(const double* ll, int np, const RouteInfo& ri, int* se
     return *seg < 0 ? -1 : RouteStretch(ll, np, *seg, at, kTunnelAheadM, kDeadM, 25, 100, TunnelAt, NULL);
 }
 
-static bool TunnelClose()   // a route on, a tunnel ahead of the last trusted fix
-{
-    const double* ll;
-    int np = RoutePoints(&ll), seg;
-    RouteInfo ri;
-    RouteGet(&ri);
-    double at[2];
-    return np && s_good.valid && TunnelAhead(ll, np, ri, &seg, at) >= 0;
-}
-
-static void FixCheck(const GpsState& f)   // a new fix: the last trusted one, unless it jumped before a tunnel
+// A new fix: the last trusted one, unless it jumped (anywhere, not only before a tunnel: HU 2026-11-24, the leap to
+// Novokosino) - then only when the far fixes have agreed with each other for kFixTrustMs (FixTrust).
+static void FixCheck(const GpsState& f)
 {
     if (!f.valid || f.fixTick == s_seen)
         return;
     s_seen = f.fixTick;
-    bool jump = s_good.valid && FixJumps(s_good.lon, s_good.lat, s_good.speedKmh, f.fixTick - s_good.fixTick, f.lon, f.lat,
-                                         f.speedKmh) && TunnelClose();
-    s_jumps = jump ? s_jumps + 1 : 0;
-    if (jump && s_jumps <= kJumpsMax) {
-        Log("gps: a fix too far from the last one (%d in a row) - not trusted", s_jumps);
+    if (s_good.valid && !FixTrust(&s_track, s_good.lon, s_good.lat, s_good.speedKmh, s_good.fixTick, f.lon, f.lat,
+                                  f.speedKmh, f.fixTick)) {
+        if (++s_jumps == 1 || s_jumps % 10 == 0)
+            Log("gps: a fix too far from the last one (%d in a row) - not trusted", s_jumps);
         return;
     }
+    if (s_jumps)
+        Log("gps: trusted again after %d far fixes", s_jumps);
     s_good = f;
     s_jumps = 0;
 }
@@ -567,13 +560,12 @@ static void DeadReckon(GpsState* f)   // the fix as it came -> as used
 {
     FixCheck(*f);
     bool lost = FixLost(*f), was = s_dead;
-    const double* ll;
     s_dead = lost && DeadAt(f, !was);
     if (s_dead != was)
         Log(s_dead ? "gps: lost on the route - led on along it at %d km/h" : "gps: the fix again (%d km/h)",
             (int)s_good.speedKmh);
-    if (lost && !s_dead && f->valid && f->fixTick != s_good.fixTick && RoutePoints(&ll))
-        f->valid = 0;   // not trusted, on a route: not used (no "off the route" by it)
+    if (lost && !s_dead && f->valid && f->fixTick != s_good.fixTick)
+        f->valid = 0;   // not trusted: not used (no "off the route", no mark leaping across the city by it)
 }
 
 // The GPS's state taken (the fix's message, the second's tick): a new fix - the turn eased from the course shown

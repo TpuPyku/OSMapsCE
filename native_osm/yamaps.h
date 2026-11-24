@@ -429,6 +429,7 @@ bool GlideAim(double lon, double lat, double tLon, double tLat, DWORD periodMs, 
 // The car on the route's line, for the eye only (the user 2026-11-03: it jumps about on a poor signal): the line's nearest
 // point around segment seg of pts[np] (lon, lat pairs) when the fix is near it and goes its way. "was": it was on the line.
 bool MagnetSnap(const double* pts, int np, int seg, double* lon, double* lat, double kmh, double* course, bool was);
+double MagnetReach(bool was, double kmh);   // the magnet's reach, m: to catch a road (was: to hold it)
 // The route (lon, lat pairs) behind the car cut off: of its segments from..to (clamped) the nearest to (lon, lat) within
 // maxM; cut: the car's point on it. -1: none that near
 int  RouteCut(const double* ll, int np, int from, int to, double lon, double lat, double maxM, double* cut);
@@ -436,6 +437,12 @@ int  RouteCut(const double* ll, int np, int from, int to, double lon, double lat
 // (degrees); its segment (past the end: the end), -1: no line
 int  RouteAhead(const double* ll, int np, int seg, const double* at, double m, double* out);
 bool FixJumps(double lon0, double lat0, double kmh0, DWORD ms, double lon, double lat, double kmh);   // too far for the speed
+struct FixTrack { bool on; double lon, lat, kmh; DWORD tick, since; };   // far fixes in a row agreeing with each other
+enum { kFixTrustMs = 15000 };
+// A new fix (tick ms) against the last trusted one (g*): trusted if near it, or if the far fixes have agreed for
+// kFixTrustMs (the car is there); a far fix leaping from the previous far one starts that over.
+bool FixTrust(FixTrack* t, double gLon, double gLat, double gKmh, DWORD gTick, double lon, double lat, double kmh,
+              DWORD tick);
 // How far the route ahead of at runs by places inside() says yes to (a tunnel): sampled every stepM; none within
 // startM: -1; else the last such sample (past it gapM with none ends it; maxM at most; the route's end)
 double RouteStretch(const double* ll, int np, int seg, const double* at, double startM, double maxM, double stepM,

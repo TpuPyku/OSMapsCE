@@ -1281,6 +1281,50 @@ static void RouteAheadChecks()
     Check(!FixJumps(37.0, 55.0, 0, 10000, 37.0, 55.0 + 440 / 110540.0, 100), "fix jumps: the faster of the two speeds, the time between");
     Check(!FixJumps(37.0, 55.0, 100, 10000, 37.0, 55.0 + 446.5 / 110540.0, 100) &&
           FixJumps(37.0, 55.0, 100, 10000, 37.0, 55.0 + 446.8 / 110540.0, 100), "fix jumps: 10 s at 100 km/h - 446.7 m allowed");
+    // a far fix trusted only when the fixes after it agree with each other for kFixTrustMs (HU 2026-11-24: in Moscow
+    // the fixes leapt 7 km to Novokosino, then 20 km south - the 4th far fix was trusted; the speed was right)
+    FixTrack t;
+    memset(&t, 0, sizeof(t));
+    const double gLon = 37.0, gLat = 55.0, km7 = 7000 / 110540.0;
+    Check(FixTrust(&t, gLon, gLat, 60, 0, 37.0, 55.0 + 10 / 110540.0, 60, 1000), "fix trust: near the last trusted - trusted");
+    bool any = false;
+    for (DWORD ms = 1000; ms < kFixTrustMs; ms += 1000)   // a far track going north at 36 km/h: 10 m a second
+        any = FixTrust(&t, gLon, gLat, 60, 0, 37.0, 55.0 + km7 + ms / 100 / 110540.0, 36, ms) || any;
+    Check(!any, "fix trust: a far track - not trusted before kFixTrustMs");
+    Check(FixTrust(&t, gLon, gLat, 60, 0, 37.0, 55.0 + km7 + kFixTrustMs / 100 / 110540.0, 36, kFixTrustMs + 1000),
+          "fix trust: the far track agreed for kFixTrustMs - trusted (the car is there)");
+    memset(&t, 0, sizeof(t));
+    any = false;
+    for (DWORD ms = 1000; ms < 4 * kFixTrustMs; ms += 1000)   // leaping: 7 km off, then 20 km off, again and again
+        any = FixTrust(&t, gLon, gLat, 60, 0, 37.0, 55.0 + (ms / 1000 % 2 ? km7 : -20000 / 110540.0), 97, ms) || any;
+    Check(!any, "fix trust: far fixes leaping about - never trusted");
+    Check(FixTrust(&t, gLon, gLat, 60, 0, 37.0, 55.0 + 30 / 110540.0, 60, 4 * kFixTrustMs), "fix trust: back near - trusted");
+    // the last trusted one late (its tick counts: the time since it), the far track's clock started over by a near fix
+    memset(&t, 0, sizeof(t));
+    const DWORD g = 100000;
+    Check(!FixTrust(&t, gLon, gLat, 0, g, 37.0, 55.0 + 100 / 110540.0, 0, g + 1000), "fix trust: 100 m in a second standing - far");
+    memset(&t, 0, sizeof(t));
+    Check(!FixTrust(&t, gLon, gLat, 36, g, 37.0, 55.0 + 300 / 110540.0, 36, g + 1000),
+          "fix trust: 300 m a second after the last trusted at 36 km/h - far (the time since it, not its tick)");
+    for (DWORD ms = 2000; ms < 6000; ms += 1000)   // 5 s of a far track
+        FixTrust(&t, gLon, gLat, 0, g, 37.0, 55.0 + km7, 0, g + ms);
+    Check(FixTrust(&t, gLon, gLat, 0, g, 37.0, 55.0, 0, g + 6000), "fix trust: near again - trusted");
+    any = false;
+    for (DWORD ms = 7000; ms < 7000 + kFixTrustMs - 1000; ms += 1000)
+        any = FixTrust(&t, gLon, gLat, 0, g, 37.0, 55.0 + km7, 0, g + ms) || any;
+    Check(!any, "fix trust: a far track after a near fix - its own kFixTrustMs from the start");
+    // trusted by agreeing: the next far leap from there waits its own kFixTrustMs too
+    memset(&t, 0, sizeof(t));
+    for (DWORD ms = 1000; ms <= kFixTrustMs + 1000; ms += 1000)
+        FixTrust(&t, gLon, gLat, 0, g, 37.0, 55.0 + km7, 0, g + ms);
+    Check(!FixTrust(&t, 37.0, 55.0 + km7, 0, g + kFixTrustMs + 1000, 37.0, 55.0 - km7, 0, g + kFixTrustMs + 2000),
+          "fix trust: after a far track was trusted, the next leap is far again");
+    // far fixes 300 m apart every second at 36 km/h (45 m allowed): no agreeing track
+    memset(&t, 0, sizeof(t));
+    any = false;
+    for (DWORD ms = 1000; ms < 3 * kFixTrustMs; ms += 1000)
+        any = FixTrust(&t, gLon, gLat, 36, g, 37.0, 55.0 + km7 + (ms / 1000) * 300 / 110540.0, 36, g + ms) || any;
+    Check(!any, "fix trust: far fixes 300 m apart each second - not a track, never trusted");
     // the tunnel on the route ahead (the user 2026-11-14: the dead reckoning only in tunnels): a straight road north
     // 995 m, "the tunnel" between 55.002 and 55.004 (221..442 m), sampled every 25 m
     double north[4] = { 37.0, 55.0, 37.0, 55.009 }, start[2] = { 37.0, 55.0 };
@@ -1668,7 +1712,7 @@ static double LongLat(int i)
 static void TestMagnetEdges()
 {
     double lon, lat, c;
-    Check(Mag(29.8, 500, 60, 0, false, &lon, &lat, &c), "magnet: 29.8 m - still caught");
+    Check(Mag(19.8, 500, 60, 0, false, &lon, &lat, &c), "magnet: 19.8 m - still caught");
     Check(Mag(10, 500, 10, 180, false, &lon, &lat, &c), "magnet: exactly 10 km/h - the course still not counted");
     Check(!Mag(10, 500, 10.5, 180, false, &lon, &lat, &c), "magnet: above 10 km/h - counted");
     Check(Mag(10, 500, 60, 60, false, &lon, &lat, &c), "magnet: 60 degrees right - its way");
@@ -1686,9 +1730,9 @@ static void TestMagnetEdges()
           "magnet: half a metre's piece - on it, its course");
     // past the line's end: its end, not the line going on
     double e;
-    Check(Mag(-1000 + 1000, 1020, 5, 0, false, &lon, &e, &c), "magnet: past the corner, near its line");
+    Check(Mag(-1000 + 1000, 1010, 5, 0, false, &lon, &e, &c), "magnet: past the corner, near its line");
     const double two[4] = { 37.0, 55.0, 37.0, 55.0 + kM };
-    lon = 37.0, lat = 55.0 + kM + 20 / 110540.0, c = 0;
+    lon = 37.0, lat = 55.0 + kM + 10 / 110540.0, c = 0;
     Check(MagnetSnap(two, 2, 0, &lon, &lat, 5, &c, false) && fabs(lat - (55.0 + kM)) < 1e-7, "magnet: past the end - the end");
     // the points after np are not the line's
     const double more[8] = { 37.0, 55.0, 37.0, 55.0 + kM, 40.0, 55.0, 37.5, 55.5 };
@@ -1714,8 +1758,16 @@ static void TestMagnet()
     Check(Mag(20, 500, 60, 355, false, &lon, &lat, &c), "magnet: the course's difference over north counts the short way");
     Check(!Mag(31, 500, 60, 0, false, &lon, &lat, &c) && fabs(lon - (37.0 + 31 / (111320 * 0.573576436))) < 1e-9 && c == 0,
           "magnet: more than 30 m off - the fix untouched");
-    Check(Mag(31, 500, 60, 0, true, &lon, &lat, &c), "magnet: on the line it holds to 40 m");
-    Check(!Mag(41, 500, 60, 0, true, &lon, &lat, &c), "magnet: over 40 m it lets go");
+    Check(!Mag(21, 500, 60, 0, false, &lon, &lat, &c), "magnet: more than 20 m off - not caught");
+    Check(Mag(29, 500, 60, 0, true, &lon, &lat, &c), "magnet: on the line it holds to 30 m");
+    Check(!Mag(31, 500, 60, 0, true, &lon, &lat, &c), "magnet: over 30 m it lets go");
+    Check(Mag(12, 500, 8, 0, false, &lon, &lat, &c) && !Mag(13, 500, 8, 0, false, &lon, &lat, &c),
+          "magnet: slow (a fuel station, a car park) - caught within 12 m only");
+    Check(Mag(15, 500, 8, 0, true, &lon, &lat, &c) && !Mag(16, 500, 8, 0, true, &lon, &lat, &c),
+          "magnet: slow - held to 15 m");
+    Check(MagnetReach(false, 60) == 20 && MagnetReach(true, 60) == 30 && MagnetReach(false, 10) == 12 &&
+          MagnetReach(true, 10) == 15, "magnet: the reach (HU 2026-11-24: a fuel station 100 m off stayed on the road)");
+    Check(MagnetReach(false, 10.5) == 20, "magnet: above 10 km/h - moving");
     Check(!Mag(10, 500, 60, 90, false, &lon, &lat, &c) && c == 90, "magnet: across the line - a side road, not snapped");
     Check(!Mag(10, 500, 60, 180, false, &lon, &lat, &c), "magnet: against the line");
     Check(Mag(10, 500, 8, 180, false, &lon, &lat, &c) && fabs(c) < 1e-6, "magnet: slow - the course means nothing, snapped");

@@ -78,8 +78,18 @@ void GlideMove(double* lon, double* lat, double ve, double vn, DWORD ms)
     *lat += vn * ms / 110540.0;
 }
 
-// Near: 30 m to catch the line, 40 m to leave it (no flicker at the edge). Going its way: within 60 degrees, above 10 km/h
-// (slower the course is noise). A side road the car really took fails one of the two, and the mark follows the fix.
+// The magnet's reach (HU 2026-11-24: a fuel station 100 m off the road stayed on it): moving, 20 m to catch a road and
+// 30 to hold it (a lane of a divided road is within 10 m of its line, the fix's noise ~10 m); slow (10 km/h and less -
+// a fuel station, a car park are driven into slowly) 12 and 15. The hold is wider: no flicker at the edge.
+double MagnetReach(bool was, double kmh)
+{
+    if (kmh > 10)
+        return was ? 30 : 20;
+    return was ? 15 : 12;
+}
+
+// Near: within MagnetReach. Going its way: within 60 degrees, above 10 km/h (slower the course is noise). A side road
+// the car really took fails one of the two, and the mark follows the fix.
 bool MagnetSnap(const double* pts, int np, int seg, double* lon, double* lat, double kmh, double* course, bool was)
 {
     const double kx = 111320.0 * cos(*lat * M_PI / 180), ky = 110540.0;
@@ -100,7 +110,7 @@ bool MagnetSnap(const double* pts, int np, int seg, double* lon, double* lat, do
             lineCourse = atan2(dx, dy) * 180 / M_PI;
         }
     }
-    double reach = was ? 40 : 30;
+    double reach = MagnetReach(was, kmh);
     if (best > reach * reach)
         return false;
     if (lineCourse < 0)
@@ -220,6 +230,26 @@ bool FixJumps(double lon0, double lat0, double kmh0, DWORD ms, double lon, doubl
 {
     double a[2] = { lon0, lat0 }, b[2] = { lon, lat }, v = kmh0 > kmh ? kmh0 : kmh;
     return Dist(a, b) > v / 3.6 * ms / 1000 * 1.5 + 30;
+}
+
+// HU 2026-11-24: in Moscow the fixes leapt 7 km, then 20 km away (jamming or spoofing; the speed shown stayed right) and
+// the 4th far fix in a row was trusted. A far fix is trusted only when the far ones have agreed for kFixTrustMs.
+bool FixTrust(FixTrack* t, double gLon, double gLat, double gKmh, DWORD gTick, double lon, double lat, double kmh,
+              DWORD tick)
+{
+    if (!FixJumps(gLon, gLat, gKmh, tick - gTick, lon, lat, kmh)) {
+        t->on = false;
+        return true;
+    }
+    if (!t->on || FixJumps(t->lon, t->lat, t->kmh, tick - t->tick, lon, lat, kmh)) {   // a new far track
+        t->on = true;
+        t->since = tick;
+    }
+    t->lon = lon;
+    t->lat = lat;
+    t->kmh = kmh;
+    t->tick = tick;
+    return tick - t->since >= kFixTrustMs;   // (trusted: it is the last trusted one, a leap from it starts anew)
 }
 
 static void Put(double* out, int& n, int cap, double lon, double lat)
