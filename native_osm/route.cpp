@@ -164,6 +164,10 @@ static bool      s_gpsHave;
 // Alternatives (the user's wish 2026-10-26): a route without stops is asked with up to two more; while the driver
 // chooses, the answer is kept (the chosen one is read from it again) with each one's line, time and length.
 static bool      s_wantAlts;
+// The preview (the user 2026-11-24: offline there was no "ПОЕХАЛИ", the route at once and its view too far): the
+// answer to a route the driver started is kept for the preview even with one route (offline, or with stops); a new
+// route off the line goes on at once.
+static bool      s_preview;
 static char*     s_altBody;
 static int       s_nalt, s_cur;
 static double*   s_altPts[3];
@@ -278,7 +282,7 @@ bool RouteStart(double gpsLon, double gpsLat, double course, bool gpsValid)
         return false;
     FreeRoute();
     RouteAltsDone();
-    s_wantAlts = true;
+    s_wantAlts = s_preview = true;
     s_off = false;
     s_offFixes = 0;
     s_stateText[0] = 0;
@@ -666,14 +670,15 @@ bool OnApiResult(ApiResult* r)
                 s_altDist[n] = JNum(JKey(rt, "distance"), 0);
                 n++;
             }
-            if (n >= 2) {   // the driver chooses: the answer is kept
+            if (n >= 2 || (n == 1 && s_preview)) {   // the driver looks (and chooses): the answer is kept
                 s_nalt = n;
                 s_altBody = r->body;
                 r->body = NULL;
-                Log("route: %d alternatives", n);
+                Log("route: the preview, %d alternatives", n);
             } else {
                 RouteAltsDone();
             }
+            s_preview = false;
             OnRoute(s_altBody ? s_altBody : r->body, 0);
             s_serial++;   // (not for an alternative chosen: the same answer)
         }

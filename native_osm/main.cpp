@@ -585,7 +585,7 @@ static void GpsTake()
 
 static void FixToRoute()   // a fix (or the car led on: each second): the route's progress, its prompts
 {
-    if (RouteAlts() >= 2 && s_gps.speedKmh > 15)
+    if (RouteAlts() && s_gps.speedKmh > 15)
         RouteAltsDone();   // driving: the route chosen is the one on
     RouteGps(s_raw.lon, s_raw.lat, s_raw.speedKmh, s_raw.course);
     SayTick((int)s_raw.speedKmh);
@@ -1053,7 +1053,7 @@ static bool TrafficWanted()   // the traffic asked for: shown on the map, or a r
 {
     RouteInfo ri;
     RouteGet(&ri);
-    return g_cfg.traffic && (!g_cfg.trafficRoute || ri.state != ROUTE_NONE || RouteAlts() >= 2);
+    return g_cfg.traffic && (!g_cfg.trafficRoute || ri.state != ROUTE_NONE || RouteAlts());
 }
 
 static void Ensure(int mode)
@@ -2792,7 +2792,7 @@ enum { kAltGo = 74, kAltPanel = 75 };   // (HitOverMap's ids: the cards 70 + k)
 static bool CardRect(int k, RECT* r)   // k: an alternative, kAltGo - "ПОЕХАЛИ", kAltPanel - the panel itself
 {
     int n = RouteAlts(), h = n > 2 ? 78 : 96;
-    if (n < 2 || k < 0 || (k >= n && k < kAltGo))
+    if (n < 1 || k < 0 || (k >= n && k < kAltGo))
         return false;
     if (k == kAltPanel)
         SetRect(r, 16, 56, 336, 466);
@@ -2832,9 +2832,11 @@ static int  s_altFollow;
 
 static void AltFit()
 {
-    if (RouteAlts() < 2) {
-        if (s_altFit) {
-            g_cfg.follow = s_altFollow;
+    if (!RouteAlts()) {
+        if (s_altFit) {   // "ПОЕХАЛИ" (a tap on the map, the car driving off): to the car at z16 (the user 2026-11-24)
+            g_cfg.follow = s_altFollow != FOLLOW_OFF ? s_altFollow : s_gps.valid ? FOLLOW_HEADING : FOLLOW_OFF;
+            if (g_cfg.follow != FOLLOW_OFF)
+                g_cfg.z = 16;
             s_altFit = false;
             UserChanged();
         }
@@ -3079,7 +3081,7 @@ static int RouteFrom(const double* ll, int np, double* cut)
 {
     RouteInfo ri;
     RouteGet(&ri);
-    if (ri.state != ROUTE_ON || !s_gps.valid || RouteAlts() >= 2)
+    if (ri.state != ROUTE_ON || !s_gps.valid || RouteAlts())
         return -1;
     return RouteCut(ll, np, ri.seg - 8, ri.seg + 1, s_gps.lon, s_gps.lat, 50, cut);
 }
@@ -4612,7 +4614,7 @@ static bool TripShown()
 {
     RouteInfo ri;
     RouteGet(&ri);
-    return ri.state == ROUTE_ON && !s_dockShown && RouteAlts() < 2 && s_pickSlot < 0 && !s_lpMenu && s_lpStop < 0;
+    return ri.state == ROUTE_ON && !s_dockShown && !RouteAlts() && s_pickSlot < 0 && !s_lpMenu && s_lpStop < 0;
 }
 
 // The arrival by the clock: "14:41"
@@ -4701,7 +4703,7 @@ static void DrawTrip(HDC dc)
 {
     RouteInfo ri;
     RouteGet(&ri);
-    if (s_gps.valid && !s_dockShown && RouteAlts() < 2) {   // the speed, bottom left
+    if (s_gps.valid && !s_dockShown && !RouteAlts()) {   // the speed, bottom left
         RECT c = { 20, 394, 94, 468 };
         Card(dc, c, 37);
         wchar_t v[8];
@@ -6591,7 +6593,7 @@ static void Paint(HDC hdc)
         DrawPlan(dc);
     } else {
         DrawStatus(dc);
-        if (s_pickSlot < 0 && RouteAlts() < 2)   // (not over the alternatives' panel)
+        if (s_pickSlot < 0 && !RouteAlts())   // (not over the alternatives' panel)
             DrawGuide(dc);
         DrawLayerWarning(dc);
         AltFit();
@@ -7361,7 +7363,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                     OnLongPress(px, py);
             } else if (s_pickSlot >= 0) {
                 PickAt(px, py);
-            } else if (RouteAlts() >= 2) {
+            } else if (RouteAlts()) {
                 RouteAltsDone();
             } else if ((s_favMenu = FavAt(px, py)) >= 0) {   // a favourite's mark: its menu
                 // (the user 2026-11-08, a Shturmann: "any tap at z16-z17 opens a favourite" - where it was, where the mark)
