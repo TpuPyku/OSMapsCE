@@ -388,8 +388,8 @@ class Maps(unittest.TestCase):
     def test_app_version(self):
         """The loader's own number (the user 2026-11-06: it changes less often than OSMapsCE): 1.0, then the build's date
         when it was built; run from the sources: no date."""
-        self.assertEqual(maps_app.app_version('261106'), '1.1.261106')
-        self.assertEqual(maps_app.app_version(None), '1.1')
+        self.assertEqual(maps_app.app_version('261106'), '1.2.261106')
+        self.assertEqual(maps_app.app_version(None), '1.2')
 
     def test_app_writes_the_overview(self):
         """The overview pack (the user 2026-10-30: a region's pack holds its region only - its small zooms empty round

@@ -14,7 +14,18 @@ import time
 
 import make_layers
 
-URL = 'https://drive.google.com/uc?export=download&id=1h1H9k4t4mbnKy1WKs5Y9VBApGuW6qwFV'
+URL = 'https://drive.google.com/uc?export=download&id=%s'
+# Each country's own file (newnavitel.blogspot.com's open ones, the user 2026-11-27: downloaded only for its regions
+# chosen); they do not overlap - Crimea, Donetsk, Luhansk have points in both Russia's and Ukraine's
+IDS = {'RU': '1h1H9k4t4mbnKy1WKs5Y9VBApGuW6qwFV', 'BY': '1FauoFsG535LdzRbEHTnVBO6yjEh53KB5',
+       'UA': '1mpV3eOKR4JTtxOiEbPZMzixV4kNl6y-W', 'KZ': '1dJRH4uyQ2vNtpPPXqcaMOp5nyhs0rYvN'}
+UKRAINE = ('cherkasy_oblast', 'chernihiv_oblast', 'chernivtsi_oblast', 'dnipropetrovsk_oblast', 'kharkiv_oblast',
+           'kherson_oblast', 'khmelnytskyi_oblast', 'kiev_oblast', 'kirovohrad_oblast', 'lviv_oblast',
+           'mykolaiv_oblast', 'odessa_oblast', 'poltava_oblast', 'rivne_oblast', 'sumy_oblast', 'ternopil_oblast',
+           'vinnytsia_oblast', 'volyn_oblast', 'zakarpattia_oblast', 'zaporizhia_oblast', 'zhytomyr_oblast')
+# (release_regions' names)
+COUNTRY = dict(dict.fromkeys(UKRAINE, ('UA',)), belarus=('BY',), kazakhstan=('KZ',),
+               **dict.fromkeys(('crimea', 'donetsk', 'luhansk'), ('RU', 'UA')))   # any other region: Russia's
 HEADER = 'IDX,X,Y,TYPE,SPEED,DirType,Direction'
 CAMS = (1, 3, 4, 5)
 LIMIT_MIN, LIMIT_MAX = 10, 160   # openspeedcam.net's fillers, no limits: its red-light cameras' 5, the "no limit" 160
@@ -41,8 +52,17 @@ def camera(kind, speed):
 BUMP = 102
 DANGERS = (100, 103, 104, 105, 106)   # danger.lay: kind DANGER, fee = TYPE - 100
 LAY_BUMP, LAY_DANGER = make_layers.BUMP, 4
-CACHE_FILE = 'OpenSpeedcam_Russia.txt'
+CACHE_FILE = 'OpenSpeedcam_%s.txt'
 RUN = time.time()   # the loader's start: the cached file of this run is used again, an older one fetched anew
+
+
+def url(country):
+    return URL % IDS[country]
+
+
+def countries(names):
+    """The countries (IDS' keys) whose files these regions need, sorted."""
+    return sorted({c for n in names for c in COUNTRY.get(n, ('RU',))})
 
 
 def parse(raw):
@@ -107,13 +127,14 @@ def put(folder, rows):
     return sum(write(os.path.join(folder, name), rows) for name, write in FILES)
 
 
-def download(cache_dir, fetch):
-    """The export's bytes: fetch(URL) once a run, kept in cache_dir; not the CSV (Google's page instead) - ValueError."""
-    path = os.path.join(cache_dir, CACHE_FILE)
+def download(cache_dir, fetch, country):
+    """A country's export bytes: fetch(its url) once a run, kept in cache_dir; not the CSV (Google's page instead) -
+    ValueError."""
+    path = os.path.join(cache_dir, CACHE_FILE % country)
     if os.path.exists(path) and os.path.getmtime(path) >= RUN:
         with open(path, 'rb') as f:
             return f.read()
-    raw = fetch(URL)
+    raw = fetch(url(country))
     if not raw.lstrip(b'\xef\xbb\xbf \r\n').startswith(b'IDX,'):
         raise ValueError('openspeedcam.net: not the cameras file')
     os.makedirs(cache_dir, exist_ok=True)

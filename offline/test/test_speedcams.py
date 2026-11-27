@@ -124,14 +124,26 @@ class Speedcams(unittest.TestCase):
         def fetch(url):
             got.append(url)
             return CSV
-        self.assertEqual(speedcams.download(cache, fetch), CSV)
-        self.assertEqual(speedcams.download(cache, fetch), CSV)
-        self.assertEqual(got, [speedcams.URL])
+        self.assertEqual(speedcams.download(cache, fetch, 'RU'), CSV)
+        self.assertEqual(speedcams.download(cache, fetch, 'RU'), CSV)
+        self.assertEqual(got, [speedcams.url('RU')])
         with unittest.mock.patch.object(speedcams, 'RUN', speedcams.RUN + 1e6):   # (a later run: fetched anew)
-            speedcams.download(cache, fetch)
+            speedcams.download(cache, fetch, 'RU')
         self.assertEqual(len(got), 2)
+        speedcams.download(cache, fetch, 'BY')   # (another country's file: its own, kept apart)
+        self.assertEqual(got[2:], [speedcams.url('BY')])
+        self.assertEqual(len(set(map(speedcams.url, speedcams.IDS))), 4)
         with self.assertRaises(ValueError):
-            speedcams.download(os.path.join(self.tmp, 'other'), lambda url: b'<html>quota</html>')
+            speedcams.download(os.path.join(self.tmp, 'other'), lambda url: b'<html>quota</html>', 'RU')
+
+    def test_countries(self):
+        """The countries' files a set of regions needs (the user 2026-11-27: only for the regions chosen)."""
+        self.assertEqual(speedcams.countries([]), [])
+        self.assertEqual(speedcams.countries(['moscow_oblast', 'germany']), ['RU'])   # (any other: Russia's)
+        self.assertEqual(speedcams.countries(['belarus', 'kiev_oblast', 'lviv_oblast']), ['BY', 'UA'])
+        self.assertEqual(speedcams.countries(['kazakhstan']), ['KZ'])
+        self.assertEqual(speedcams.countries(['donetsk']), ['RU', 'UA'])   # (the disputed lands: in both files)
+        self.assertEqual([n for n in speedcams.UKRAINE if n not in maps_app.release_regions.TITLES], [])
 
 
 class Loader(unittest.TestCase):
@@ -161,7 +173,7 @@ class Loader(unittest.TestCase):
             return maps_app.App.add_cams(self.app, self.card, names)
 
     def test_written(self):
-        said = self.add(['moscow', 'spb', 'gone'], lambda cache, fetch: CSV)
+        said = self.add(['moscow', 'spb', 'gone'], lambda cache, fetch, country: CSV)
         self.assertEqual(said, ', камер и опасностей: 5 (данные камер: openspeedcam.net)')
         self.assertTrue(os.path.exists(self.file('moscow', 'speedcam.txt')))
         self.assertTrue(os.path.exists(self.file('moscow', 'danger.lay')))
@@ -170,14 +182,33 @@ class Loader(unittest.TestCase):
 
     def test_failed(self):
         """No cameras: told, the maps written all the same."""
-        def fail(cache, fetch):
+        def fail(cache, fetch, country):
             raise OSError('нет сети')
         self.assertEqual(self.add(['moscow'], fail), ', камеры не скачаны (нет сети)')
 
+    def test_countries_files(self):
+        """Only the chosen regions' countries downloaded (not for the overview); a region of its own countries' files
+        only, whatever else chosen (Russia's cameras in Belarus's bbox not there)."""
+        os.makedirs(os.path.join(self.card, 'OSMapsData', 'belarus'))
+        self.cat['regions'].append({'name': 'belarus', 'title': 'Б', 'bbox': [23.0, 51.0, 33.0, 56.5], 'date': 'd'})
+        minsk = b'IDX,X,Y,TYPE,SPEED,DirType,Direction\r\n9,27.56,53.9,1,60,0,0\r\n'
+        asked = []
+
+        def download(cache, fetch, country):
+            asked.append(country)
+            return minsk if country == 'BY' else CSV + b'8,27.57,53.91,1,60,0,0\r\n'
+        said = self.add(['belarus', 'overview'], download)
+        self.assertEqual(said, ', камер и опасностей: 1 (данные камер: openspeedcam.net)')
+        self.assertEqual(asked, ['BY'])
+        self.add(['moscow', 'belarus'], download)
+        self.assertEqual(asked[1:], ['BY', 'RU'])
+        with open(self.file('belarus', 'speedcam.txt')) as f:
+            self.assertEqual(f.read().splitlines()[1:], ['9,27.56,53.9,1,60,0,0'])
+
     def test_fetch_through_download(self):
         """The file read with the loader's own download, its progress shown."""
-        def download(cache, fetch):
-            return fetch(speedcams.URL)
+        def download(cache, fetch, country):
+            return fetch(speedcams.url(country))
         with unittest.mock.patch.object(maps_app, 'download', lambda url, tell: tell(1.0, 'x') or CSV):
             self.add(['moscow'], download)
         self.assertEqual(self.app.news.get(), ('progress', 1.0))

@@ -78,7 +78,7 @@ def region_title(r):
 MAXZOOM = 15   # Protomaps' deepest: the house numbers, the car parks
 STATE = {'new': T('нет'), 'update': T('есть новее'), 'ok': T('свежая')}
 kTilesPart = 0.75   # a region's progress: its tiles up to here, then the release's zip (the graph, the search)
-RELEASE = '1.1'   # the loader's own number, raised by hand (it changes less often than OSMapsCE); the date: build_app.bat's
+RELEASE = '1.2'   # the loader's own number, raised by hand (it changes less often than OSMapsCE); the date: build_app.bat's
 try:
     from app_build import BUILD
 except ImportError:   # (run from the sources)
@@ -293,12 +293,13 @@ def install(entry, drive, get_file, get_bytes, maxzoom, progress=None, tiles_dat
                 out.write(z.read(f) + (b'tiles=%s\n' % tiles_date.encode() if f == 'region.txt' else b''))
 
 
-def write_cams(cat, drive, names, rows):
-    """The cameras and dangers (speedcams' rows) into the drive's regions of these names, each its catalog bbox's: how
-    many points written."""
+def write_cams(cat, drive, names, files):
+    """The cameras and dangers into the drive's regions of these names, each of its own countries' files ({country:
+    speedcams' rows}) in its catalog bbox: how many points written."""
     boxes = {r['name']: r['bbox'] for r in cat['regions']}
     folders = [(n, os.path.join(drive, 'OSMapsData', n)) for n in names if n in boxes]
-    return sum(speedcams.put(f, speedcams.cut(rows, boxes[n])) for n, f in folders if os.path.isdir(f))
+    return sum(speedcams.put(f, speedcams.cut([r for c in speedcams.countries([n]) for r in files[c]], boxes[n]))
+               for n, f in folders if os.path.isdir(f))
 
 
 def copy_file(src, dst, tell, piece=1 << 20):
@@ -906,11 +907,13 @@ class App:
         """openspeedcam.net's cameras and dangers into the drive's regions (speedcams; the file once a run): what to
         tell. Not downloaded: told, the maps written all the same."""
         tell = lambda part, text: self.tell(T('Камеры'), part, text)   # noqa: E731
+        known = [n for n in names if n in {r['name'] for r in self.cat['regions']}]   # (not the overview)
         try:
-            raw = speedcams.download(CAMS_CACHE, lambda url: download(url, tell))
+            files = {c: speedcams.parse(speedcams.download(CAMS_CACHE, lambda url: download(url, tell), c))
+                     for c in speedcams.countries(known)}
         except (OSError, ValueError) as e:
             return T(', камеры не скачаны (%s)') % e
-        got = write_cams(self.cat, drive, names, speedcams.parse(raw))
+        got = write_cams(self.cat, drive, known, files)
         return T(', камер и опасностей: %d (данные камер: openspeedcam.net)') % got
 
     def fetch_ready(self, jobs, source, drive, cams=False):
