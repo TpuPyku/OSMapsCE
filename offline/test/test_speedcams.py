@@ -86,6 +86,25 @@ class Speedcams(unittest.TestCase):
             speeds = [line.split(b',')[4] for line in f.read().split(b'\r\n')[1:] if line]
         self.assertEqual(speeds, [b'0', b'0', b'0', b'10', b'159', b'60'])
 
+    def test_new_navitel_codes(self):
+        """The export is New Navitel's (newnavitel.blogspot.com, "Различие между speedcam Navitel и New Navitel" - the
+        user 2026-11-27): a kind's subtype in SPEED. 101 with 155 (a radar complex) and 25 (a lane camera) are
+        cameras - written as static ones, no limit; 101's others (a limit sign, a police post 5, a town 15, railway
+        crossings 125/135, video control 160) dropped. An ambush (5) with x5: control at x5 - 5; its 125..155 (a STOP
+        sign, a crossing, overtaking, the oncoming lane) no limit."""
+        path = os.path.join(self.tmp, 'speedcam.txt')
+        rows = [(1, 37.6, 55.7, 101, 155, 1, 90), (2, 37.6, 55.7, 101, 25, 1, 0), (3, 37.6, 55.7, 101, 40, 0, 0),
+                (4, 37.6, 55.7, 101, 5, 0, 0), (5, 37.6, 55.7, 101, 15, 0, 0), (6, 37.6, 55.7, 101, 125, 0, 0),
+                (7, 37.6, 55.7, 101, 160, 0, 0), (8, 37.6, 55.7, 5, 65, 0, 0), (9, 37.6, 55.7, 5, 15, 0, 0),
+                (10, 37.6, 55.7, 5, 115, 0, 0), (11, 37.6, 55.7, 5, 145, 0, 0), (12, 37.6, 55.7, 5, 125, 0, 0),
+                (13, 37.6, 55.7, 5, 60, 0, 0), (14, 37.6, 55.7, 1, 60, 0, 0)]
+        self.assertEqual(speedcams.write_speedcam(path, rows), 9)
+        with open(path, 'rb') as f:
+            got = [tuple(line.split(b',')[i] for i in (0, 3, 4)) for line in f.read().split(b'\r\n')[1:] if line]
+        self.assertEqual(got, [(b'1', b'1', b'0'), (b'2', b'1', b'0'), (b'8', b'5', b'60'), (b'9', b'5', b'10'),
+                               (b'10', b'5', b'110'), (b'11', b'5', b'0'), (b'12', b'5', b'0'), (b'13', b'5', b'60'),
+                               (b'14', b'1', b'60')])
+
     def test_danger_lay(self):
         """The bumps (kind 2) and dangers (kind 4, fee = the danger's kind) as layers.lay's points."""
         path = os.path.join(self.tmp, 'danger.lay')

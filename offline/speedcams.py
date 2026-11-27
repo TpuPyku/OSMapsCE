@@ -4,8 +4,10 @@ openspeedcam.net's export for Navitel (cp1251 CSV: IDX,X,Y,TYPE,SPEED,DirType,Di
 The region's folder gets speedcam.txt (the cameras, the same CSV - VestaHome's CamLine reads it) and danger.lay (the
 speed bumps and the dangers as OSMapsCE's layers file, make_layers.py's format). TYPE, Navitel's: 1, 4 a static
 camera, 3 a red-light one, 5 a mobile ambush; 100 a pedestrian crossing, 102 a speed bump, 103 a bad road, 104 a
-dangerous turn, 105 a dangerous crossroads, 106 another danger; anything else (101 "speed limit": mostly video
-control) dropped.
+dangerous turn, 105 a dangerous crossroads, 106 another danger. The export is New Navitel's: a kind's subtype in
+SPEED (newnavitel.blogspot.com, "Различие между speedcam Navitel и New Navitel" - the user 2026-11-27): 101 with 155
+(a radar complex) or 25 (a lane camera) is a camera, 101's others (a limit sign, a police post, a town, railway
+crossings, video control) dropped; an ambush (5) with x5: speed control at x5 - 5, its 125..155 other kinds.
 """
 import os
 import time
@@ -18,9 +20,24 @@ CAMS = (1, 3, 4, 5)
 LIMIT_MIN, LIMIT_MAX = 10, 160   # openspeedcam.net's fillers, no limits: its red-light cameras' 5, the "no limit" 160
 
 
+CAMS_101 = (25, 155)   # 101's cameras: a lane camera, a radar complex (written as static cameras, 1)
+AMBUSH = 5
+
+
 def limit(speed):
     """The camera's limit as VestaHome takes it: a filler is 0, unknown (VestaHome reads old files the same way)."""
     return speed if LIMIT_MIN <= speed < LIMIT_MAX else 0
+
+
+def camera(kind, speed):
+    """(TYPE, limit) of a camera as written to speedcam.txt; None - not a camera."""
+    if kind == 101:
+        return (1, 0) if speed in CAMS_101 else None
+    if kind not in CAMS:
+        return None
+    if kind == AMBUSH and speed % 10 == 5:   # (New Navitel's ambush subtypes)
+        return kind, speed - 5 if speed < 120 else 0
+    return kind, limit(speed)
 BUMP = 102
 DANGERS = (100, 103, 104, 105, 106)   # danger.lay: kind DANGER, fee = TYPE - 100
 LAY_BUMP, LAY_DANGER = make_layers.BUMP, 4
@@ -54,14 +71,15 @@ def drop(path):
 def write_speedcam(path, rows):
     """The cameras as the source has them (ASCII, CRLF, its header), the fillers' limits 0; none: no file (an old one
     off). Their count."""
-    cams = [r for r in rows if r[3] in CAMS]
+    cams = [(r, camera(r[3], r[4])) for r in rows]
+    cams = [(r, c) for r, c in cams if c]
     if not cams:
         drop(path)
         return 0
     with open(path, 'w', newline='\r\n') as f:
         f.write(HEADER + '\n')
-        for r in cams:
-            f.write('%d,%r,%r,%d,%d,%d,%d\n' % (r[:4] + (limit(r[4]),) + r[5:]))
+        for r, c in cams:
+            f.write('%d,%r,%r,%d,%d,%d,%d\n' % (r[:3] + c + r[5:]))
     return len(cams)
 
 
