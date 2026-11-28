@@ -85,7 +85,7 @@ def region_title(r):
 MAXZOOM = 15   # Protomaps' deepest: the house numbers, the car parks
 STATE = {'new': T('нет'), 'update': T('есть новее'), 'ok': T('свежая')}
 kTilesPart = 0.75   # a region's progress: its tiles up to here, then the release's zip (the graph, the search)
-RELEASE = '1.2'   # the loader's own number, raised by hand (it changes less often than OSMapsCE); the date: build_app.bat's
+RELEASE = '1.3'   # the loader's own number, raised by hand (it changes less often than OSMapsCE); the date: build_app.bat's
 try:
     from app_build import BUILD
 except ImportError:   # (run from the sources)

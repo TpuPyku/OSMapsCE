@@ -13,7 +13,7 @@
 #include "vnav.h"      // VestaCore: the next manoeuvre as VestaHome is told it, its sign
 #include "vfont.h"     // VestaCore: the fonts
 #include "vtouch.h"    // VestaCore: the finger on the resistive panel, filtered
-static const wchar_t* const kRelease = L"2.1";   // raise by hand: minor - significant changes, major - big releases
+static const wchar_t* const kRelease = L"2.2";   // raise by hand: minor - significant changes, major - big releases
 
 // ---------------------------------------------------------------- UI layout
 // 800x480 in the VestaHome style (mockup VestaHome/skin/maps-skin-v2.pdf): the map over the whole screen, a
