@@ -41,6 +41,7 @@ struct Config {
     int     layerSignals;   // traffic lights on the map
     int     layerBumps;     // speed bumps on the map, and the warning on the way
     int     layerDangers;   // ... the dangers (danger.lay): DANGERS_OFF, DANGERS_MAIN, DANGERS_ALL (layers.h)
+    int     layerCams;      // speed cameras on the map (cams.lay; the user 2026-11-28)
     int     follow;         // GPS mode: 0 off, 1 north-up, 2 heading-up
     int     night;          // dark map: lightness inverted, dimmed
     int     vector;         // the base map: 0 OSM raster tiles, 1 vector tiles (OpenFreeMap, vtile.cpp)

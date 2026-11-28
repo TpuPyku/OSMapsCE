@@ -207,9 +207,9 @@ int LayersMergeOnScreen(LayerPoint* p, int n, int px)
 // ---------------------------------------------------------------- the points in hand
 
 struct Held {
-    const wchar_t* names[2];   // the region's files, the second's after the first's (NULL: none)
+    const wchar_t* names[3];   // the region's files, each after the one before (NULL: none)
     DWORD magic;
-    int size, caps[2];         // ... each its own room
+    int size, caps[3];         // ... each its own room
     void* items;
     int (*tidy)(void* items, int n);   // after a read: the points merged
     int n;
@@ -223,9 +223,10 @@ static int MergeItems(void* p, int n)
     return LayersMerge((LayerPoint*)p, n);
 }
 
-static Held         s_points = { { L"layers.lay", L"danger.lay" }, kMagicPoints, sizeof(LayerPoint),
-                                 { LAYERS_MAX_POINTS, LAYERS_MAX_DANGERS }, s_pts, MergeItems },
-                    s_parks = { { L"parking.lay", NULL }, kMagicLines, sizeof(ParkLine), { kMaxLines, 0 }, s_lines, NULL };
+static Held         s_points = { { L"layers.lay", L"danger.lay", L"cams.lay" }, kMagicPoints, sizeof(LayerPoint),
+                                 { LAYERS_MAX_POINTS, LAYERS_MAX_DANGERS, LAYERS_MAX_CAMS }, s_pts, MergeItems },
+                    s_parks = { { L"parking.lay", NULL, NULL }, kMagicLines, sizeof(ParkLine), { kMaxLines, 0, 0 }, s_lines,
+                                NULL };
 static volatile LONG s_paused;
 
 static int ReadRegion(const Held& h, const int* box)
@@ -235,7 +236,7 @@ static int ReadRegion(const Held& h, const int* box)
     if (!OfflineDir(mid, 1, dir))
         return 0;
     int got = 0;
-    for (int i = 0; i < 2 && h.names[i]; i++) {
+    for (int i = 0; i < 3 && h.names[i]; i++) {
         _snwprintf(path, MAX_PATH, L"%s\\%s", dir, h.names[i]);
         path[MAX_PATH - 1] = 0;
         int k = FileRead(path, h.magic, h.size, box, (char*)h.items + got * h.size, h.caps[i]);
@@ -305,12 +306,12 @@ static unsigned TypeBit(int type)
     return 1u << (kTypeBit0 + type);
 }
 
-unsigned LayersWanted(int signals, int bumps, int dangers)
+unsigned LayersWanted(int signals, int bumps, int dangers, int cams)
 {
     unsigned major = TypeBit(DANGER_BAD_ROAD) | TypeBit(DANGER_TURN) | TypeBit(DANGER_CROSSROADS);
     unsigned rest = TypeBit(DANGER_CROSSING) | TypeBit(DANGER_OTHER);
     return (signals ? 1u << LAY_SIGNAL : 0) | (bumps ? 1u << LAY_BUMP : 0) | (dangers >= DANGERS_MAIN ? major : 0) |
-           (dangers >= DANGERS_ALL ? rest : 0);
+           (dangers >= DANGERS_ALL ? rest : 0) | (cams ? 1u << LAY_CAMERA : 0);
 }
 
 bool LayerWanted(const LayerPoint& p, unsigned wanted)
@@ -344,11 +345,28 @@ int LayerAhead(const LayerPoint* p, int n, unsigned wanted, int lat, int lon, do
     return at;
 }
 
-// ---------------------------------------------------------------- the button
+// ---------------------------------------------------------------- the layers' window
 
-void OverlayNext(int* traffic, int* parking)
+static int* LayerField(LayerSet* s, int row)   // the row's setting; NULL - no such row
 {
-    bool wasTraffic = *traffic != 0, wasParking = *parking != 0;
-    *traffic = !wasTraffic && !wasParking;
-    *parking = wasTraffic;
+    int* f[LYR_COUNT] = { &s->traffic, &s->cams, &s->bumps, &s->signals, &s->dangers, &s->parking };
+    return row >= 0 && row < LYR_COUNT ? f[row] : NULL;
+}
+
+void LayersToggle(LayerSet* s, int row)
+{
+    int* f = LayerField(s, row);
+    if (!f)
+        return;
+    *f = *f ? 0 : row == LYR_DANGERS ? DANGERS_MAIN : 1;
+    if (*f && row == LYR_TRAFFIC)
+        s->parking = 0;
+    if (*f && row == LYR_PARKING)
+        s->traffic = 0;
+}
+
+bool LayersOn(const LayerSet* s, int row)
+{
+    int* f = LayerField((LayerSet*)s, row);
+    return f && *f != 0;
 }

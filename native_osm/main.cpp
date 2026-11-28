@@ -250,7 +250,9 @@ enum { kKbY = 66, kKbRowH = 81 };
 enum { P_BACK = 1, P_ROW = 10, P_DEL = 20, P_ADDVIA = 30, P_GO, P_CH_GPS = 40, P_CH_SEARCH, P_CH_FAV, P_CH_MAP,
        P_CH_CANCEL, P_PICK_CANCEL = 50, M_VIA = 60, M_NEW, M_FAV, M_CARD, M_STOP_OUT, M_STOP_UP, M_STOP_CANCEL, M_RESUME_GO,
        M_RESUME_NO, M_RESUME_BOX, P_TRIP_X = 80,
-       P_TRIP, F_GO = 90, F_EDIT, F_CANCEL, F_VIA, E_ICON = 100, E_NAME = E_ICON + VFAV_ICONS, E_DEL, E_DONE, E_BOX, W_FIELD = 120, W_FAV, W_REC, W_BOX = W_REC + kRecentMax };
+       P_TRIP, F_GO = 90, F_EDIT, F_CANCEL, F_VIA, E_ICON = 100, E_NAME = E_ICON + VFAV_ICONS, E_DEL, E_DONE, E_BOX, W_FIELD = 120, W_FAV, W_REC, W_BOX = W_REC + kRecentMax,
+       L_ROW = 160, L_BOX = L_ROW + LYR_COUNT };   // the layers' window: a row a layer, the window itself
+static bool       s_layersOn;          // the layers' window open
 static bool       s_plan;
 static int        s_planChoose = -1;   // the slot whose choices are open
 static int        s_planPressed = -1;
@@ -1660,7 +1662,11 @@ static void OnButton(int b)
         NightShare(g_cfg.night != 0);   // VestaHome follows (VestaCore vnight)
         return;
     case B_EXIT:   DestroyWindow(s_wnd); return;
-    case B_TRF:    OverlayNext(&g_cfg.traffic, &g_cfg.parking); break;
+    case B_TRF:   // the layers' window (the user 2026-11-28)
+        s_layersOn = !s_layersOn;
+        s_dockShown = false;
+        InvalidateRect(s_wnd, NULL, FALSE);
+        return;
     case B_TSRC:   g_cfg.trafficSrc = (g_cfg.trafficSrc + 1) % TRF_COUNT; s_limitHit = false; break;
     case B_GPS:    NextFollowMode(); break;
     case B_LEFT:   PanBy(-g_cfg.mapW / 3.0, 0); break;
@@ -2847,17 +2853,23 @@ static void AltFit()
     }
     if (s_altFit)
         return;
-    double xy[64], cx, cy;
+    enum { kFitPts = 32, kFitAlts = 3 };   // (32 points of each: its bends in the box too)
+    double xy[kFitAlts * kFitPts * 2], cx, cy;
     int n = 0;
-    for (int k = 0; k < RouteAlts(); k++) {
+    for (int k = 0; k < RouteAlts() && k < kFitAlts; k++) {
         const double* ll;
         int np;
         double t, d;
         RouteAltGet(k, &ll, &np, &t, &d);
-        for (int i = 0; i < 8 && np > 1; i++)   // (eight points of each: enough for the box)
-            GeoToWorld(ll[i * (np - 1) / 7 * 2], ll[i * (np - 1) / 7 * 2 + 1], 0, &xy[n * 2], &xy[n * 2 + 1]), n++;
+        for (int i = 0; i < kFitPts && np > 1; i++) {
+            int at = i * (np - 1) / (kFitPts - 1) * 2;
+            GeoToWorld(ll[at], ll[at + 1], 0, &xy[n * 2], &xy[n * 2 + 1]);
+            n++;
+        }
     }
-    int z = FitZoom(xy, n, 380, 330, 5, 17, &cx, &cy);
+    // the free part right of the panel (464 x 438 around its middle 568, 261), 16 px kept at its edges: the zoom's
+    // steps are twofold - the route fills a half to all of it (the user 2026-11-28: it was a box of 380 x 330)
+    int z = FitZoom(xy, n, 432, 404, 5, 17, &cx, &cy);
     if (z < 0)
         return;
     s_altFollow = g_cfg.follow;
@@ -3353,7 +3365,7 @@ static unsigned WarnWanted()   // the points warned of on the way: bumps, danger
 static bool LayerBox(int* box, double vx, double vy)
 {
     bool shown = (g_cfg.parking && !g_cfg.traffic && g_cfg.z >= kParkingZ) ||
-                 ((g_cfg.layerSignals || g_cfg.layerBumps || g_cfg.layerDangers) && g_cfg.z >= kLayerZ);
+                 ((g_cfg.layerSignals || g_cfg.layerBumps || g_cfg.layerDangers || g_cfg.layerCams) && g_cfg.z >= kLayerZ);
     if (shown) {
         double lon0, lat0, lon1, lat1;
         WorldToGeo(vx - kLayerViewPx, vy - kLayerViewPx, g_cfg.z, &lon0, &lat1);
@@ -3393,28 +3405,113 @@ static void SignalMark(HDC dc, int x, int y)   // a dark box of three lights
     DeleteObject(box);
 }
 
-// The road sign's look: a warning triangle with the bump in it, or (a danger: the user 2026-11-22) a "!"
-static void WarnSign(HDC dc, int x, int y, bool bump)
+static void Hump(HDC dc, int x, int y, int w)   // a bump's shape, its base at y, w each side
+{
+    POINT h[4] = { { x - w, y }, { x - w / 2, y - 6 }, { x + w / 2, y - 6 }, { x + w, y } };
+    Polygon(dc, h, 4);
+}
+
+// The picture in a warning triangle (the ink's brush selected, no pen), as the road signs have it (the user 2026-11-28:
+// the dangers' signs were all one "!"): a bump; a crossing - a walker; a bad road - two humps; a dangerous turn - the
+// bent arrow; a dangerous crossroads - the cross; another danger - "!"
+static void WarnGlyph(HDC dc, int x, int y, int kind, int type)
+{
+    if (kind == LAY_BUMP) {
+        Hump(dc, x, y + 7, 7);
+        return;
+    }
+    switch (type) {
+    case DANGER_CROSSING: {   // a walker in a stride: lines of the ink's pen
+        HPEN walk = CreatePen(PS_SOLID, 2, RGB(25, 25, 25));
+        HGDIOBJ op = SelectObject(dc, walk);
+        POINT body[2] = { { x + 1, y - 1 }, { x - 1, y + 3 } }, legs[3] = { { x - 5, y + 8 }, { x - 1, y + 3 }, { x + 4, y + 8 } },
+              arms[3] = { { x - 4, y + 2 }, { x, y }, { x + 4, y + 2 } };
+        Ellipse(dc, x, y - 6, x + 4, y - 2);
+        Polyline(dc, body, 2);
+        Polyline(dc, legs, 3);
+        Polyline(dc, arms, 3);
+        SelectObject(dc, op);
+        DeleteObject(walk);
+        break;
+    }
+    case DANGER_BAD_ROAD:
+        Hump(dc, x - 4, y + 7, 4);
+        Hump(dc, x + 4, y + 7, 4);
+        break;
+    case DANGER_TURN: {
+        POINT arrow[7] = { { x - 4, y + 8 }, { x - 4, y - 1 }, { x + 1, y - 1 }, { x + 1, y - 5 }, { x + 7, y + 1 },
+                           { x + 1, y + 7 }, { x + 1, y + 3 } };
+        POINT stem[4] = { { x - 4, y + 8 }, { x + 1, y + 3 }, { x, y + 3 }, { x - 1, y + 8 } };
+        Polygon(dc, arrow, 7);
+        Polygon(dc, stem, 4);
+        break;
+    }
+    case DANGER_CROSSROADS:
+        Rectangle(dc, x - 1, y - 5, x + 2, y + 9);
+        Rectangle(dc, x - 6, y + 1, x + 7, y + 4);
+        break;
+    default:
+        Rectangle(dc, x - 1, y - 5, x + 2, y + 4);   // (no pen: the right and bottom edges not drawn)
+        Rectangle(dc, x - 1, y + 5, x + 2, y + 8);
+    }
+}
+
+// The road sign's look: a warning triangle, in it the bump or the danger's own picture
+static void WarnSign(HDC dc, int x, int y, int kind, int type)
 {
     POINT tri[3] = { { x, y - 12 }, { x + 13, y + 10 }, { x - 13, y + 10 } };
-    POINT hump[5] = { { x - 7, y + 7 }, { x - 3, y + 1 }, { x + 3, y + 1 }, { x + 7, y + 7 }, { x - 7, y + 7 } };
     HBRUSH y1 = CreateSolidBrush(RGB(250, 205, 50)), ink = CreateSolidBrush(RGB(25, 25, 25));
     HPEN pen = CreatePen(PS_SOLID, 2, RGB(190, 40, 40));
     HGDIOBJ ob = SelectObject(dc, y1), op = SelectObject(dc, pen);
     Polygon(dc, tri, 3);
     SelectObject(dc, ink);
     SelectObject(dc, GetStockObject(NULL_PEN));
-    if (bump) {
-        Polygon(dc, hump, 5);
-    } else {
-        Rectangle(dc, x - 1, y - 5, x + 2, y + 4);   // (no pen: the right and bottom edges not drawn)
-        Rectangle(dc, x - 1, y + 5, x + 2, y + 8);
-    }
+    WarnGlyph(dc, x, y, kind, type);
     SelectObject(dc, op);
     SelectObject(dc, ob);
     DeleteObject(pen);
     DeleteObject(ink);
     DeleteObject(y1);
+}
+
+// A speed camera (cams.lay; the user 2026-11-28): a plate with a camera - blue a fixed one, red dot a red-light one,
+// orange a mobile ambush - and its limit in a red ring at the corner when known
+static void CameraMark(HDC dc, int x, int y, int type, int limit)
+{
+    COLORREF plate = type == 5 ? RGB(230, 130, 30) : RGB(35, 95, 200);
+    HBRUSH b = CreateSolidBrush(plate), white = CreateSolidBrush(RGB(255, 255, 255));
+    HGDIOBJ ob = SelectObject(dc, b), op = SelectObject(dc, GetStockObject(WHITE_PEN));
+    RoundRect(dc, x - 11, y - 9, x + 12, y + 12, 7, 7);
+    SelectObject(dc, white);
+    SelectObject(dc, GetStockObject(NULL_PEN));
+    RoundRect(dc, x - 7, y - 3, x + 8, y + 8, 3, 3);   // the body
+    Rectangle(dc, x - 3, y - 6, x + 3, y - 2);          // its top
+    SelectObject(dc, b);
+    Ellipse(dc, x - 3, y - 1, x + 4, y + 6);            // the lens
+    SelectObject(dc, op);
+    SelectObject(dc, ob);
+    DeleteObject(white);
+    DeleteObject(b);
+    if (type == 3) {   // red light
+        HBRUSH red = CreateSolidBrush(RGB(230, 50, 40));
+        HGDIOBJ o2 = SelectObject(dc, red), p2 = SelectObject(dc, GetStockObject(WHITE_PEN));
+        Ellipse(dc, x - 15, y - 15, x - 5, y - 5);
+        SelectObject(dc, p2);
+        SelectObject(dc, o2);
+        DeleteObject(red);
+    }
+    if (limit > 0) {
+        wchar_t t[8];
+        _snwprintf(t, 8, L"%d", limit);
+        t[7] = 0;
+        HPEN ring = CreatePen(PS_SOLID, 2, RGB(210, 40, 40));
+        HGDIOBJ o3 = SelectObject(dc, GetStockObject(WHITE_BRUSH)), p3 = SelectObject(dc, ring);
+        Ellipse(dc, x + 2, y - 20, x + 21, y - 1);
+        SelectObject(dc, p3);
+        SelectObject(dc, o3);
+        DeleteObject(ring);
+        Text(dc, s_fontTiny, RGB(20, 20, 20), x + 2, y - 20, x + 21, y - 1, DT_CENTER, t);
+    }
 }
 
 static void ParkingMark(HDC dc, int x, int y, int fee)   // red paid, green free, grey: not told (never as free: a fine)
@@ -3434,7 +3531,9 @@ static void LayerMark(HDC dc, const LayerPoint& p, int x, int y)
     if (p.kind == LAY_PARKING)
         ParkingMark(dc, x, y, p.fee);
     else if (p.kind == LAY_BUMP || p.kind == LAY_DANGER)
-        WarnSign(dc, x, y, p.kind == LAY_BUMP);
+        WarnSign(dc, x, y, p.kind, p.fee);
+    else if (p.kind == LAY_CAMERA)
+        CameraMark(dc, x, y, p.fee, p.places);
     else
         SignalMark(dc, x, y);
 }
@@ -3443,7 +3542,8 @@ static bool LayerShown(const LayerPoint& p)
 {
     if (p.kind == LAY_PARKING)
         return g_cfg.parking && !g_cfg.traffic && g_cfg.z >= kParkingZ;
-    return LayerWanted(p, LayersWanted(g_cfg.layerSignals, g_cfg.layerBumps, g_cfg.layerDangers)) && g_cfg.z >= kLayerZ;
+    return LayerWanted(p, LayersWanted(g_cfg.layerSignals, g_cfg.layerBumps, g_cfg.layerDangers, g_cfg.layerCams)) &&
+           g_cfg.z >= kLayerZ;
 }
 
 static void ParkPriceTag(HDC dc, int x, int y, int rub)
@@ -3558,7 +3658,8 @@ static void MarkPaint(HDC dc, int x, int y, void* arg)
 // A layer's sign as ready pixels (stamp.cpp): GDI's brushes, pens and shapes once a kind, not each sign each frame
 static void LayerStamp(HDC dc, const LayerPoint& p, int x, int y)
 {
-    StampKey key = { L"#layer", 6, p.kind, p.kind == LAY_PARKING ? p.fee : 0, kMarkR, 0 };
+    StampKey key = { L"#layer", 6, p.kind, p.kind == LAY_SIGNAL || p.kind == LAY_BUMP ? 0 : p.fee, kMarkR,   // (its type)
+                     p.kind == LAY_CAMERA ? p.places : 0 };
     StampDraw(dc, key, x - kMarkR, y - kMarkR, 2 * kMarkR + 1, 2 * kMarkR + 1, MarkPaint, (void*)&p, kMarkR, kMarkR);
 }
 
@@ -3639,7 +3740,7 @@ static void DrawLayerWarning(HDC dc)
     if (r.right - 58 - sz.cx < r.left)
         r.left = r.right - 58 - sz.cx;
     Card(dc, r, 16);
-    WarnSign(dc, r.left + 26, r.top + 24, bump);
+    WarnSign(dc, r.left + 26, r.top + 24, s_layer[at].kind, s_layer[at].fee);
     Text(dc, s_fontLabel, kText, r.left + 46, r.top, r.right - 8, r.bottom, DT_LEFT, s);
 }
 
@@ -6001,6 +6102,67 @@ static bool WhereRect(int id, RECT* r)
 
 static bool TripShown();
 
+// The layers' window (the user 2026-11-28: the traffic button's turns gave way to a window of switches), over the map:
+// a row a layer (layers.h LYR_*), its switch at the right; a tap beside it closes it
+static const wchar_t* const kLayerRow[LYR_COUNT] = { L"Пробки", L"Камеры", L"Неровности", L"Светофоры",
+                                                      L"Другие опасности", L"Парковки" };
+
+static bool LayRect(int id, RECT* r)
+{
+    if (!s_layersOn || id < L_ROW || id > L_BOX)
+        return false;
+    if (id == L_BOX)
+        SetRect(r, 200, 52, 600, 464);
+    else
+        SetRect(r, 216, 104 + (id - L_ROW) * 58, 584, 156 + (id - L_ROW) * 58);
+    return true;
+}
+
+static LayerSet LayersNow()
+{
+    LayerSet s = { g_cfg.traffic, g_cfg.parking, g_cfg.layerSignals, g_cfg.layerBumps, g_cfg.layerDangers, g_cfg.layerCams };
+    return s;
+}
+
+static void OnLayerRow(int row)
+{
+    LayerSet s = LayersNow();
+    LayersToggle(&s, row);
+    g_cfg.traffic = s.traffic;
+    g_cfg.parking = s.parking;
+    g_cfg.layerSignals = s.signals;
+    g_cfg.layerBumps = s.bumps;
+    g_cfg.layerDangers = s.dangers;
+    g_cfg.layerCams = s.cams;
+    Log("layers: row %d %s", row, LayersOn(&s, row) ? "on" : "off");
+    UserChanged();
+}
+
+static void DrawLayersCard(HDC dc)
+{
+    RECT box, r;
+    LayRect(L_BOX, &box);
+    Card(dc, box, 20);
+    Text(dc, s_fontBig, kText, box.left + 20, box.top + 10, box.right - 20, box.top + 46, DT_LEFT, L"Слои");
+    LayerSet s = LayersNow();
+    for (int row = 0; row < LYR_COUNT; row++) {
+        LayRect(L_ROW + row, &r);
+        bool on = LayersOn(&s, row);
+        if (s_planPressed == L_ROW + row)
+            Tile(dc, r, kPanel2, kPanel2, 14);
+        Text(dc, s_fontLabel, kText, r.left + 12, r.top, r.right - 90, r.bottom, DT_LEFT, kLayerRow[row]);
+        RECT t = { r.right - 72, r.top + 11, r.right - 12, r.top + 41 };
+        Tile(dc, t, on ? kOrange : kPanel2, on ? kOrange : kPanel2, 15);
+        HBRUSH knob = CreateSolidBrush(on ? kInk : kTextDim);
+        HGDIOBJ ob = SelectObject(dc, knob), op = SelectObject(dc, GetStockObject(NULL_PEN));
+        int kx = on ? t.right - 15 : t.left + 15;
+        Ellipse(dc, kx - 11, t.top + 4, kx + 12, t.bottom - 3);
+        SelectObject(dc, op);
+        SelectObject(dc, ob);
+        DeleteObject(knob);
+    }
+}
+
 static int HitOverMap(int x, int y)
 {
     RECT r;
@@ -6017,6 +6179,8 @@ static int HitOverMap(int x, int y)
         id = HitIn(F_GO, E_BOX, FavRect, x, y);
     if (id < 0)
         id = HitIn(W_FIELD, W_BOX, WhereRect, x, y);
+    if (id < 0)
+        id = HitIn(L_ROW, L_BOX, LayRect, x, y);
     if (id >= 0)
         return id;
     if (TripShown() && x >= 196 && x < 604 && y >= 400 && y < 466)   // the trip's card: the route's editor
@@ -6081,7 +6245,9 @@ static void OnWhere(int id)   // "Куда едем?": the field - the search; "
 
 static void OnOverMap(int id)
 {
-    if (id == P_TRIP_X) {   // the trip's "x": the route off
+    if (id >= L_ROW && id < L_BOX) {   // a layer's switch
+        OnLayerRow(id - L_ROW);
+    } else if (id == P_TRIP_X) {   // the trip's "x": the route off
         RouteClear();
         Log("ui: route off");
     } else if (id >= 70 && id < 73) {   // an alternative card: that route on
@@ -6098,9 +6264,10 @@ static void OnOverMap(int id)
         PlanStart(RoutePlanGet(), &lon, &lat, &course);
         RouteAddVia(p, lon, lat, course, true);
         s_lpMenu = false;
-    } else if (id == M_NEW) {
+    } else if (id == M_NEW) {   // the route at once (the user 2026-11-28: the plan's screen between - a step too many)
         s_lpMenu = false;
         PlanNew(s_lpLon, s_lpLat);
+        PlanGo();
     } else if (id == M_FAV) {   // the keyboard names the point
         s_lpMenu = false;
         s_favName = true;
@@ -6353,6 +6520,8 @@ static void DrawOverMap(HDC dc)
     DrawFavCards(dc);
     if (s_lpMenu)
         DrawLpCard(dc);
+    if (s_layersOn)
+        DrawLayersCard(dc);
     DrawWhere(dc);
     DrawResume(dc);
 }
@@ -6484,7 +6653,7 @@ static const wchar_t* DockCaption(int b)
 {
     switch (b) {
     case B_HOME:     return L"ДОМОЙ";
-    case B_TRF:      return g_cfg.parking && !g_cfg.traffic ? L"ПАРКОВКИ" : L"ПРОБКИ";
+    case B_TRF:      return L"СЛОИ";
     case B_TSRC:     return g_cfg.trafficSrc == TRF_2GIS ? L"2ГИС" : L"ЯНДЕКС";
     case B_NIGHT:    return g_cfg.night ? L"ДЕНЬ" : L"НОЧЬ";   // as VestaHome: what a tap turns on
     case B_SETTINGS: return L"НАСТРОЙКИ";
@@ -7244,8 +7413,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             s_planPressed = HitPlan(x, y);
         } else if ((s_planPressed = HitOverMap(x, y)) >= 0) {
             // the picker's "cancel", the long press menu
-        } else if (s_lpMenu || s_lpStop >= 0 || s_favMenu >= 0 || s_favEdit >= 0 || s_resume) {
-            s_lpMenu = s_resume = false;   // a tap beside the menu closes it (the route kept: asked again next time)
+        } else if (s_lpMenu || s_lpStop >= 0 || s_favMenu >= 0 || s_favEdit >= 0 || s_resume || s_layersOn) {
+            s_lpMenu = s_resume = s_layersOn = false;   // a tap beside the menu closes it (the route kept: asked again next time)
             s_lpStop = -1;
             s_favMenu = s_favEdit = -1;
             s_favSure = false;

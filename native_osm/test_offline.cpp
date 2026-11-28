@@ -1199,6 +1199,35 @@ static void DangerRegionChecks()
     LayersDrop();
     LayersIn(west, &n);
     Check(n == 3, "dangers: no danger.lay - as before", NULL);
+    // the cameras (the PC loader's cams.lay, the user 2026-11-28): their type in fee, the limit in places; never merged
+    // (two near each other: either way of a road)
+    static const wchar_t kCams[] = L"..\\OSMapsData\\tiny\\cams.lay";
+    LayerPoint c[3] = { { 53000500, 50001000, LAY_CAMERA, 1, 60 }, { 53000550, 50001000, LAY_CAMERA, 3, 0 },
+                        { 53000500, 50015000, LAY_CAMERA, 1, 90 } };   // (the east cell: not in the box)
+    PutLay(kCams, c, 3);
+    LayersDrop();
+    p = LayersIn(west, &n);
+    int at = -1;
+    for (int i = 0; i < n; i++)
+        if (p[i].kind == LAY_CAMERA && p[i].places == 60)
+            at = i;
+    Check(n == 5 && KindCount(p, n, LAY_CAMERA) == 2 && at >= 0 && p[at].fee == 1,
+          "cameras: cams.lay's in the box, both kept, the type and the limit", NULL);
+    Check(LayerWanted(p[at], LayersWanted(0, 0, DANGERS_OFF, 1)) && !LayerWanted(p[at], LayersWanted(1, 1, DANGERS_ALL)),
+          "cameras: by their own switch alone", NULL);
+    LayerPoint* lots = (LayerPoint*)malloc((LAYERS_MAX_CAMS + 50) * sizeof(LayerPoint));
+    for (int i = 0; i < LAYERS_MAX_CAMS + 50; i++) {
+        LayerPoint q = { 53000500, 50001000, LAY_CAMERA, 1, 60 };
+        lots[i] = q;
+    }
+    PutLay(kCams, lots, LAYERS_MAX_CAMS + 50);
+    free(lots);
+    LayersDrop();
+    p = LayersIn(west, &n);
+    Check(n == 3 + LAYERS_MAX_CAMS && KindCount(p, n, LAY_SIGNAL) == 1, "cameras: their own room, layers.lay's all there",
+          NULL);
+    PathInDir(path, kCams);
+    DeleteFile(path);
     LayersDrop();
 }
 
@@ -1430,13 +1459,34 @@ static void LayerAheadChecks()
     Check(Ahead(&distant, 1, LAY_BUMP, 53000000, 50000000, 90, 2000, &d) && d >= 999 && d <= 1001, "ahead: far on, the line's edge, the distance exact", NULL);
     LayerPoint ne = { 53000636, 50001057, LAY_BUMP, 0, 0 };    // (100 m north-east)
     Check(Ahead(&ne, 1, LAY_BUMP, 53000000, 50000000, 45, 200, &d) && d >= 99 && d <= 101, "ahead: a diagonal course", NULL);
-    int t = 1, c = 0;
-    OverlayNext(&t, &c);
-    Check(!t && c, "overlay: traffic -> car parks", NULL);
-    OverlayNext(&t, &c);
-    Check(!t && !c, "overlay: car parks -> neither", NULL);
-    OverlayNext(&t, &c);
-    Check(t && !c, "overlay: neither -> traffic", NULL);
+    // the layers' window (the user 2026-11-28): a switch a row
+    LayerSet s;
+    memset(&s, 0, sizeof(s));
+    for (int r = 0; r < LYR_COUNT; r++)
+        Check(!LayersOn(&s, r), "layers: all off", NULL);
+    LayersToggle(&s, LYR_TRAFFIC);
+    Check(s.traffic == 1 && LayersOn(&s, LYR_TRAFFIC), "layers: traffic on", NULL);
+    LayersToggle(&s, LYR_PARKING);
+    Check(s.parking == 1 && !s.traffic, "layers: car parks on - traffic off (Moscow's car parks are lines)", NULL);
+    LayersToggle(&s, LYR_TRAFFIC);
+    Check(s.traffic == 1 && !s.parking, "layers: traffic on - car parks off", NULL);
+    LayersToggle(&s, LYR_TRAFFIC);
+    Check(!s.traffic && !s.parking, "layers: traffic off - car parks stay off", NULL);
+    LayersToggle(&s, LYR_CAMS);
+    LayersToggle(&s, LYR_BUMPS);
+    LayersToggle(&s, LYR_SIGNALS);
+    Check(s.cams == 1 && s.bumps == 1 && s.signals == 1 && !s.traffic, "layers: cameras, bumps, lights - each its own", NULL);
+    LayersToggle(&s, LYR_DANGERS);
+    Check(s.dangers == DANGERS_MAIN && LayersOn(&s, LYR_DANGERS), "layers: dangers on - the main ones", NULL);
+    s.dangers = DANGERS_ALL;
+    Check(LayersOn(&s, LYR_DANGERS), "layers: all dangers (the settings') - on", NULL);
+    LayersToggle(&s, LYR_DANGERS);
+    Check(s.dangers == DANGERS_OFF && !LayersOn(&s, LYR_DANGERS), "layers: dangers off", NULL);
+    LayersToggle(&s, LYR_CAMS);
+    Check(!s.cams && s.bumps == 1, "layers: cameras off, the rest kept", NULL);
+    LayersToggle(&s, LYR_COUNT);
+    Check(!s.cams && s.bumps == 1 && s.signals == 1 && !s.traffic && !s.parking && !s.dangers, "layers: no such row - nothing", NULL);
+    Check(!LayersOn(&s, LYR_COUNT), "layers: no such row - off", NULL);
 }
 
 static DWORD WINAPI TryUseThread(LPVOID)   // another thread's look at the data: free?

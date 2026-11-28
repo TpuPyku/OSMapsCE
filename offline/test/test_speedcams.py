@@ -116,6 +116,19 @@ class Speedcams(unittest.TestCase):
         self.assertEqual(speedcams.write_danger(path, []), 0)
         self.assertFalse(os.path.exists(path))
 
+    def test_cams_lay(self):
+        """The cameras for OSMapsCE beside speedcam.txt (the user 2026-11-28: a layer of them): cams.lay's points -
+        kind 5, fee the camera's type, places its limit (0 not known); none - neither file."""
+        path = os.path.join(self.tmp, 'speedcam.txt')
+        n = speedcams.write_speedcam(path, speedcams.cut(speedcams.parse(CSV), MOSCOW))
+        self.assertEqual(n, 2)
+        magic, version, pts = read_lay(os.path.join(self.tmp, 'cams.lay'))
+        self.assertEqual((magic, version), (b'OSML', 1))
+        self.assertEqual(sorted(pts), [(55755800, 37617500, 5, 1, 60), (55770000, 37630000, 5, 5, 0)])
+        self.assertEqual(speedcams.write_speedcam(path, []), 0)
+        self.assertFalse(os.path.exists(path))
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, 'cams.lay')))
+
     def test_download(self):
         """Once a run: the file kept in the cache, read from there the next time; not the file - an error."""
         cache = os.path.join(self.tmp, 'cache')
@@ -178,6 +191,7 @@ class Loader(unittest.TestCase):
         self.assertTrue(os.path.exists(self.file('moscow', 'speedcam.txt')))
         self.assertTrue(os.path.exists(self.file('moscow', 'danger.lay')))
         self.assertTrue(os.path.exists(self.file('spb', 'speedcam.txt')))
+        self.assertTrue(os.path.exists(self.file('moscow', 'cams.lay')) and os.path.exists(self.file('spb', 'cams.lay')))
         self.assertFalse(os.path.exists(self.file('spb', 'danger.lay')))   # (no dangers there)
 
     def test_failed(self):

@@ -4,7 +4,9 @@
 #ifndef LAYERS_H
 #define LAYERS_H
 
-enum { LAY_SIGNAL = 1, LAY_BUMP = 2, LAY_PARKING = 3, LAY_DANGER = 4, LAY_KINDS };
+// LAY_CAMERA: a speed camera of the region's cams.lay (the PC loader, openspeedcam.net; the user 2026-11-28): its
+// Navitel type in fee (1, 4 static, 3 red light, 5 mobile), its limit in places (0 - not known)
+enum { LAY_SIGNAL = 1, LAY_BUMP = 2, LAY_PARKING = 3, LAY_DANGER = 4, LAY_CAMERA = 5, LAY_KINDS };
 enum { FEE_UNKNOWN, FEE_FREE, FEE_PAID };
 // A danger's type, in its fee (Navitel's codes; 1, 2 not used)
 enum DangerType { DANGER_CROSSING = 0, DANGER_BAD_ROAD = 3, DANGER_TURN = 4, DANGER_CROSSROADS = 5, DANGER_OTHER = 6 };
@@ -13,10 +15,11 @@ enum { DANGERS_OFF, DANGERS_MAIN, DANGERS_ALL, DANGERS_COUNT };
 struct LayerPoint { int lat, lon; unsigned char kind, fee; unsigned short places; };   // (12 bytes, as in the file)
 // The most points read of a region at once: of layers.lay, of danger.lay - each its own room (crossings, many, cannot
 // push out the lights and bumps)
-enum { LAYERS_MAX_POINTS = 3000, LAYERS_MAX_DANGERS = 2000, LAYERS_MAX = LAYERS_MAX_POINTS + LAYERS_MAX_DANGERS };
+enum { LAYERS_MAX_POINTS = 3000, LAYERS_MAX_DANGERS = 2000, LAYERS_MAX_CAMS = 2000,
+       LAYERS_MAX = LAYERS_MAX_POINTS + LAYERS_MAX_DANGERS + LAYERS_MAX_CAMS };
 
 // Which points are wanted (shown, warned of): a bit a kind, a danger's type its own bit. dangers: DANGERS_*
-unsigned LayersWanted(int signals, int bumps, int dangers);
+unsigned LayersWanted(int signals, int bumps, int dangers, int cams = 0);
 bool LayerWanted(const LayerPoint& p, unsigned wanted);
 
 // The file's points in the box's cells; -1: no such file, or not a whole one
@@ -50,7 +53,12 @@ int ParkLinesRead(const wchar_t* path, const int* box, ParkLine* out, int cap);
 const ParkLine* ParkLinesIn(const int* box, int* n);
 int ParkPrice(const ParkLine& l, int weekday, int hour);   // a car's rubles an hour then; weekday 0: Sunday. Holidays not known
 
-// One button: traffic, car parks, neither (the user 2026-11-07: Moscow's car parks are lines, they do not go with traffic)
-void OverlayNext(int* traffic, int* parking);
+// The layers' window (the user 2026-11-28: a window of switches instead of the traffic button's turns): its rows.
+// Traffic and car parks never together (the user 2026-11-07: Moscow's car parks are lines); the dangers switched on are
+// the main ones (all of them: the settings' stepper).
+enum { LYR_TRAFFIC, LYR_CAMS, LYR_BUMPS, LYR_SIGNALS, LYR_DANGERS, LYR_PARKING, LYR_COUNT };
+struct LayerSet { int traffic, parking, signals, bumps, dangers, cams; };
+void LayersToggle(LayerSet* s, int row);
+bool LayersOn(const LayerSet* s, int row);
 
 #endif

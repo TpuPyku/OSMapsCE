@@ -138,6 +138,7 @@ void ConfigDefaults()
     g_cfg.traffic = 1;
     g_cfg.layerBumps = 1;
     g_cfg.layerDangers = 1;   // (DANGERS_MAIN)
+    g_cfg.layerCams = 1;
     g_cfg.voice = 1;
     g_cfg.voiceVol = 3;
     g_cfg.trafficSrc = TRF_YANDEX;
@@ -256,6 +257,7 @@ static void ConfigSet(const char* key, const char* val)
     else if (!strcmp(key, "layer_signals")) g_cfg.layerSignals = atoi(val) != 0;
     else if (!strcmp(key, "layer_bumps"))  g_cfg.layerBumps = atoi(val) != 0;
     else if (!strcmp(key, "layer_dangers")) g_cfg.layerDangers = Clamp(atoi(val), 0, 2);
+    else if (!strcmp(key, "layer_cams"))   g_cfg.layerCams = atoi(val) != 0;
     else if (!strcmp(key, "follow"))       g_cfg.follow = Clamp(atoi(val), 0, 2);
     else if (!strcmp(key, "traffic_ttl"))  g_cfg.trafficTtlMin = Clamp(atoi(val), 2, 600);
     else if (!strcmp(key, "yandex_limit")) g_cfg.yandexLimit = Clamp(atoi(val), 0, 100000);
@@ -352,6 +354,8 @@ void ConfigSave()
         "layer_bumps=%d\r\n"
         "; dangers (danger.lay, the PC loader): 0 off, 1 bad road, dangerous turns and crossroads, 2 all (+ crossings, other)\r\n"
         "layer_dangers=%d\r\n"
+        "; speed cameras (cams.lay, the PC loader)\r\n"
+        "layer_cams=%d\r\n"
         "; yandex | 2gis\r\n"
         "traffic_src=%s\r\n"
         "; GPS mode: 0 off, 1 north-up, 2 heading-up\r\n"
@@ -406,7 +410,7 @@ void ConfigSave()
         "map_y=%d\r\n"
         "map_w=%d\r\n"
         "map_h=%d\r\n",
-        g_cfg.lon, g_cfg.lat, g_cfg.lastLon, g_cfg.lastLat, g_cfg.lang, g_cfg.z, g_cfg.traffic, g_cfg.trafficRoute, g_cfg.parking, g_cfg.layerSignals, g_cfg.layerBumps, g_cfg.layerDangers, kTrafficNames[g_cfg.trafficSrc],
+        g_cfg.lon, g_cfg.lat, g_cfg.lastLon, g_cfg.lastLat, g_cfg.lang, g_cfg.z, g_cfg.traffic, g_cfg.trafficRoute, g_cfg.parking, g_cfg.layerSignals, g_cfg.layerBumps, g_cfg.layerDangers, g_cfg.layerCams, kTrafficNames[g_cfg.trafficSrc],
         g_cfg.follow, g_cfg.night, g_cfg.vector, g_cfg.junction, g_cfg.noToll, g_cfg.voice, g_cfg.voiceVol, g_cfg.detail, g_cfg.tilt, g_cfg.trafficTtlMin, g_cfg.yandexLimit, g_cfg.twogisLimit,
         g_cfg.autoReserve, g_cfg.cacheMb, g_cfg.cacheKb, g_cfg.cacheDays, g_cfg.reqDay,
         g_cfg.yandexCount, g_cfg.twogisCount, g_cfg.osmCount, g_cfg.apiLimit, g_cfg.apiCount,

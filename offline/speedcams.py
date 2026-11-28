@@ -88,18 +88,25 @@ def drop(path):
         os.remove(path)
 
 
+CAMS_LAY = 'cams.lay'   # the same cameras for OSMapsCE's map (the user 2026-11-28: a layer of them)
+LAY_CAMERA = 5
+
+
 def write_speedcam(path, rows):
-    """The cameras as the source has them (ASCII, CRLF, its header), the fillers' limits 0; none: no file (an old one
-    off). Their count."""
+    """The cameras as the source has them (ASCII, CRLF, its header), the fillers' limits 0, and beside it cams.lay -
+    OSMapsCE's points (kind 5, fee its type, places its limit); none: neither file (old ones off). Their count."""
     cams = [(r, camera(r[3], r[4])) for r in rows]
     cams = [(r, c) for r, c in cams if c]
+    lay = os.path.join(os.path.dirname(path), CAMS_LAY)
     if not cams:
         drop(path)
+        drop(lay)
         return 0
     with open(path, 'w', newline='\r\n') as f:
         f.write(HEADER + '\n')
         for r, c in cams:
             f.write('%d,%r,%r,%d,%d,%d,%d\n' % (r[:3] + c + r[5:]))
+    make_layers.write([(round(r[2] * 1e6), round(r[1] * 1e6), LAY_CAMERA, c[0], c[1]) for r, c in cams], lay)
     return len(cams)
 
 
